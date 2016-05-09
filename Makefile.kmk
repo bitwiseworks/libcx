@@ -1,0 +1,27 @@
+## @file
+# Top-level kBuild makefile
+#
+
+SUB_DEPTH = .
+include $(KBUILD_PATH)/subheader.kmk
+
+#
+# Include sub-makefiles.
+#
+
+include $(PATH_SUB_CURRENT)/src/Makefile.kmk
+
+#
+# Special target to clean install results
+# (kbuild doesn't do that from clean).
+#
+
+distclean:
+	%$(call MSG_L1,Cleaning install products...)
+	$(QUIET)$(RM) -f -- \
+		$(_INSTALLS_FILES)
+	$(QUIET)$(RMDIR) -p --ignore-fail-on-non-empty --ignore-fail-on-not-exist -- \
+		$(rsort $(_INSTALLS_DIRS))
+
+
+include $(FILE_KBUILD_SUB_FOOTER)

@@ -1,0 +1,21 @@
+## @file
+# kBuild makefile for libcx DLL and tests
+#
+
+SUB_DEPTH = ..
+include $(KBUILD_PATH)/subheader.kmk
+
+#
+# Main libcx DLL
+#
+
+DLLS = libcx
+
+libcx_TEMPLATE = Dll
+libcx_NAME = libcx0 # must match libcx.def
+libcx_SOURCES = \
+  fcntl/fcntl.c \
+  libcx.def
+
+
+include $(FILE_KBUILD_SUB_FOOTER)

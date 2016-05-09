@@ -1,0 +1,43 @@
+## @file
+# Global kBuild project configuration file
+
+# Unix layout: DLLs come to the lib dir.
+INST_DLL = $(INST_LIB)
+
+# Non-standard installation dirs.
+INST_INCLUDE ?= include/
+
+# Unix-like hard-coded installation prefix (set by e.g. RPM).
+ifdef INST_PREFIX
+ifneq ($(DESTDIR)$(DESTROOT),)
+PATH_INS = $(firstword $(DESTDIR) $(DESTROOT))/$(INST_PREFIX)
+else
+PATH_INS = $(PATH_OUT)/$(INST_PREFIX)
+endif
+else
+INST_PREFIX = $(PATH_INS)
+endif
+
+#
+# Templates
+#
+
+TEMPLATE_C = C sources
+TEMPLATE_C_TOOL = GCC3OMF
+# If either CFLAGS or LDFLAGS are set, assume that they configure the build flavor
+# (like in case of the RPM build), otherwise set the flavor ourselves.
+ifneq ($(strip $(CFLAGS)$(LDFLAGS)),)
+TEMPLATE_C_CFLAGS += $(CFLAGS)
+TEMPLATE_C_LDFLAGS += $(LDFLAGS)
+else
+TEMPLATE_C_CFLAGS.release += -g -O2
+TEMPLATE_C_CFLAGS.debug += -g -O0 -DDEBUG
+TEMPLATE_C_LDFLAGS.release += -g
+TEMPLATE_C_LDFLAGS.debug += -g
+endif
+
+TEMPLATE_Dll = DLLs
+TEMPLATE_Dll_EXTENDS = C
+TEMPLATE_Dll_LDFLAGS = -Zhigh-mem
+# Create a.out import libraries when installing
+TEMPLATE_Dll_POST_INST_CMDS = $$(QUIET)$$(TOOL_GCC3OMF_AR_IMP) $$@ -o $$(@:$(SUFF_DLL)=.a)
