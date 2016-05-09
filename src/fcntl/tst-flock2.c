@@ -84,6 +84,12 @@ static int fd;
 static void *
 tf (void *arg)
 {
+  if (pthread_mutex_lock (&lock))
+    {
+      puts ("1st locking of lock failed");
+	  exit (1);
+    }
+
   struct flock fl =
     {
       .l_type = F_WRLCK,
@@ -254,12 +260,6 @@ do_test (void)
   pthread_t th;
   if (pid == 0)
     {
-      if (pthread_mutex_lock (&lock) != 0)
-	{
-	  puts ("1st locking of lock failed");
-	  return 1;
-	}
-
       if (pthread_mutex_lock (&lock2) != 0)
 	{
 	  puts ("1st locking of lock2 failed");
@@ -271,6 +271,9 @@ do_test (void)
 	  puts ("pthread_create failed");
 	  return 1;
 	}
+
+      /* Let the new thread run.  */
+      sleep (1);
 
       if (pthread_mutex_lock (&lock) != 0)
 	{
