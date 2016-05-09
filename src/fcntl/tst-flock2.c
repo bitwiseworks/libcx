@@ -25,6 +25,56 @@
 #include <sys/mman.h>
 #include <sys/wait.h>
 
+#ifdef __EMX__
+#define INCL_BASE
+#include <os2.h>
+
+typedef struct pthread_barrier_t
+{
+  HMTX hmtx;
+  HEV hev;
+  size_t cnt;
+  size_t cnt_max;
+} pthread_barrier_t;
+
+static void pthread_barrier_wait (pthread_barrier_t *b)
+{
+  APIRET arc;
+  int wait = 1;
+  arc = DosRequestMutexSem (b->hmtx, SEM_INDEFINITE_WAIT);
+  if (arc)
+    {
+      puts ("DosRequestMutexSem failed");
+      exit (1);
+    }
+  if (++b->cnt == b->cnt_max)
+    {
+      b->cnt = 0;
+      wait = 0;
+      arc = DosPostEventSem (b->hev);
+      if (arc)
+        {
+          puts ("DosPostEventSem failed");
+          exit (1);
+        }
+    }
+  arc = DosReleaseMutexSem (b->hmtx);
+  if (arc)
+    {
+      puts ("DosReleaseMutexSem failed");
+      exit (1);
+    }
+  if (wait)
+    {
+      arc = DosWaitEventSem (b->hev, SEM_INDEFINITE_WAIT);
+      if (arc)
+        {
+          puts ("DosWaitEventSem failed");
+          exit (1);
+        }
+    }
+}
+#endif
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t lock2 = PTHREAD_MUTEX_INITIALIZER;
@@ -74,6 +124,32 @@ do_test (void)
     write (fd, "foobar xyzzy", 12);
 
   pthread_barrier_t *b;
+#ifdef __EMX__
+  APIRET arc;
+  arc = DosAllocSharedMem ((PPVOID) &b, NULL, sizeof (pthread_barrier_t),
+                           PAG_READ | PAG_WRITE | PAG_COMMIT | OBJ_GETTABLE);
+  if (arc)
+    {
+      puts ("DosAllocSharedMem failed");
+      return 1;
+    }
+  b->hmtx = NULLHANDLE;
+  arc = DosCreateMutexSem (NULL, &b->hmtx, DC_SEM_SHARED, FALSE);
+  if (arc)
+    {
+      puts ("DosCreateMutexSem failed");
+      return 1;
+    }
+  b->hev = NULLHANDLE;
+  arc = DosCreateEventSem (NULL, &b->hev, DC_SEM_SHARED | DCE_AUTORESET, FALSE);
+  if (arc)
+    {
+      puts ("DosCreateEventSem failed");
+      return 1;
+    }
+  b->cnt = 0;
+  b->cnt_max = 2;
+#else
   b = mmap (NULL, sizeof (pthread_barrier_t), PROT_READ | PROT_WRITE,
 	    MAP_SHARED, fd, 0);
   if (b == MAP_FAILED)
@@ -106,6 +182,7 @@ do_test (void)
       puts ("barrierattr_destroy failed");
       return 1;
     }
+#endif
 
   struct flock fl =
     {
@@ -129,6 +206,26 @@ do_test (void)
 
   if (pid == 0)
     {
+#ifdef __EMX__
+      arc = DosGetSharedMem (b, PAG_READ | PAG_WRITE);
+      if (arc)
+        {
+          puts ("DosGetSharedMem failed");
+          return 1;
+        }
+      arc = DosOpenMutexSem (NULL, &b->hmtx);
+      if (arc)
+        {
+          puts ("DosOpenMutexSem failed");
+          return 1;
+        }
+      arc = DosOpenEventSem (NULL, &b->hev);
+      if (arc)
+        {
+          puts ("DosOpenEventSem failed");
+          return 1;
+        }
+#endif
       /* Make sure the child does not stay around indefinitely.  */
       alarm (10);
 

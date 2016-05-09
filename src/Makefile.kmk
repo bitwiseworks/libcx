@@ -17,5 +17,13 @@ libcx_SOURCES = \
   fcntl/fcntl.c \
   libcx.def
 
+#
+# Tests
+#
+
+PROGRAMS = tst-flock2
+tst-flock2_TEMPLATE = Test
+tst-flock2_SOURCES = fcntl/tst-flock2.c
+
 
 include $(FILE_KBUILD_SUB_FOOTER)
