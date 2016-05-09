@@ -34,6 +34,17 @@
 #include <sys/param.h>
 #include <time.h>
 
+#ifdef __EMX__
+/* EMX has no public definition qelem (que_elem is used internally) */
+struct qelem {
+  struct qelem *q_forw;
+  struct qelem *q_back;
+  char q_data[1];
+};
+/* This is only to be used inside main */
+#define program_invocation_short_name (_getname (argv[0]))
+#endif
+
 /* The test function is normally called `do_test' and it is called
    with argc and argv as the arguments.  We nevertheless provide the
    possibility to overwrite this name.  */
@@ -253,7 +264,7 @@ set_fortify_handler (void (*handler) (int sig))
 
 /* Show people how to run the program.  */
 static void
-usage (void)
+usage (const char *program_name)
 {
   size_t i;
 
@@ -263,7 +274,7 @@ usage (void)
 	  "  TIMEOUTFACTOR          An integer used to scale the timeout\n"
 	  "  TMPDIR                 Where to place temporary files\n"
 	  "\n",
-	  program_invocation_short_name);
+	  program_name);
   printf ("Options:\n");
   for (i = 0; options[i].name; ++i)
     {
@@ -296,8 +307,10 @@ main (int argc, char *argv[])
   unsigned int timeoutfactor = 1;
   pid_t termpid;
 
+#ifndef __EMX__
   /* Make uses of freed and uninitialized memory known.  */
   mallopt (M_PERTURB, 42);
+#endif
 
 #ifdef STDOUT_UNBUFFERED
   setbuf (stdout, NULL);
@@ -307,7 +320,7 @@ main (int argc, char *argv[])
     switch (opt)
       {
       case '?':
-	usage ();
+	usage (program_invocation_short_name);
 	exit (1);
       case OPT_DIRECT:
 	direct = 1;
@@ -420,6 +433,7 @@ main (int argc, char *argv[])
   pid = fork ();
   if (pid == 0)
     {
+#ifndef __EMX__
       /* This is the child.  */
 #ifdef RLIMIT_CORE
       /* Try to avoid dumping core.  */
@@ -433,6 +447,7 @@ main (int argc, char *argv[])
 	 generates any job control signals, they won't hit the whole build.  */
       if (setpgid (0, 0) != 0)
 	printf ("Failed to set the process group ID: %m\n");
+#endif
 
       /* Execute the test function and exit with the return value.   */
       exit (TEST_FUNCTION);
