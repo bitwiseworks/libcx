@@ -73,13 +73,13 @@ struct pid_list
 };
 
 /**
- * File lock descriptor (linked list entry).
+ * File lock (linked list entry).
  */
 struct file_lock
 {
   struct file_lock *next;
 
-  char type; /* R = read lock, r = multiple read locks, W = write lock, \0 = no lock */
+  char type; /* 'R' = read lock, 'r' = multiple read locks, 'W' = write lock, 0 = no lock */
   off_t start; /* start of the lock region */
   union
   {
@@ -93,20 +93,34 @@ struct file_lock
  */
 struct file_desc
 {
-  char path[PATH_MAX];
   struct file_desc *next;
 
-  struct file_lock *locks;
+  struct file_lock *locks; /* Active file locks */
+  char path[0]; /* File name with fill path */
 };
 
-#define FILE_LOCKS_HASH_SIZE 127
+/**
+ * Blocked process (linked list entry).
+ */
+struct proc_block
+{
+  struct proc_block *next;
+  pid_t pid; /* pid of the blocked process */
+
+  char type; /* Type of the requested lock, 'R' or 'W' */
+  off_t start; /* Start of the requested lock */
+  off_t end; /* End of the requested lock */
+  char path[PATH_MAX]; /* File hame with full path */
+};
+
+#define FILE_DESC_HASH_SIZE 127 /* Prime */
 
 struct shared_data
 {
   Heap_t heap;
   int refcnt; /* number of processes using us */
-  struct file_desc **files; /* File descriptor hash map */
-  size_t blocked; /* number of threads blocked in F_SETLKW */
+  struct file_desc **files; /* File descriptor hash map of FILE_DESC_HASH_SIZE */
+  struct proc_block *blocked; /* Processes blocked in F_SETLKW */
 };
 
 static struct shared_data *gpData = NULL;
@@ -162,13 +176,29 @@ static int lock_mark(struct file_lock *l, short type, pid_t pid)
       if (l->type == 'r')
       {
         int i;
+        pid_t p = 0;
         assert(l->pids && l->pids->used);
         for (i = 0; i < l->pids->size; ++i)
         {
           if (l->pids->list[i] == pid)
           {
             l->pids->list[i] = 0;
-            if (--l->pids->used == 0)
+            --l->pids->used;
+            if (l->pids->used == 1)
+            {
+              /* Convert to R (blocker detection relies on this) */
+              if (!p)
+              {
+                /* Didn't see the other pid yet, search for it */
+                while (++i < l->pids->size && !l->pids->list[i]);
+                assert(i < l->pids->size);
+                p = l->pids->list[i];
+              }
+              free(l->pids);
+              l->type = 'R';
+              l->pid = p;
+            }
+            else if (l->pids->used == 0)
             {
               free(l->pids);
               l->type = 0;
@@ -176,8 +206,13 @@ static int lock_mark(struct file_lock *l, short type, pid_t pid)
             }
             break;
           }
+          else if (l->pids->used == 2 && l->pids->list[i])
+          {
+            /* Save the other pid in the table */
+            p = l->pids->list[i];
+          }
         }
-        assert(l->type == 0 || i < l->pids->size);
+        assert(l->type == 0 || l->type == 'R' || i < l->pids->size);
       }
       else
       {
@@ -341,7 +376,7 @@ static struct file_desc *get_desc(const char *path, int bNew)
   assert(path);
   assert(strlen(path) < PATH_MAX);
 
-  h = hash_string(path) % FILE_LOCKS_HASH_SIZE;
+  h = hash_string(path) % FILE_DESC_HASH_SIZE;
   desc = gpData->files[h];
 
   while (desc)
@@ -353,11 +388,11 @@ static struct file_desc *get_desc(const char *path, int bNew)
 
   if (!desc && bNew)
   {
-    desc = _ucalloc(gpData->heap, 1, sizeof(*desc));
+    desc = _ucalloc(gpData->heap, 1, sizeof(*desc) + strlen(path) + 1);
     if (desc)
     {
       /* Initialize the new desc */
-      strncpy(desc->path, path, PATH_MAX - 1);
+      strcpy(desc->path, path);
       /* Add one free region that covers the entire file */
       desc->locks = _ucalloc(gpData->heap, 1, sizeof(*desc->locks));
       if (!desc->locks)
@@ -481,7 +516,7 @@ static int fcntl_locking_init(int bLock)
       gpData->refcnt = 1;
 
       /* Initialize structures */
-      gpData->files = _ucalloc(gpData->heap, FILE_LOCKS_HASH_SIZE, sizeof(*gpData->files));
+      gpData->files = _ucalloc(gpData->heap, FILE_DESC_HASH_SIZE, sizeof(*gpData->files));
       TRACE("gpData->files = %p\n", gpData->files);
       assert(gpData->files);
     }
@@ -517,12 +552,12 @@ static void fcntl_locking_term()
 
       if (gpData->files)
       {
-        /* Go through all locks to unlock any regions this process owns */
-        int unblocked = 0;
+        pid_t pid = getpid();
+        int bNeededMark = 0;
 
-        for (i = 0; i < FILE_LOCKS_HASH_SIZE; ++i)
+        /* Go through all locks to unlock any regions this process owns */
+        for (i = 0; i < FILE_DESC_HASH_SIZE; ++i)
         {
-          pid_t pid = getpid();
           struct file_desc *desc = gpData->files[i];
           while (desc)
           {
@@ -534,8 +569,8 @@ static void fcntl_locking_term()
                 TRACE("Will unlock [%s], type '%c', start %lld, len %lld\n",
                       desc->path, l->type, (uint64_t)l->start, (uint64_t)lock_len(l));
                 rc = lock_mark(l, F_UNLCK, pid);
-                TRACE("rc = %d\n", rc);
-                unblocked = 1;
+                TRACE_IF(rc, "rc = %d\n", rc);
+                bNeededMark = 1;
               }
               l = l->next;
             }
@@ -544,7 +579,34 @@ static void fcntl_locking_term()
           }
         }
 
-        if (unblocked && gpData->blocked)
+        /* Go through all blocked processes and remove ourselves */
+        if (gpData->blocked)
+        {
+          struct proc_block *bp = NULL, *b = gpData->blocked;
+          while (b)
+          {
+            if (b->pid == pid)
+            {
+              TRACE("Will unblock [%s], type '%c', start %lld, len %lld\n",
+                    b->path, b->type, (uint64_t)b->start,
+                    (uint64_t)(b->end == OFF_MAX ? 0 : b->end - b->start + 1));
+              struct proc_block *bn = b->next;
+              if (bp)
+                bp->next = bn;
+              else
+                gpData->blocked = bn;
+              free(b);
+              b = bn;
+            }
+            else
+            {
+              bp = b;
+              b = b->next;
+            }
+          }
+        }
+
+        if (bNeededMark && gpData->blocked)
         {
           /* We unblocked something and there are blocked threads, release them */
           arc = DosPostEventSem(gEvSem);
@@ -555,9 +617,24 @@ static void fcntl_locking_term()
       if (gpData->refcnt == 0)
       {
         /* We are the last process, free structures */
+        TRACE("gpData->blocked %p\n", gpData->blocked);
+        if (gpData->blocked)
+        {
+          struct proc_block *b = gpData->blocked;
+          while (b)
+          {
+            TRACE("WARNING! Blocked proc: pid %d, path [%s], type='%c', start %lld, len %lld\n",
+                  b->pid, b->path, b->type, (uint64_t)b->start,
+                  (uint64_t)(b->end == OFF_MAX ? 0 : b->end - b->start + 1));
+            struct proc_block *n = b->next;
+            free(b);
+            b = n;
+          }
+        }
+        TRACE("gpData->files %p\n", gpData->files);
         if (gpData->files)
         {
-          for (i = 0; i < FILE_LOCKS_HASH_SIZE; ++i)
+          for (i = 0; i < FILE_DESC_HASH_SIZE; ++i)
           {
             struct file_desc *desc = gpData->files[i];
             while (desc)
@@ -566,6 +643,25 @@ static void fcntl_locking_term()
               struct file_lock *l = desc->locks;
               while (l)
               {
+#if TRACE_ENABLED
+                if (l->type)
+                {
+                  TRACE("WARNING! Forgotten lock: type '%c' start %lld, len %lld, ",
+                        l->type, (uint64_t)l->start,
+                        (uint64_t)lock_len(l), l->pid);
+                  if (l->type == 'r')
+                  {
+                    int i;
+                    TRACE_CONT("pids ");
+                    for (i = 0; i < l->pids->size; ++i)
+                      if (l->pids->list[i])
+                        TRACE_CONT("%d ", l->pids->list[i]);
+                    TRACE_CONT("\n");
+                  }
+                  else
+                    TRACE_CONT("pid %d\n", l->pid);
+                }
+#endif
                 struct file_lock *n = l->next;
                 free (l);
                 l = n;
@@ -592,11 +688,25 @@ static void fcntl_locking_term()
   }
 
   arc = DosCloseEventSem(gEvSem);
+  if (arc == ERROR_SEM_BUSY)
+  {
+    /* The semaphore may be owned by us, try to release it */
+    arc = DosPostEventSem(gEvSem);
+    TRACE("DosPostEventSem = %d\n", arc);
+    arc = DosCloseEventSem(gEvSem);
+  }
   TRACE("DosCloseEventSem = %d\n", arc);
 
   DosReleaseMutexSem(gMutex);
 
   arc = DosCloseMutexSem(gMutex);
+  if (arc == ERROR_SEM_BUSY)
+  {
+    /* The semaphore may be owned by us, try to release it */
+    arc = DosReleaseMutexSem(gMutex);
+    TRACE("DosReleaseMutexSem = %d\n", arc);
+    arc = DosCloseMutexSem(gMutex);
+  }
   TRACE("DosCloseMutexSem = %d\n", arc);
 
   DosExitList(EXLST_REMOVE, ProcessExit);
@@ -620,6 +730,7 @@ static void mutex_lock()
     arc = fcntl_locking_init(TRUE);
   }
 
+  TRACE_IF(arc, "DosRequestMutexSem = %d\n", arc);
   assert(arc == NO_ERROR);
 }
 
@@ -637,10 +748,12 @@ static void mutex_unlock()
 static int fcntl_locking(int fildes, int cmd, struct flock *fl)
 {
   APIRET arc;
-  int rc, bWouldBlock, bSeenR;
+  int rc, bSeenR, bNoMem = 0, bNeededMark = 0;
   off_t start, end;
-  struct file_desc *desc;
-  struct file_lock *l, *lb, *le;
+  struct file_desc *desc = NULL;
+  struct file_lock *lll = NULL, *lb = NULL, *le = NULL;
+  struct file_lock *blocker = NULL;
+  struct proc_block *blocked = NULL;
   struct stat st;
   __LIBC_PFH pFH;
 
@@ -747,29 +860,30 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
       }
       else
       {
-        TRACE("No memory\n");
-        errno = ENOLCK;
-        rc = -1;
+        bNoMem = 1;
         break;
       }
     }
 
 #if TRACE_MORE
-    TRACE("Locks before:\n");
-    for (l = desc->locks; l; l = l->next)
     {
-      TRACE("- type '%c', start %lld, ", l->type, (uint64_t)l->start);
-      if (l->type == 'r')
+      TRACE("Locks before:\n");
+      struct file_lock *l;
+      for (l = desc->locks; l; l = l->next)
       {
-        int i;
-        TRACE_CONT("pids ");
-        for (i = 0; i < l->pids->size; ++i)
-          if (l->pids->list[i])
-            TRACE_CONT("%d ", l->pids->list[i]);
-        TRACE_CONT("\n");
+        TRACE("- type '%c', start %lld, ", l->type, (uint64_t)l->start);
+        if (l->type == 'r')
+        {
+          int i;
+          TRACE_CONT("pids ");
+          for (i = 0; i < l->pids->size; ++i)
+            if (l->pids->list[i])
+              TRACE_CONT("%d ", l->pids->list[i]);
+          TRACE_CONT("\n");
+        }
+        else
+          TRACE_CONT("pid %d\n", l->pid);
       }
-      else
-        TRACE_CONT("pid %d\n", l->pid);
     }
 #endif
 
@@ -781,29 +895,29 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
       lb = lb->next;
     /*
      * Search for the last overlapping region and also see if there are
-     * any blolcking and/or 'r' regions.
+     * any blocking and/or 'r' regions.
      */
     bSeenR = 0;
-    bWouldBlock = 0;
+    blocker = NULL;
     le = lb;
     while (1)
     {
       if (le->type == 'r')
       {
         bSeenR++;
-        if (!bWouldBlock && fl->l_type == F_WRLCK)
+        if (!blocker && fl->l_type == F_WRLCK)
         {
           /* 'r' implies other PIDs hold a read lock, so write is blocked */
-          bWouldBlock = 1;
-          l = le; /* remember the blocking region */
+          assert(le->pids->used > 1);
+          blocker = le;
         }
       }
-      if (!bWouldBlock)
+      if (!blocker && fl->l_type != F_UNLCK)
       {
-        bWouldBlock = (le->type == 'W' ||
-                       (le->type == 'R' && fl->l_type == F_WRLCK)) &&
-                      le->pid != pid;
-        l = le; /* remember the blocking region */
+        if ((le->type == 'W' ||
+             (le->type == 'R' && fl->l_type == F_WRLCK)) &&
+            le->pid != pid)
+          blocker = le;
       }
       if (le->next && le->next->start <= end)
         le = le->next;
@@ -811,20 +925,36 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
         break;
     }
 
-    TRACE_IF(bWouldBlock, "Would block! type '%c' start %lld, len %lld, pid %d\n",
-             l->type, (uint64_t)l->start, (uint64_t)lock_len(l), l->pid);
+#if TRACE_ENABLED
+    if (blocker)
+    {
+      TRACE("Would block! type '%c' start %lld, len %lld, ",
+            blocker->type, (uint64_t)blocker->start,
+            (uint64_t)lock_len(blocker), blocker->pid);
+      if (blocker->type == 'r')
+      {
+        int i;
+        TRACE_CONT("pids ");
+        for (i = 0; i < blocker->pids->size; ++i)
+          if (blocker->pids->list[i])
+            TRACE_CONT("%d ", blocker->pids->list[i]);
+        TRACE_CONT("\n");
+      }
+      else
+        TRACE_CONT("pid %d\n", blocker->pid);
+    }
+#endif
 
     if (cmd == F_GETLK)
     {
-      if (bWouldBlock)
+      if (blocker)
       {
         /* Copy over the blocking lock data */
-        assert(l);
-        fl->l_type = l->type == 'W' ? F_WRLCK : F_RDLCK;
+        fl->l_type = blocker->type == 'W' ? F_WRLCK : F_RDLCK;
         fl->l_whence = SEEK_SET;
-        fl->l_start = l->start;
-        fl->l_len = l->next ? l->next->start - l->start : 0;
-        fl->l_pid = l->type == 'r' ? l->pids->list[0] : l->pid;
+        fl->l_start = blocker->start;
+        fl->l_len = blocker->next ? blocker->next->start - blocker->start : 0;
+        fl->l_pid = blocker->type == 'r' ? blocker->pids->list[0] : blocker->pid;
       }
       else
       {
@@ -834,7 +964,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
     }
     else
     {
-      if (bWouldBlock)
+      if (blocker)
       {
         if (cmd == F_SETLK)
         {
@@ -850,29 +980,96 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
         }
         else
         {
+          struct proc_block *bp, *b;
+
+          assert(fl->l_type != F_UNLCK);
+
           /* Block this thread due to F_SETLKW */
-          ++gpData->blocked;
-          TRACE("Will wait (total blocked %d)\n", gpData->blocked);
+          TRACE("Will wait (blocked head %p)\n", gpData->blocked);
+
+          /* Check if our blocker is blocked itself (which would mean a deadlock) */
+          b = gpData->blocked;
+          while (b)
+          {
+            if (lock_has_pid(blocker, b->pid))
+            {
+              /* Got one; report a deadlock condition */
+              TRACE("Deadlock detected\n");
+              errno = EDEADLK;
+              rc = -1;
+              break;
+            }
+            b = b->next;
+          }
+          if (rc == -1)
+            break;
+
+          /* Initialze the blocking struct if needed */
+          if (!blocked)
+          {
+            blocked = _ucalloc(gpData->heap, 1, sizeof(*blocked));
+            if (!blocked)
+            {
+              bNoMem = 1;
+              break;
+            }
+            blocked->pid = pid;
+            blocked->type = fl->l_type == F_WRLCK ? 'W' : 'R';
+            blocked->start = start;
+            blocked->end = end;
+            strncpy(blocked->path, pFH->pszNativePath, PATH_MAX - 1);
+          }
+
+          /* Add the new block to the head of the blocked list */
+          blocked->next = gpData->blocked;
+          gpData->blocked = blocked;
 
           mutex_unlock();
 
           arc = DosWaitEventSem(gEvSem, SEM_INDEFINITE_WAIT);
           TRACE("DosWaitEventSem = %d\n", arc);
 
+          assert(arc == NO_ERROR || arc == ERROR_INTERRUPT);
+
           if (arc == ERROR_INTERRUPT)
           {
-            /* We've been interrupted, bail out now */
             errno = EINTR;
-            TRACE("rc=-1 errno=%d\n", errno);
-            return -1;
+            rc = -1;
           }
-
-          assert(arc == NO_ERROR);
 
           mutex_lock();
 
-          assert(gpData->blocked);
-          --gpData->blocked;
+          /* Remove the block from the list */
+          bp = NULL;
+          b = gpData->blocked;
+          while (b && b != blocked)
+          {
+            bp = b;
+            b = b->next;
+          }
+          if (b == blocked)
+          {
+            if (bp)
+              bp->next = b->next;
+            else
+              gpData->blocked = b->next;
+          }
+          else
+          {
+            /*
+             * Our process could have already removed and freed this block
+             * in fcntl_locking_term() due to uenxpected termination/
+             */
+            blocked = NULL;
+            if (rc != -1)
+            {
+              errno = EINTR;
+              rc = -1;
+            }
+          }
+
+          if (rc == -1)
+            break;
 
           /* Recheck for blocking regions */
           continue;
@@ -888,6 +1085,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
           /* Process the first region */
           if (lock_needs_mark(lb, fl->l_type, pid))
           {
+            bNeededMark = 1;
             if (lb->start == start && lock_end(lb) == end)
             {
               /* Simplest case (all done in one step) */
@@ -939,6 +1137,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
           /* Process the last region */
           if (lock_needs_mark(le, fl->l_type, pid))
           {
+            bNeededMark = 1;
             if (bSeenR)
             {
               if (lock_end(le) > end)
@@ -963,7 +1162,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
             /* No 'r' locks, only leave one region */
             if (lb->next != le)
             {
-              l = lb->next;
+              struct file_lock *l = lb->next;
               while (l != le)
               {
                 assert(l);
@@ -986,12 +1185,13 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
           else
           {
             /* Just mark the regions with our type/pid */
-            l = lb->next;
+            struct file_lock *l = lb->next;
             while (l != le)
             {
               assert(l);
               if (lock_needs_mark (l, fl->l_type, pid))
               {
+                bNeededMark = 1;
                 rc = lock_mark(l, fl->l_type, pid);
                 if (rc == -1)
                   break;
@@ -1002,44 +1202,65 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
         }
         while (0);
 
+        /* We may only get -1 above due to mem alloc failure */
         if (rc == -1)
-        {
-          TRACE("No memory\n");
-          errno = ENOLCK;
-        }
+          bNoMem = 1;
       }
     }
 
     break;
   }
 
-  if (gpData->blocked)
+  if (bNoMem)
   {
-    /* There are blocked threads, release them to let recheck regions */
+    /*
+     * When we fail to allocate more memory in our shared heap we report this
+     * as the inability to satisfy the lock or unlock request due to a system-
+     * imposed limit and hence return ENOLCK. Later we may decide to grow
+     * the shared heap dynamically as needed.
+     */
+    TRACE("No memory\n");
+    errno = ENOLCK;
+    rc = -1;
+  }
+
+  if (cmd != F_GETLK && fl->l_type == F_UNLCK && bNeededMark && gpData->blocked)
+  {
+    /*
+     * We unlocked some locks and there are blocked threads,
+     * release them to let recheck regions.
+     */
     arc = DosPostEventSem(gEvSem);
     TRACE("DosPostEventSem = %d\n", arc);
   }
 
 #if TRACE_MORE
-  TRACE("Locks after:\n");
-  for (l = desc->locks; l; l = l->next)
+  if (cmd != F_GETLK)
   {
-    TRACE("- type '%c', start %lld, ", l->type, (uint64_t)l->start);
-    if (l->type == 'r')
+    TRACE("Locks after:\n");
+    struct file_lock *l;
+    for (l = desc->locks; l; l = l->next)
     {
-      int i;
-      TRACE_CONT("pids ");
-      for (i = 0; i < l->pids->size; ++i)
-        if (l->pids->list[i])
-          TRACE_CONT("%d ", l->pids->list[i]);
-      TRACE_CONT("\n");
+      TRACE("- type '%c', start %lld, ", l->type, (uint64_t)l->start);
+      if (l->type == 'r')
+      {
+        int i;
+        TRACE_CONT("pids ");
+        for (i = 0; i < l->pids->size; ++i)
+          if (l->pids->list[i])
+            TRACE_CONT("%d ", l->pids->list[i]);
+        TRACE_CONT("\n");
+      }
+      else
+        TRACE_CONT("pid %d\n", l->pid);
     }
-    else
-      TRACE_CONT("pid %d\n", l->pid);
   }
 #endif
 
   mutex_unlock();
+
+  if (blocked)
+    free(blocked);
 
   TRACE_IF(rc, "rc=%d errno=%d\n", rc, errno);
 
