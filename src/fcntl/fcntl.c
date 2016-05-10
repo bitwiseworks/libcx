@@ -63,6 +63,8 @@
 static HMTX gMutex = NULLHANDLE;
 static HEV gEvSem = NULLHANDLE;
 
+#define PID_LIST_MIN_SIZE 8
+
 struct pid_list
 {
   size_t size;
@@ -172,9 +174,10 @@ static int lock_mark(struct file_lock *l, short type, pid_t pid)
               l->type = 0;
               l->pid = 0;
             }
+            break;
           }
         }
-        assert(i < l->pids->size);
+        assert(l->type == 0 || i < l->pids->size);
       }
       else
       {
@@ -201,6 +204,7 @@ static int lock_mark(struct file_lock *l, short type, pid_t pid)
             {
               l->pids->list[i] = pid;
               ++l->pids->used;
+              break;
             }
           }
           assert(i < l->pids->size);
@@ -209,7 +213,7 @@ static int lock_mark(struct file_lock *l, short type, pid_t pid)
         {
           /* Need more space */
           assert(l->pids->used == l->pids->size);
-          size_t nsize = l->pids->size += 8;
+          size_t nsize = l->pids->size += PID_LIST_MIN_SIZE;
           struct pid_list *nlist =
               realloc(l->pids, sizeof(*l->pids) + sizeof(l->pids->list[0]) * nsize);
           if (!nlist)
@@ -222,7 +226,7 @@ static int lock_mark(struct file_lock *l, short type, pid_t pid)
       else if (l->type == 'R')
       {
         assert(l->pid && l->pid != pid);
-        size_t nsize = 8;
+        size_t nsize = PID_LIST_MIN_SIZE;
         struct pid_list *nlist =
             _ucalloc(gpData->heap, 1, sizeof(*l->pids) + sizeof(l->pids->list[0]) * nsize);
         if (!nlist)
@@ -231,7 +235,7 @@ static int lock_mark(struct file_lock *l, short type, pid_t pid)
         nlist->used = 2;
         nlist->list[0] = l->pid;
         nlist->list[1] = pid;
-        l->type == 'r';
+        l->type = 'r';
         l->pids = nlist;
       }
       else
