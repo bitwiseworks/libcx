@@ -834,7 +834,14 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
       {
         if (cmd == F_SETLK)
         {
-          errno = EACCES;
+          /*
+           * While POSIX lists both EACCES and EAGAIN as possible errors for a
+           * blocking condition and the original kLIBC call returns EACCES, we
+           * use EAGAIN here to be GNU/Linux compatible (and the POSIX conforming
+           * app should check for both). This suppresses false failed tdb_brloock
+           * trace log records in Samba.
+           */
+          errno = EAGAIN;
           rc = -1;
         }
         else
