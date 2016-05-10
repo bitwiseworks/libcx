@@ -45,10 +45,12 @@
 #if TRACE_ENABLED
 #define TRACE_MORE 1
 #define TRACE(msg, ...) do { printf("*** [%d:%d] %s:%d:%s: " msg, getpid(), _gettid(), __FILE__, __LINE__, __FUNCTION__, ## __VA_ARGS__); fflush(stdout); } while (0)
+#define TRACE_CONT(msg, ...) do { printf(msg, ## __VA_ARGS__); fflush(stdout); } while (0)
 #define TRACE_IF(cond, msg, ...) do { if (cond) { printf("*** [%d:%d] %s:%d:%s: " msg, getpid(), _gettid(), __FILE__, __LINE__, __FUNCTION__, ## __VA_ARGS__); fflush(stdout); } } while (0)
 #else
 #define TRACE_MORE 0
 #define TRACE(msg, ...) do {} while (0)
+#define TRACE_CONT(msg, ...) do {} while (0)
 #define TRACE_IF(cond, msg, ...) do {} while (0)
 #endif
 
@@ -249,6 +251,11 @@ static int lock_mark(struct file_lock *l, short type, pid_t pid)
 inline static off_t lock_end(struct file_lock *l)
 {
     return l->next ? l->next->start - 1 : OFF_MAX;
+}
+
+inline static off_t lock_len(struct file_lock *l)
+{
+    return l->next ? l->next->start - l->start : 0;
 }
 
 static void lock_free(struct file_lock *l)
@@ -521,7 +528,7 @@ static void fcntl_locking_term()
               if (lock_needs_mark(l, F_UNLCK, pid))
               {
                 TRACE("Will unlock [%s], type '%c', start %lld, len %lld\n",
-                      desc->path, l->type, l->start, lock_end(l) - l->start + 1);
+                      desc->path, l->type, (uint64_t)l->start, (uint64_t)lock_len(l));
                 rc = lock_mark(l, F_UNLCK, pid);
                 TRACE("rc = %d\n", rc);
                 unblocked = 1;
@@ -705,14 +712,16 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
   }
   if (start < 0 || end < 0)
   {
-    TRACE("start %lld (0x%llx), end %lld (0x%llx)\n", start, start, end, end);
+    TRACE("start %lld (0x%llx), end %lld (0x%llx)\n",
+          (uint64_t)start, (uint64_t)start, (uint64_t)end, (uint64_t)end);
     errno = EINVAL;
     return -1;
   }
   if (start > OFF_MAX || end > OFF_MAX)
   {
     TRACE("start %lld (0x%llx), end %lld (0x%llx) OFF_MAX %lld (0x%llx)\n",
-          start, start, end, end, OFF_MAX, OFF_MAX);
+          (uint64_t)start, (uint64_t)start, (uint64_t)end, (uint64_t)end,
+          (uint64_t)OFF_MAX, (uint64_t)OFF_MAX);
     errno = EOVERFLOW;
     return -1;
   }
@@ -745,7 +754,18 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
     TRACE("Locks before:\n");
     for (l = desc->locks; l; l = l->next)
     {
-      TRACE("- type '%c', start %lld, pid %d\n", l->type, l->start, l->pid);
+      TRACE("- type '%c', start %lld, ", l->type, (uint64_t)l->start);
+      if (l->type == 'r')
+      {
+        int i;
+        TRACE_CONT("pids ");
+        for (i = 0; i < l->pids->size; ++i)
+          if (l->pids->list[i])
+            TRACE_CONT("%d ", l->pids->list[i]);
+        TRACE_CONT("\n");
+      }
+      else
+        TRACE_CONT("pid %d\n", l->pid);
     }
 #endif
 
@@ -788,7 +808,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
     }
 
     TRACE_IF(bWouldBlock, "Would block! type '%c' start %lld, len %lld, pid %d\n",
-             l->type, (uint64_t)l->start, (uint64_t)lock_end(l) - l->start + 1, l->pid);
+             l->type, (uint64_t)l->start, (uint64_t)lock_len(l), l->pid);
 
     if (cmd == F_GETLK)
     {
@@ -989,15 +1009,27 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
     TRACE("DosPostEventSem = %d\n", arc);
   }
 
-  mutex_unlock();
-
 #if TRACE_MORE
   TRACE("Locks after:\n");
   for (l = desc->locks; l; l = l->next)
   {
-    TRACE("- type '%c', start %lld, pid %d\n", l->type, l->start, l->pid);
+    TRACE("- type '%c', start %lld, ", l->type, (uint64_t)l->start);
+    if (l->type == 'r')
+    {
+      int i;
+      TRACE_CONT("pids ");
+      for (i = 0; i < l->pids->size; ++i)
+        if (l->pids->list[i])
+          TRACE_CONT("%d ", l->pids->list[i]);
+      TRACE_CONT("\n");
+    }
+    else
+      TRACE_CONT("pid %d\n", l->pid);
   }
 #endif
+
+  mutex_unlock();
+
   TRACE_IF(rc, "rc=%d errno=%d\n", rc, errno);
 
   return rc;
