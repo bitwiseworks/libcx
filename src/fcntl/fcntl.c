@@ -119,6 +119,8 @@ struct proc_block
   off_t start; /* Start of the requested lock */
   off_t end; /* End of the requested lock */
   char path[PATH_MAX]; /* File hame with full path */
+
+  pid_t blocker; /* pid of the blocking process */
 };
 
 #define FILE_DESC_HASH_SIZE 127 /* Prime */
@@ -132,6 +134,8 @@ struct shared_data
 };
 
 static struct shared_data *gpData = NULL;
+
+static int gbTerminate = 0; /* 1 after fcntl_locking_term is called */
 
 static struct pid_list *copy_pids(const struct pid_list *list)
 {
@@ -558,6 +562,8 @@ static void fcntl_locking_term()
 
   DosRequestMutexSem(gMutex, SEM_INDEFINITE_WAIT);
 
+  gbTerminate = 1;
+
   if (gpData)
   {
     if (gpData->heap)
@@ -628,6 +634,8 @@ static void fcntl_locking_term()
           /* We unblocked something and there are blocked threads, release them */
           arc = DosPostEventSem(gEvSem);
           TRACE("DosPostEventSem = %d\n", arc);
+          /* Invalidate the blocked list (see the other DosPostEventSem call) */
+          gpData->blocked = NULL;
         }
       }
 
@@ -991,18 +999,20 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
         }
         else
         {
+          /* Block this thread due to F_SETLKW */
           struct proc_block *bp, *b;
 
           assert(fl->l_type != F_UNLCK);
 
-          /* Block this thread due to F_SETLKW */
+          TRACE("Need type '%c', start %lld, len %lld\n", fl->l_type == F_WRLCK ? 'W' : 'R',
+                (uint64_t)start, (uint64_t)(end == OFF_MAX ? 0 : end - start + 1));
           TRACE("Will wait (blocked head %p)\n", gpData->blocked);
 
-          /* Check if our blocker is blocked itself (which would mean a deadlock) */
+          /* Check if our blocker is itself blocked on us (which would mean a deadlock) */
           b = gpData->blocked;
           while (b)
           {
-            if (lock_has_pid(blocker, b->pid))
+            if (lock_has_pid(blocker, b->pid) && b->blocker == pid)
             {
               /* Got one; report a deadlock condition */
               TRACE("Deadlock detected\n");
@@ -1031,6 +1041,9 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
             strncpy(blocked->path, pFH->pszNativePath, PATH_MAX - 1);
           }
 
+          /* Remember the blocking pid */
+          blocked->blocker = blocker->pid;
+
           /* Add the new block to the head of the blocked list */
           blocked->next = gpData->blocked;
           gpData->blocked = blocked;
@@ -1050,27 +1063,15 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
 
           mutex_lock();
 
-          /* Remove the block from the list */
-          bp = NULL;
-          b = gpData->blocked;
-          while (b && b != blocked)
-          {
-            bp = b;
-            b = b->next;
-          }
-          if (b == blocked)
-          {
-            if (bp)
-              bp->next = b->next;
-            else
-              gpData->blocked = b->next;
-          }
-          else
+          if (gbTerminate)
           {
             /*
-             * Our process could have already removed and freed this block
-             * in fcntl_locking_term() due to uenxpected termination/
+             * Our process have already freed all blocked data including our
+             * blocked record in fcntl_locking_term() due to unexpected
+             * termination, report it as EINTR just in case (if not already
+             * reporting some error).
              */
+            TRACE("gbTerminate\n");
             blocked = NULL;
             if (rc != -1)
             {
@@ -1078,6 +1079,13 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
               rc = -1;
             }
           }
+
+          /*
+           * Note: we don't need to remove our blocked record from the blocked
+           * list because it must have been reset by the thread that woke us
+           * up in order to invalidate it (see the comment near the
+           * DosPostEventSem call below).
+           */
 
           if (rc == -1)
             break;
@@ -1247,6 +1255,21 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
      */
     arc = DosPostEventSem(gEvSem);
     TRACE("DosPostEventSem = %d\n", arc);
+    /*
+     * Let woken up threads run. W/o this call this thread will continue to run
+     * till the end of the time slice and may lock the same region again w/o
+     * giving other threads any chance to execute and therefore intoduce a
+     * starvation.
+     */
+    DosSleep(0);
+    /*
+     * Reset the blocked list to invalidate it - the entries in this list may
+     * refer to our PID as a blocker which may be not true any more (and could
+     * cause a false deadlock detection upon our new attempt to lock something
+     * during the current time slice if the above yielding didn't give some
+     * blocking thread a chance to run for some reason).
+     */
+    gpData->blocked = NULL;
   }
 
   TRACE_BEGIN_IF(TRACE_MORE && cmd != F_GETLK, "Locks after:\n");
