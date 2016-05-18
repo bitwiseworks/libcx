@@ -761,7 +761,7 @@ static void mutex_unlock()
 static int fcntl_locking(int fildes, int cmd, struct flock *fl)
 {
   APIRET arc;
-  int rc, bSeenR, bNoMem = 0, bNeededMark = 0;
+  int rc, bSeenOtherPid, bNoMem = 0, bNeededMark = 0;
   off_t start, end;
   struct file_desc *desc = NULL;
   struct file_lock *lll = NULL, *lb = NULL, *le = NULL;
@@ -906,30 +906,33 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
     while (lb->next && lb->next->start <= start)
       lb = lb->next;
     /*
-     * Search for the last overlapping region and also see if there are
-     * any blocking and/or 'r' regions.
+     * Search for the last overlapping region and also check if there are any
+     * regions locked by other processes (includng the blocking ones).
      */
-    bSeenR = 0;
+    bSeenOtherPid = 0;
     blocker = NULL;
     le = lb;
     while (1)
     {
-      if (le->type == 'r')
+      if (!bSeenOtherPid)
+        bSeenOtherPid = le->type == 'r' || (le->type == 'R' && le->pid != pid);
+      if (!blocker)
       {
-        bSeenR++;
-        if (!blocker && fl->l_type == F_WRLCK)
+        if (le->type == 'r')
         {
-          /* 'r' implies other PIDs hold a read lock, so write is blocked */
-          assert(le->pids->used > 1);
-          blocker = le;
+          if (fl->l_type == F_WRLCK)
+          {
+            /* 'r' implies other PIDs hold a read lock, so write is blocked */
+            assert(le->pids->used > 1);
+            blocker = le;
+          }
         }
-      }
-      if (!blocker && fl->l_type != F_UNLCK)
-      {
-        if ((le->type == 'W' ||
-             (le->type == 'R' && fl->l_type == F_WRLCK)) &&
-            le->pid != pid)
-          blocker = le;
+        else if (fl->l_type != F_UNLCK)
+        {
+          if ((le->type == 'W' || (le->type == 'R' && fl->l_type == F_WRLCK)) &&
+              le->pid != pid)
+            blocker = le;
+        }
       }
       if (le->next && le->next->start <= end)
         le = le->next;
@@ -1117,7 +1120,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
               {
                 if (!ln)
                   ln = lb;
-                if (lock_end(le) > end)
+                if (lock_end(ln) > end)
                 {
                   /* Split the non-aligned region (tail) */
                   if (!lock_split(ln, end + 1))
@@ -1146,8 +1149,9 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
           if (lock_needs_mark(le, fl->l_type, pid))
           {
             bNeededMark = 1;
-            if (bSeenR)
+            if (bSeenOtherPid)
             {
+              /* There are regions with other PIDs, we have to split */
               if (lock_end(le) > end)
               {
                 /* Split the non-aligned last region */
@@ -1161,15 +1165,16 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
               if (rc == -1)
                 break;
             }
-            /* Note: !bSeenR case is processed later */
+            /* Note: !bSeenOtherPid case is processed later */
           }
 
           /* Process the remaining regions */
-          if (!bSeenR)
+          if (!bSeenOtherPid)
           {
-            /* No 'r' locks, only leave one region */
+            /* No regions with other PIDs, we may join */
             if (lb->next != le)
             {
+              /* Delete regions between first and last */
               struct file_lock *l = lb->next;
               while (l != le)
               {
@@ -1182,11 +1187,13 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
             }
             if (lock_end(le) == end)
             {
+              /* The last region is fully inside the join */
               lb->next = le->next;
               lock_free(le);
             }
             else
             {
+              /* Move the start point of the last region */
               le->start = end + 1;
             }
           }
