@@ -44,14 +44,22 @@
 #define TRACE_ENABLED 0
 #if TRACE_ENABLED
 #define TRACE_MORE 1
-#define TRACE(msg, ...) do { printf("*** [%d:%d] %s:%d:%s: " msg, getpid(), _gettid(), __FILE__, __LINE__, __FUNCTION__, ## __VA_ARGS__); fflush(stdout); } while (0)
-#define TRACE_CONT(msg, ...) do { printf(msg, ## __VA_ARGS__); fflush(stdout); } while (0)
-#define TRACE_IF(cond, msg, ...) do { if (cond) { printf("*** [%d:%d] %s:%d:%s: " msg, getpid(), _gettid(), __FILE__, __LINE__, __FUNCTION__, ## __VA_ARGS__); fflush(stdout); } } while (0)
+#define TRACE_RAW(msg, ...) printf("*** [%d:%d] %s:%d:%s: " msg, getpid(), _gettid(), __FILE__, __LINE__, __FUNCTION__, ## __VA_ARGS__)
+#define TRACE(msg, ...) do { TRACE_RAW(msg, ## __VA_ARGS__); fflush(stdout); } while(0)
+#define TRACE_BEGIN(msg, ...) { do { TRACE_RAW(msg, ## __VA_ARGS__); } while(0)
+#define TRACE_CONT(msg, ...) printf(msg, ## __VA_ARGS__)
+#define TRACE_END() fflush(stdout); } do {} while(0)
+#define TRACE_IF(cond, msg, ...) if (cond) TRACE(msg, ## __VA_ARGS__)
+#define TRACE_BEGIN_IF(cond, msg, ...) if (cond) TRACE_BEGIN(msg, ## __VA_ARGS__)
 #else
 #define TRACE_MORE 0
+#define TRACE_RAW(msg, ...) do {} while (0)
 #define TRACE(msg, ...) do {} while (0)
+#define TRACE_BEGIN(msg, ...) if (0) { do {} while(0)
 #define TRACE_CONT(msg, ...) do {} while (0)
+#define TRACE_END() } do {} while(0)
 #define TRACE_IF(cond, msg, ...) do {} while (0)
+#define TRACE_BEGIN_IF(cond, msg, ...) if (0) { do {} while(0)
 #endif
 
 #define MUTEX_FCNTL "\\SEM32\\FCNTL_LOCKING_V1_MUTEX"
@@ -482,6 +490,15 @@ static int fcntl_locking_init(int bLock)
   if (arc != NO_ERROR)
     return arc;
 
+#if TRACE_ENABLED
+  /*
+   * Allocate a larger buffer to fit lengthy TRACE messages and disable
+   * auto-flush on EOL (to avoid breaking them by stdout operations
+   * from other threads/processes).
+   */
+  setvbuf(stdout, NULL, _IOFBF, 0x10000);
+#endif
+
   /* Create event semaphore */
   arc = DosCreateEventSem(EVENTSEM_FCNTL, &gEvSem, DCE_AUTORESET, FALSE);
   TRACE("DosCreateEventSem = %d\n", arc);
@@ -643,27 +660,23 @@ static void fcntl_locking_term()
               struct file_lock *l = desc->locks;
               while (l)
               {
-#if TRACE_ENABLED
-                if (l->type)
+                TRACE_BEGIN_IF(l->type, "WARNING! Forgotten lock: type '%c' start %lld, len %lld, ",
+                               l->type, (uint64_t)l->start,
+                               (uint64_t)lock_len(l), l->pid);
+                if (l->type == 'r')
                 {
-                  TRACE("WARNING! Forgotten lock: type '%c' start %lld, len %lld, ",
-                        l->type, (uint64_t)l->start,
-                        (uint64_t)lock_len(l), l->pid);
-                  if (l->type == 'r')
-                  {
-                    int i;
-                    TRACE_CONT("pids ");
-                    for (i = 0; i < l->pids->size; ++i)
-                      if (l->pids->list[i])
-                        TRACE_CONT("%d ", l->pids->list[i]);
-                    TRACE_CONT("\n");
-                  }
-                  else
-                    TRACE_CONT("pid %d\n", l->pid);
+                  int i;
+                  TRACE_CONT("pids ");
+                  for (i = 0; i < l->pids->size; ++i)
+                    if (l->pids->list[i])
+                      TRACE_CONT("%d ", l->pids->list[i]);
+                  TRACE_CONT("\n");
                 }
-#endif
+                else
+                  TRACE_CONT("pid %d\n", l->pid);
+                TRACE_END();
                 struct file_lock *n = l->next;
-                free (l);
+                free(l);
                 l = n;
               }
               free(desc);
@@ -865,13 +878,12 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
       }
     }
 
-#if TRACE_MORE
+    TRACE_BEGIN_IF(TRACE_MORE, "Locks before:\n");
     {
-      TRACE("Locks before:\n");
       struct file_lock *l;
       for (l = desc->locks; l; l = l->next)
       {
-        TRACE("- type '%c', start %lld, ", l->type, (uint64_t)l->start);
+        TRACE_CONT("- type '%c', start %lld, ", l->type, (uint64_t)l->start);
         if (l->type == 'r')
         {
           int i;
@@ -885,7 +897,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
           TRACE_CONT("pid %d\n", l->pid);
       }
     }
-#endif
+    TRACE_END();
 
     /* Search for the first overlapping region */
     assert(desc->locks);
@@ -925,25 +937,21 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
         break;
     }
 
-#if TRACE_ENABLED
-    if (blocker)
+    TRACE_BEGIN_IF(blocker, "Would block on type '%c', start %lld, len %lld, ",
+                   blocker->type, (uint64_t)blocker->start,
+                   (uint64_t)lock_len(blocker), blocker->pid);
+    if (blocker->type == 'r')
     {
-      TRACE("Would block! type '%c' start %lld, len %lld, ",
-            blocker->type, (uint64_t)blocker->start,
-            (uint64_t)lock_len(blocker), blocker->pid);
-      if (blocker->type == 'r')
-      {
-        int i;
-        TRACE_CONT("pids ");
-        for (i = 0; i < blocker->pids->size; ++i)
-          if (blocker->pids->list[i])
-            TRACE_CONT("%d ", blocker->pids->list[i]);
-        TRACE_CONT("\n");
-      }
-      else
-        TRACE_CONT("pid %d\n", blocker->pid);
+      int i;
+      TRACE_CONT("pids ");
+      for (i = 0; i < blocker->pids->size; ++i)
+        if (blocker->pids->list[i])
+          TRACE_CONT("%d ", blocker->pids->list[i]);
+      TRACE_CONT("\n");
     }
-#endif
+    else
+      TRACE_CONT("pid %d\n", blocker->pid);
+    TRACE_END();
 
     if (cmd == F_GETLK)
     {
@@ -1234,14 +1242,12 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
     TRACE("DosPostEventSem = %d\n", arc);
   }
 
-#if TRACE_MORE
-  if (cmd != F_GETLK)
+  TRACE_BEGIN_IF(TRACE_MORE && cmd != F_GETLK, "Locks after:\n");
   {
-    TRACE("Locks after:\n");
     struct file_lock *l;
     for (l = desc->locks; l; l = l->next)
     {
-      TRACE("- type '%c', start %lld, ", l->type, (uint64_t)l->start);
+      TRACE_CONT("- type '%c', start %lld, ", l->type, (uint64_t)l->start);
       if (l->type == 'r')
       {
         int i;
@@ -1255,7 +1261,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
         TRACE_CONT("pid %d\n", l->pid);
     }
   }
-#endif
+  TRACE_END();
 
   mutex_unlock();
 
