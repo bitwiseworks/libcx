@@ -24,7 +24,9 @@
 #include <os2.h>
 
 #include <emx/startup.h>
+#include <string.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <assert.h>
 
 #include "shared.h"
@@ -196,6 +198,7 @@ static void shared_term()
       if (gpData->refcnt == 0)
       {
         /* We are the last process, free common structures */
+        TRACE("gpData->files %p\n", gpData->files);
         if (gpData->files)
         {
           for (i = 0; i < FILE_DESC_HASH_SIZE; ++i)
@@ -204,6 +207,7 @@ static void shared_term()
             while (desc)
             {
               struct FileDesc *next = desc->next;
+              fcntl_locking_filedesc_term(desc);
               free(desc);
               desc = next;
             }
@@ -327,4 +331,73 @@ void global_unlock()
   arc = DosReleaseMutexSem(gMutex);
 
   assert(arc == NO_ERROR);
+}
+
+static size_t hash_string(const char *str)
+{
+  /*
+   * Based on RS hash function from Arash Partow collection
+   * (http://www.partow.net/programming/hashfunctions/).
+   * According to https://habrahabr.ru/post/219139/ this function
+   * produces few collisions and is rather fast.
+   */
+
+  size_t a = 63689;
+  size_t hash = 0;
+
+  while (*str)
+  {
+    hash = hash * a + (unsigned char)(*str++);
+    a *= 378551 /* b */;
+  }
+
+  return hash;
+}
+
+/**
+ * Returns a file descriptor sturcture for the given path.
+ * Must be called under global_lock().
+ * Returns NULL when @a bNew is true and there is not enough memory
+ * to allocate a new sctructure, or when @a bNew is FALSE and there
+ * is no descriptor for the given file.
+ */
+struct FileDesc *get_file_desc(const char *path, int bNew)
+{
+  size_t h;
+  struct FileDesc *desc;
+
+  assert(gpData);
+  assert(path);
+  assert(strlen(path) < PATH_MAX);
+
+  h = hash_string(path) % FILE_DESC_HASH_SIZE;
+  desc = gpData->files[h];
+
+  while (desc)
+  {
+    if (strcmp(desc->path, path) == 0)
+      break;
+    desc = desc->next;
+  }
+
+  if (!desc && bNew)
+  {
+    desc = _ucalloc(gpData->heap, 1, sizeof(*desc) + strlen(path) + 1);
+    if (desc)
+    {
+      /* Initialize the new desc */
+      strcpy(desc->path, path);
+      /* Call component-specific initialization */
+      if (fcntl_locking_filedesc_init(desc) == -1)
+      {
+        free(desc);
+        return NULL;
+      }
+      /* Put to the head of the bucket */
+      desc->next = gpData->files[h];
+      gpData->files[h] = desc;
+    }
+  }
+
+  return desc;
 }

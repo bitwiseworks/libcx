@@ -308,73 +308,47 @@ static struct FcntlLock *lock_split(struct FcntlLock *l, off_t split)
   return ln;
 }
 
-static size_t hash_string(const char *str)
+/**
+ * Initializes the fcntl portion of FileDesc.
+ * Called right after the FileDesc pointer is allocated.
+ * Returns 0 on success or -1 on failure.
+ */
+int fcntl_locking_filedesc_init(struct FileDesc *desc)
 {
-  /*
-   * Based on RS hash function from Arash Partow collection
-   * (http://www.partow.net/programming/hashfunctions/).
-   * According to https://habrahabr.ru/post/219139/ this function
-   * produces few collisions and is rather fast.
-   */
-
-  size_t a = 63689;
-  size_t hash = 0;
-
-  while (*str)
-  {
-    hash = hash * a + (unsigned char)(*str++);
-    a *= 378551 /* b */;
-  }
-
-  return hash;
+  /* Add one free region that covers the entire file */
+  desc->locks = _ucalloc(gpData->heap, 1, sizeof(*desc->locks));
+  if (!desc->locks)
+    return -1;
 }
 
 /**
- * Returns a file descriptor sturcture for the given path.
- * Returns NULL when @a bNew is true and there is not enough memory
- * to allocate a new sctructure, or when @a bNew is FALSE and there
- * is no descriptor for the given file.
+ * Uninitializes the fcntl portion of FileDesc.
+ * Called right before the FileDesc pointer is freed.
  */
-static struct FileDesc *get_desc(const char *path, int bNew)
+void fcntl_locking_filedesc_term(struct FileDesc *desc)
 {
-  size_t h;
-  struct FileDesc *desc;
-
-  assert(gpData);
-  assert(path);
-  assert(strlen(path) < PATH_MAX);
-
-  h = hash_string(path) % FILE_DESC_HASH_SIZE;
-  desc = gpData->files[h];
-
-  while (desc)
+  struct FcntlLock *l = desc->locks;
+  while (l)
   {
-    if (strcmp(desc->path, path) == 0)
-      break;
-    desc = desc->next;
-  }
-
-  if (!desc && bNew)
-  {
-    desc = _ucalloc(gpData->heap, 1, sizeof(*desc) + strlen(path) + 1);
-    if (desc)
+    TRACE_BEGIN_IF(l->type, "WARNING! Forgotten lock: type '%c' start %lld, len %lld, ",
+                   l->type, (uint64_t)l->start,
+                   (uint64_t)lock_len(l), l->pid);
+    if (l->type == 'r')
     {
-      /* Initialize the new desc */
-      strcpy(desc->path, path);
-      /* Add one free region that covers the entire file */
-      desc->locks = _ucalloc(gpData->heap, 1, sizeof(*desc->locks));
-      if (!desc->locks)
-      {
-        free(desc);
-        return NULL;
-      }
-      /* Put to the head of the bucket */
-      desc->next = gpData->files[h];
-      gpData->files[h] = desc;
+      int i;
+      TRACE_CONT("pids ");
+      for (i = 0; i < l->pids->size; ++i)
+        if (l->pids->list[i])
+          TRACE_CONT("%d ", l->pids->list[i]);
+      TRACE_CONT("\n");
     }
+    else
+      TRACE_CONT("pid %d\n", l->pid);
+    TRACE_END();
+    struct FcntlLock *n = l->next;
+    free(l);
+    l = n;
   }
-
-  return desc;
 }
 
 /**
@@ -515,41 +489,6 @@ void fcntl_locking_term()
     TRACE("DosCloseEventSem = %d\n", arc);
 
     free(gpData->fcntl_locking);
-
-    TRACE("gpData->files %p\n", gpData->files);
-    if (gpData->files)
-    {
-      for (i = 0; i < FILE_DESC_HASH_SIZE; ++i)
-      {
-        struct FileDesc *desc = gpData->files[i];
-        while (desc)
-        {
-          struct FcntlLock *l = desc->locks;
-          while (l)
-          {
-            TRACE_BEGIN_IF(l->type, "WARNING! Forgotten lock: type '%c' start %lld, len %lld, ",
-                           l->type, (uint64_t)l->start,
-                           (uint64_t)lock_len(l), l->pid);
-            if (l->type == 'r')
-            {
-              int i;
-              TRACE_CONT("pids ");
-              for (i = 0; i < l->pids->size; ++i)
-                if (l->pids->list[i])
-                  TRACE_CONT("%d ", l->pids->list[i]);
-              TRACE_CONT("\n");
-            }
-            else
-              TRACE_CONT("pid %d\n", l->pid);
-            TRACE_END();
-            struct FcntlLock *n = l->next;
-            free(l);
-            l = n;
-          }
-          desc = desc->next;
-        }
-      }
-    }
   }
 }
 
@@ -657,7 +596,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
 
   while (1)
   {
-    desc = get_desc(pFH->pszNativePath, cmd != F_GETLK);
+    desc = get_file_desc(pFH->pszNativePath, cmd != F_GETLK);
     if (!desc)
     {
       if (cmd == F_GETLK)

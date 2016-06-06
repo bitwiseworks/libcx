@@ -77,5 +77,9 @@ extern struct SharedData *gpData;
 void global_lock();
 void global_unlock();
 
+struct FileDesc *get_file_desc(const char *path, int bNew);
+
 int fcntl_locking_init();
 void fcntl_locking_term();
+int fcntl_locking_filedesc_init(struct FileDesc *desc);
+void fcntl_locking_filedesc_term(struct FileDesc *desc);
