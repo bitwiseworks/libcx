@@ -31,49 +31,19 @@
 
 #include <fcntl.h>
 #include <errno.h>
-#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <limits.h>
 #include <assert.h>
 #include <emx/io.h>
-#include <umalloc.h>
 
 #undef fcntl
 
-#define TRACE_ENABLED 0
-#if TRACE_ENABLED
-#define TRACE_MORE 1
-#define TRACE_RAW(msg, ...) printf("*** [%d:%d] %s:%d:%s: " msg, getpid(), _gettid(), __FILE__, __LINE__, __FUNCTION__, ## __VA_ARGS__)
-#define TRACE(msg, ...) do { TRACE_RAW(msg, ## __VA_ARGS__); fflush(stdout); } while(0)
-#define TRACE_BEGIN(msg, ...) { do { TRACE_RAW(msg, ## __VA_ARGS__); } while(0)
-#define TRACE_CONT(msg, ...) printf(msg, ## __VA_ARGS__)
-#define TRACE_END() fflush(stdout); } do {} while(0)
-#define TRACE_IF(cond, msg, ...) if (cond) TRACE(msg, ## __VA_ARGS__)
-#define TRACE_BEGIN_IF(cond, msg, ...) if (cond) TRACE_BEGIN(msg, ## __VA_ARGS__)
-#else
-#define TRACE_MORE 0
-#define TRACE_RAW(msg, ...) do {} while (0)
-#define TRACE(msg, ...) do {} while (0)
-#define TRACE_BEGIN(msg, ...) if (0) { do {} while(0)
-#define TRACE_CONT(msg, ...) do {} while (0)
-#define TRACE_END() } do {} while(0)
-#define TRACE_IF(cond, msg, ...) do {} while (0)
-#define TRACE_BEGIN_IF(cond, msg, ...) if (0) { do {} while(0)
-#endif
-
-#define MUTEX_FCNTL "\\SEM32\\FCNTL_LOCKING_V1_MUTEX"
-#define EVENTSEM_FCNTL "\\SEM32\\FCNTL_LOCKING_V1_EVENTSEM"
-#define SHAREDMEM_FCNTL "\\SHAREMEM\\FCNTL_LOCKING_V1_DATA"
-
-#define HEAP_SIZE 65536 /* initial size for fcntl data */
-
-static HMTX gMutex = NULLHANDLE;
-static HEV gEvSem = NULLHANDLE;
+#include "../shared.h"
 
 #define PID_LIST_MIN_SIZE 8
 
-struct pid_list
+struct PidList
 {
   size_t size;
   size_t used;
@@ -81,38 +51,27 @@ struct pid_list
 };
 
 /**
- * File lock (linked list entry).
+ * Fcntl file lock (linked list entry).
  */
-struct file_lock
+struct FcntlLock
 {
-  struct file_lock *next;
+  struct FcntlLock *next;
 
   char type; /* 'R' = read lock, 'r' = multiple read locks, 'W' = write lock, 0 = no lock */
   off_t start; /* start of the lock region */
   union
   {
     pid_t pid; /* owner of the R or W lock */
-    struct pid_list *pids; /* owners of the r locks */
+    struct PidList *pids; /* owners of the r locks */
   };
-};
-
-/**
- * File descriptor (hash map entry).
- */
-struct file_desc
-{
-  struct file_desc *next;
-
-  struct file_lock *locks; /* Active file locks */
-  char path[0]; /* File name with fill path */
 };
 
 /**
  * Blocked process (linked list entry).
  */
-struct proc_block
+struct ProcBlock
 {
-  struct proc_block *next;
+  struct ProcBlock *next;
   pid_t pid; /* pid of the blocked process */
 
   char type; /* Type of the requested lock, 'R' or 'W' */
@@ -123,31 +82,28 @@ struct proc_block
   pid_t blocker; /* pid of the blocking process */
 };
 
-#define FILE_DESC_HASH_SIZE 127 /* Prime */
-
-struct shared_data
+/**
+ * Global fcntl locking data structure.
+ */
+struct FcntlLocking
 {
-  Heap_t heap;
-  int refcnt; /* number of processes using us */
-  struct file_desc **files; /* File descriptor hash map of FILE_DESC_HASH_SIZE */
-  struct proc_block *blocked; /* Processes blocked in F_SETLKW */
+  HEV hEvSem; /* Semaphore for blocked processes to wait on */
+  struct ProcBlock *blocked; /* Processes blocked in F_SETLKW */
 };
-
-static struct shared_data *gpData = NULL;
 
 static int gbTerminate = 0; /* 1 after fcntl_locking_term is called */
 
-static struct pid_list *copy_pids(const struct pid_list *list)
+static struct PidList *copy_pids(const struct PidList *list)
 {
   assert(list);
   size_t size = sizeof(*list) + sizeof(list->list[0]) * list->size;
-  struct pid_list *nlist = _ucalloc(gpData->heap, 1, size);
+  struct PidList *nlist = _ucalloc(gpData->heap, 1, size);
   if (nlist)
     memcpy(nlist, list, size);
   return nlist;
 }
 
-static int lock_has_pid(struct file_lock *l, pid_t pid)
+static int lock_has_pid(struct FcntlLock *l, pid_t pid)
 {
   assert(l->type != 0 && pid != 0);
   if (l->type == 'r')
@@ -167,7 +123,7 @@ static int lock_has_pid(struct file_lock *l, pid_t pid)
  * the given lock type for pid. Deesn't check for possible blocking and such.
  * Returns 1 if the modification is needed and 0 otherwise.
  */
-static int lock_needs_mark(struct file_lock *l, short type, pid_t pid)
+static int lock_needs_mark(struct FcntlLock *l, short type, pid_t pid)
 {
   return (type == F_UNLCK && l->type != 0 && lock_has_pid(l, pid)) ||
          (type == F_WRLCK && l->type != 'W') ||
@@ -179,7 +135,7 @@ static int lock_needs_mark(struct file_lock *l, short type, pid_t pid)
  * possible blocking and such.
  * Returns 0 on success or -1 if there is no memory.
  */
-static int lock_mark(struct file_lock *l, short type, pid_t pid)
+static int lock_mark(struct FcntlLock *l, short type, pid_t pid)
 {
   switch (type)
   {
@@ -261,7 +217,7 @@ static int lock_mark(struct file_lock *l, short type, pid_t pid)
           /* Need more space */
           assert(l->pids->used == l->pids->size);
           size_t nsize = l->pids->size += PID_LIST_MIN_SIZE;
-          struct pid_list *nlist =
+          struct PidList *nlist =
               realloc(l->pids, sizeof(*l->pids) + sizeof(l->pids->list[0]) * nsize);
           if (!nlist)
             return -1;
@@ -274,7 +230,7 @@ static int lock_mark(struct file_lock *l, short type, pid_t pid)
       {
         assert(l->pid && l->pid != pid);
         size_t nsize = PID_LIST_MIN_SIZE;
-        struct pid_list *nlist =
+        struct PidList *nlist =
             _ucalloc(gpData->heap, 1, sizeof(*l->pids) + sizeof(l->pids->list[0]) * nsize);
         if (!nlist)
           return -1;
@@ -299,17 +255,17 @@ static int lock_mark(struct file_lock *l, short type, pid_t pid)
   return 0;
 }
 
-inline static off_t lock_end(struct file_lock *l)
+inline static off_t lock_end(struct FcntlLock *l)
 {
     return l->next ? l->next->start - 1 : OFF_MAX;
 }
 
-inline static off_t lock_len(struct file_lock *l)
+inline static off_t lock_len(struct FcntlLock *l)
 {
     return l->next ? l->next->start - l->start : 0;
 }
 
-static void lock_free(struct file_lock *l)
+static void lock_free(struct FcntlLock *l)
 {
 
   if (l->type == 'r')
@@ -322,9 +278,9 @@ static void lock_free(struct file_lock *l)
  * Returns the newly created region or NULL if there is
  * not enough memory.
  */
-static struct file_lock *lock_split(struct file_lock *l, off_t split)
+static struct FcntlLock *lock_split(struct FcntlLock *l, off_t split)
 {
-  struct file_lock *ln = NULL;
+  struct FcntlLock *ln = NULL;
 
   assert(l);
   assert(l->start < split && split <= lock_end(l));
@@ -379,10 +335,10 @@ static size_t hash_string(const char *str)
  * to allocate a new sctructure, or when @a bNew is FALSE and there
  * is no descriptor for the given file.
  */
-static struct file_desc *get_desc(const char *path, int bNew)
+static struct FileDesc *get_desc(const char *path, int bNew)
 {
   size_t h;
-  struct file_desc *desc;
+  struct FileDesc *desc;
 
   assert(gpData);
   assert(path);
@@ -421,349 +377,180 @@ static struct file_desc *get_desc(const char *path, int bNew)
   return desc;
 }
 
-static void APIENTRY ProcessExit(ULONG);
-
 /**
- * Initializes the shared structures.
- * @param bLock TRUE to leave the mutex locked on success.
+ * Initializes the fcntl shared structures.
+ * Called after successfull gpData allocation and gpData->heap creation.
  * @return NO_ERROR on success, DOS error code otherwise.
  */
-static int fcntl_locking_init(int bLock)
+int fcntl_locking_init()
 {
   APIRET arc;
-  int rc;
 
-  arc = DosExitList(EXLST_ADD, ProcessExit);
-  assert(arc == NO_ERROR);
-
-  while (1)
+  if (gpData->refcnt == 1)
   {
-    arc = DosOpenMutexSem(MUTEX_FCNTL, &gMutex);
-    TRACE("DosOpenMutexSem = %d\n", arc);
-    if (arc == NO_ERROR)
-    {
-      /*
-       * Init is (being) done by another process, request the mutex to
-       * guarantee shared memory is already created, then get access to
-       * it and open shared heap located in that memory.
-       */
-      arc = DosRequestMutexSem(gMutex, SEM_INDEFINITE_WAIT);
-      TRACE("DosRequestMutexSem = %d\n", arc);
-      assert(arc == NO_ERROR);
+    /* We are the first processs, initialize fcntl structures */
+    gpData->fcntl_locking = _ucalloc(gpData->heap, 1, sizeof(*gpData->fcntl_locking));
+    assert(gpData->fcntl_locking);
 
-      if (arc == NO_ERROR)
-      {
-        arc = DosOpenEventSem(EVENTSEM_FCNTL, &gEvSem);
-        TRACE("DosOpenEventSem = %d\n", arc);
-        assert(arc == NO_ERROR);
-
-        arc = DosGetNamedSharedMem((PPVOID)&gpData, SHAREDMEM_FCNTL, PAG_READ | PAG_WRITE);
-        assert(arc == NO_ERROR);
-
-        TRACE("gpData->heap = %p\n", gpData->heap);
-        assert(gpData->heap);
-
-        rc = _uopen(gpData->heap);
-        TRACE("_uopen = %d (%d)\n", rc, errno);
-        assert(rc == 0);
-
-        assert(gpData->refcnt);
-        gpData->refcnt++;
-
-        if (!bLock)
-          DosReleaseMutexSem(gMutex);
-      }
-
-      return arc;
-    }
-    if (arc == ERROR_SEM_NOT_FOUND)
-    {
-      /* We are the first process, create the mutex */
-      arc = DosCreateMutexSem(MUTEX_FCNTL, &gMutex, 0, TRUE);
-      TRACE("DosCreateMutexSem = %d\n", arc);
-
-      if (arc == ERROR_DUPLICATE_NAME)
-      {
-        /* Another process is faster, attempt to open the mutex again */
-        continue;
-      }
-    }
-    break;
+    arc = DosCreateEventSem(NULL, &gpData->fcntl_locking->hEvSem,
+                            DC_SEM_SHARED | DCE_AUTORESET, FALSE);
+    TRACE("DosCreateEventSem = %d\n", arc);
+    assert(arc == NO_ERROR);
   }
-
-  if (arc != NO_ERROR)
-    return arc;
-
-#if TRACE_ENABLED
-  /*
-   * Allocate a larger buffer to fit lengthy TRACE messages and disable
-   * auto-flush on EOL (to avoid breaking them by stdout operations
-   * from other threads/processes).
-   */
-  setvbuf(stdout, NULL, _IOFBF, 0x10000);
-#endif
-
-  /* Create event semaphore */
-  arc = DosCreateEventSem(EVENTSEM_FCNTL, &gEvSem, DCE_AUTORESET, FALSE);
-  TRACE("DosCreateEventSem = %d\n", arc);
-
-  if (arc == NO_ERROR)
+  else
   {
-    /* Allocate shared memory */
-    arc = DosAllocSharedMem((PPVOID)&gpData, SHAREDMEM_FCNTL, HEAP_SIZE,
-                            PAG_COMMIT | PAG_READ | PAG_WRITE | OBJ_ANY);
-    TRACE("DosAllocSharedMem(OBJ_ANY) = %d\n", arc);
-
-    if (arc && arc != ERROR_ALREADY_EXISTS)
-    {
-      /* High memory may be unavailable, try w/o OBJ_ANY */
-      arc = DosAllocSharedMem((PPVOID)&gpData, SHAREDMEM_FCNTL, HEAP_SIZE,
-                              PAG_COMMIT | PAG_READ | PAG_WRITE);
-      TRACE("DosAllocSharedMem = %d\n", arc);
-    }
-
-    if (arc == NO_ERROR)
-    {
-      /* Create shared heap */
-      gpData->heap = _ucreate(gpData + 1, HEAP_SIZE - sizeof(struct shared_data),
-                              _BLOCK_CLEAN, _HEAP_REGULAR | _HEAP_SHARED,
-                              NULL, NULL);
-      TRACE("gpData->heap = %p\n", gpData->heap);
-      assert(gpData->heap);
-
-      rc =_uopen(gpData->heap);
-      assert(rc == 0);
-
-      gpData->refcnt = 1;
-
-      /* Initialize structures */
-      gpData->files = _ucalloc(gpData->heap, FILE_DESC_HASH_SIZE, sizeof(*gpData->files));
-      TRACE("gpData->files = %p\n", gpData->files);
-      assert(gpData->files);
-    }
+    assert(gpData->fcntl_locking);
+    assert(gpData->fcntl_locking->hEvSem);
+    arc = DosOpenEventSem(NULL, &gpData->fcntl_locking->hEvSem);
+    TRACE("DosOpenEventSem = %d\n", arc);
+    assert(arc == NO_ERROR);
   }
-
-  if (!bLock || arc != NO_ERROR)
-    DosReleaseMutexSem(gMutex);
 
   return arc;
 }
 
-static void fcntl_locking_term()
+/**
+ * Uninitializes the fcntl shared structures.
+ * Called before destroying gpData->heap and gpData.
+ */
+void fcntl_locking_term()
 {
   APIRET arc;
-  int rc;
-
-  TRACE("gMutex %p, gpData %p (heap %p, refcnt %d)\n",
-        gMutex, gpData, gpData ? gpData->heap : 0,
-        gpData ? gpData->refcnt : 0);
-
-  assert(gMutex != NULLHANDLE);
-
-  DosRequestMutexSem(gMutex, SEM_INDEFINITE_WAIT);
+  int rc, i;
 
   gbTerminate = 1;
 
-  if (gpData)
+  if (gpData->files)
   {
-    if (gpData->heap)
+    pid_t pid = getpid();
+    int bNeededMark = 0;
+
+    /* Go through all locks to unlock any regions this process owns */
+    for (i = 0; i < FILE_DESC_HASH_SIZE; ++i)
     {
-      int i;
-
-      assert(gpData->refcnt);
-      gpData->refcnt--;
-
-      if (gpData->files)
+      struct FileDesc *desc = gpData->files[i];
+      while (desc)
       {
-        pid_t pid = getpid();
-        int bNeededMark = 0;
-
-        /* Go through all locks to unlock any regions this process owns */
-        for (i = 0; i < FILE_DESC_HASH_SIZE; ++i)
+        struct FcntlLock *l = desc->locks;
+        while (l)
         {
-          struct file_desc *desc = gpData->files[i];
-          while (desc)
+          if (lock_needs_mark(l, F_UNLCK, pid))
           {
-            struct file_lock *l = desc->locks;
-            while (l)
-            {
-              if (lock_needs_mark(l, F_UNLCK, pid))
-              {
-                TRACE("Will unlock [%s], type '%c', start %lld, len %lld\n",
-                      desc->path, l->type, (uint64_t)l->start, (uint64_t)lock_len(l));
-                rc = lock_mark(l, F_UNLCK, pid);
-                TRACE_IF(rc, "rc = %d\n", rc);
-                bNeededMark = 1;
-              }
-              l = l->next;
-            }
-
-            desc = desc->next;
+            TRACE("Will unlock [%s], type '%c', start %lld, len %lld\n",
+                  desc->path, l->type, (uint64_t)l->start, (uint64_t)lock_len(l));
+            rc = lock_mark(l, F_UNLCK, pid);
+            TRACE_IF(rc, "rc = %d\n", rc);
+            bNeededMark = 1;
           }
+          l = l->next;
         }
 
-        /* Go through all blocked processes and remove ourselves */
-        if (gpData->blocked)
-        {
-          struct proc_block *bp = NULL, *b = gpData->blocked;
-          while (b)
-          {
-            if (b->pid == pid)
-            {
-              TRACE("Will unblock [%s], type '%c', start %lld, len %lld\n",
-                    b->path, b->type, (uint64_t)b->start,
-                    (uint64_t)(b->end == OFF_MAX ? 0 : b->end - b->start + 1));
-              struct proc_block *bn = b->next;
-              if (bp)
-                bp->next = bn;
-              else
-                gpData->blocked = bn;
-              free(b);
-              b = bn;
-            }
-            else
-            {
-              bp = b;
-              b = b->next;
-            }
-          }
-        }
-
-        if (bNeededMark && gpData->blocked)
-        {
-          /* We unblocked something and there are blocked threads, release them */
-          arc = DosPostEventSem(gEvSem);
-          TRACE("DosPostEventSem = %d\n", arc);
-          /* Invalidate the blocked list (see the other DosPostEventSem call) */
-          gpData->blocked = NULL;
-        }
-      }
-
-      if (gpData->refcnt == 0)
-      {
-        /* We are the last process, free structures */
-        TRACE("gpData->blocked %p\n", gpData->blocked);
-        if (gpData->blocked)
-        {
-          struct proc_block *b = gpData->blocked;
-          while (b)
-          {
-            TRACE("WARNING! Blocked proc: pid %d, path [%s], type='%c', start %lld, len %lld\n",
-                  b->pid, b->path, b->type, (uint64_t)b->start,
-                  (uint64_t)(b->end == OFF_MAX ? 0 : b->end - b->start + 1));
-            struct proc_block *n = b->next;
-            free(b);
-            b = n;
-          }
-        }
-        TRACE("gpData->files %p\n", gpData->files);
-        if (gpData->files)
-        {
-          for (i = 0; i < FILE_DESC_HASH_SIZE; ++i)
-          {
-            struct file_desc *desc = gpData->files[i];
-            while (desc)
-            {
-              struct file_desc *next = desc->next;
-              struct file_lock *l = desc->locks;
-              while (l)
-              {
-                TRACE_BEGIN_IF(l->type, "WARNING! Forgotten lock: type '%c' start %lld, len %lld, ",
-                               l->type, (uint64_t)l->start,
-                               (uint64_t)lock_len(l), l->pid);
-                if (l->type == 'r')
-                {
-                  int i;
-                  TRACE_CONT("pids ");
-                  for (i = 0; i < l->pids->size; ++i)
-                    if (l->pids->list[i])
-                      TRACE_CONT("%d ", l->pids->list[i]);
-                  TRACE_CONT("\n");
-                }
-                else
-                  TRACE_CONT("pid %d\n", l->pid);
-                TRACE_END();
-                struct file_lock *n = l->next;
-                free(l);
-                l = n;
-              }
-              free(desc);
-              desc = next;
-            }
-          }
-          free(gpData->files);
-        }
-      }
-
-      _uclose(gpData->heap);
-
-      if (gpData->refcnt == 0)
-      {
-        rc = _udestroy(gpData->heap, !_FORCE);
-        TRACE("_udestroy = %d (%d)\n", rc, errno);
+        desc = desc->next;
       }
     }
 
-    arc = DosFreeMem(gpData);
-    TRACE("DosFreeMem = %d\n", arc);
+    /* Go through all blocked processes and remove ourselves */
+    if (gpData->fcntl_locking->blocked)
+    {
+      struct ProcBlock *bp = NULL, *b = gpData->fcntl_locking->blocked;
+      while (b)
+      {
+        if (b->pid == pid)
+        {
+          TRACE("Will unblock [%s], type '%c', start %lld, len %lld\n",
+                b->path, b->type, (uint64_t)b->start,
+                (uint64_t)(b->end == OFF_MAX ? 0 : b->end - b->start + 1));
+          struct ProcBlock *bn = b->next;
+          if (bp)
+            bp->next = bn;
+          else
+            gpData->fcntl_locking->blocked = bn;
+          free(b);
+          b = bn;
+        }
+        else
+        {
+          bp = b;
+          b = b->next;
+        }
+      }
+    }
+
+    if (bNeededMark && gpData->fcntl_locking->blocked)
+    {
+      /* We unblocked something and there are blocked threads, release them */
+      arc = DosPostEventSem(gpData->fcntl_locking->hEvSem);
+      TRACE("DosPostEventSem = %d\n", arc);
+      /* Invalidate the blocked list (see the other DosPostEventSem call) */
+      gpData->fcntl_locking->blocked = NULL;
+    }
   }
 
-  arc = DosCloseEventSem(gEvSem);
-  if (arc == ERROR_SEM_BUSY)
+  if (gpData->refcnt == 0)
   {
-    /* The semaphore may be owned by us, try to release it */
-    arc = DosPostEventSem(gEvSem);
-    TRACE("DosPostEventSem = %d\n", arc);
-    arc = DosCloseEventSem(gEvSem);
+    /* We are the last process, free fcntl structures */
+    TRACE("gpData->fcntl_locking->blocked %p\n", gpData->fcntl_locking->blocked);
+    if (gpData->fcntl_locking->blocked)
+    {
+      struct ProcBlock *b = gpData->fcntl_locking->blocked;
+      while (b)
+      {
+        TRACE("WARNING! Blocked proc: pid %d, path [%s], type='%c', start %lld, len %lld\n",
+              b->pid, b->path, b->type, (uint64_t)b->start,
+              (uint64_t)(b->end == OFF_MAX ? 0 : b->end - b->start + 1));
+        struct ProcBlock *n = b->next;
+        free(b);
+        b = n;
+      }
+    }
+
+    arc = DosCloseEventSem(gpData->fcntl_locking->hEvSem);
+    if (arc == ERROR_SEM_BUSY)
+    {
+      /* The semaphore may be owned by us, try to release it */
+      arc = DosPostEventSem(gpData->fcntl_locking->hEvSem);
+      TRACE("DosPostEventSem = %d\n", arc);
+      arc = DosCloseEventSem(gpData->fcntl_locking->hEvSem);
+    }
+    TRACE("DosCloseEventSem = %d\n", arc);
+
+    free(gpData->fcntl_locking);
+
+    TRACE("gpData->files %p\n", gpData->files);
+    if (gpData->files)
+    {
+      for (i = 0; i < FILE_DESC_HASH_SIZE; ++i)
+      {
+        struct FileDesc *desc = gpData->files[i];
+        while (desc)
+        {
+          struct FcntlLock *l = desc->locks;
+          while (l)
+          {
+            TRACE_BEGIN_IF(l->type, "WARNING! Forgotten lock: type '%c' start %lld, len %lld, ",
+                           l->type, (uint64_t)l->start,
+                           (uint64_t)lock_len(l), l->pid);
+            if (l->type == 'r')
+            {
+              int i;
+              TRACE_CONT("pids ");
+              for (i = 0; i < l->pids->size; ++i)
+                if (l->pids->list[i])
+                  TRACE_CONT("%d ", l->pids->list[i]);
+              TRACE_CONT("\n");
+            }
+            else
+              TRACE_CONT("pid %d\n", l->pid);
+            TRACE_END();
+            struct FcntlLock *n = l->next;
+            free(l);
+            l = n;
+          }
+          desc = desc->next;
+        }
+      }
+    }
   }
-  TRACE("DosCloseEventSem = %d\n", arc);
-
-  DosReleaseMutexSem(gMutex);
-
-  arc = DosCloseMutexSem(gMutex);
-  if (arc == ERROR_SEM_BUSY)
-  {
-    /* The semaphore may be owned by us, try to release it */
-    arc = DosReleaseMutexSem(gMutex);
-    TRACE("DosReleaseMutexSem = %d\n", arc);
-    arc = DosCloseMutexSem(gMutex);
-  }
-  TRACE("DosCloseMutexSem = %d\n", arc);
-
-  DosExitList(EXLST_REMOVE, ProcessExit);
-}
-
-static void mutex_lock()
-{
-  APIRET arc;
-
-  assert(gMutex != NULLHANDLE);
-  assert(gpData);
-
-  arc = DosRequestMutexSem(gMutex, SEM_INDEFINITE_WAIT);
-  if (arc == ERROR_INVALID_HANDLE)
-  {
-    /*
-     * It must be a forked child, initialize ourselves (since
-     * _DLL_InitTerm(,0) is not called for forks). This call
-     * will leave the mutex locked.
-     */
-    arc = fcntl_locking_init(TRUE);
-  }
-
-  TRACE_IF(arc, "DosRequestMutexSem = %d\n", arc);
-  assert(arc == NO_ERROR);
-}
-
-static void mutex_unlock()
-{
-  APIRET arc;
-
-  assert(gMutex != NULLHANDLE);
-
-  arc = DosReleaseMutexSem(gMutex);
-
-  assert(arc == NO_ERROR);
 }
 
 static int fcntl_locking(int fildes, int cmd, struct flock *fl)
@@ -771,10 +558,10 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
   APIRET arc;
   int rc, bSeenOtherPid, bNoMem = 0, bNeededMark = 0;
   off_t start, end;
-  struct file_desc *desc = NULL;
-  struct file_lock *lll = NULL, *lb = NULL, *le = NULL;
-  struct file_lock *blocker = NULL;
-  struct proc_block *blocked = NULL;
+  struct FileDesc *desc = NULL;
+  struct FcntlLock *lll = NULL, *lb = NULL, *le = NULL;
+  struct FcntlLock *blocker = NULL;
+  struct ProcBlock *blocked = NULL;
   struct stat st;
   __LIBC_PFH pFH;
 
@@ -866,7 +653,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
 
   rc = 0; /* be optimistic :) */
 
-  mutex_lock();
+  global_lock();
 
   while (1)
   {
@@ -888,7 +675,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
 
     TRACE_BEGIN_IF(TRACE_MORE, "Locks before:\n");
     {
-      struct file_lock *l;
+      struct FcntlLock *l;
       for (l = desc->locks; l; l = l->next)
       {
         TRACE_CONT("- type '%c', start %lld, ", l->type, (uint64_t)l->start);
@@ -1000,16 +787,16 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
         else
         {
           /* Block this thread due to F_SETLKW */
-          struct proc_block *bp, *b;
+          struct ProcBlock *bp, *b;
 
           assert(fl->l_type != F_UNLCK);
 
           TRACE("Need type '%c', start %lld, len %lld\n", fl->l_type == F_WRLCK ? 'W' : 'R',
                 (uint64_t)start, (uint64_t)(end == OFF_MAX ? 0 : end - start + 1));
-          TRACE("Will wait (blocked head %p)\n", gpData->blocked);
+          TRACE("Will wait (blocked head %p)\n", gpData->fcntl_locking->blocked);
 
           /* Check if our blocker is itself blocked on us (which would mean a deadlock) */
-          b = gpData->blocked;
+          b = gpData->fcntl_locking->blocked;
           while (b)
           {
             if (lock_has_pid(blocker, b->pid) && b->blocker == pid)
@@ -1045,12 +832,12 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
           blocked->blocker = blocker->pid;
 
           /* Add the new block to the head of the blocked list */
-          blocked->next = gpData->blocked;
-          gpData->blocked = blocked;
+          blocked->next = gpData->fcntl_locking->blocked;
+          gpData->fcntl_locking->blocked = blocked;
 
-          mutex_unlock();
+          global_unlock();
 
-          arc = DosWaitEventSem(gEvSem, SEM_INDEFINITE_WAIT);
+          arc = DosWaitEventSem(gpData->fcntl_locking->hEvSem, SEM_INDEFINITE_WAIT);
           TRACE("DosWaitEventSem = %d\n", arc);
 
           assert(arc == NO_ERROR || arc == ERROR_INTERRUPT);
@@ -1061,7 +848,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
             rc = -1;
           }
 
-          mutex_lock();
+          global_lock();
 
           if (gbTerminate)
           {
@@ -1114,7 +901,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
             else
             {
               /* Split the non-aligned region (head) */
-              struct file_lock *ln = NULL;
+              struct FcntlLock *ln = NULL;
               if (lb->start < start)
               {
                 ln = lock_split(lb, start);
@@ -1183,11 +970,11 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
             if (lb->next != le)
             {
               /* Delete regions between first and last */
-              struct file_lock *l = lb->next;
+              struct FcntlLock *l = lb->next;
               while (l != le)
               {
                 assert(l);
-                struct file_lock *next = l->next;
+                struct FcntlLock *next = l->next;
                 lock_free(l);
                 l = next;
               }
@@ -1208,7 +995,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
           else
           {
             /* Just mark the regions with our type/pid */
-            struct file_lock *l = lb->next;
+            struct FcntlLock *l = lb->next;
             while (l != le)
             {
               assert(l);
@@ -1247,13 +1034,14 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
     rc = -1;
   }
 
-  if (cmd != F_GETLK && fl->l_type == F_UNLCK && bNeededMark && gpData->blocked)
+  if (cmd != F_GETLK && fl->l_type == F_UNLCK && bNeededMark &&
+      gpData->fcntl_locking->blocked)
   {
     /*
      * We unlocked some locks and there are blocked threads,
      * release them to let recheck regions.
      */
-    arc = DosPostEventSem(gEvSem);
+    arc = DosPostEventSem(gpData->fcntl_locking->hEvSem);
     TRACE("DosPostEventSem = %d\n", arc);
     /*
      * Let woken up threads run. W/o this call this thread will continue to run
@@ -1269,12 +1057,12 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
      * during the current time slice if the above yielding didn't give some
      * blocking thread a chance to run for some reason).
      */
-    gpData->blocked = NULL;
+    gpData->fcntl_locking->blocked = NULL;
   }
 
   TRACE_BEGIN_IF(TRACE_MORE && cmd != F_GETLK, "Locks after:\n");
   {
-    struct file_lock *l;
+    struct FcntlLock *l;
     for (l = desc->locks; l; l = l->next)
     {
       TRACE_CONT("- type '%c', start %lld, ", l->type, (uint64_t)l->start);
@@ -1293,7 +1081,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
   }
   TRACE_END();
 
-  mutex_unlock();
+  global_unlock();
 
   if (blocked)
     free(blocked);
@@ -1324,53 +1112,4 @@ int fcntl(int fildes, int cmd, intptr_t *arg)
     default:
       return _std_fcntl(fildes, cmd, arg);
   }
-}
-
-/**
- * Initialize/terminate DLL at load/unload.
- */
-unsigned long _System _DLL_InitTerm(unsigned long hModule, unsigned long ulFlag)
-{
-  TRACE("ulFlag %d\n", ulFlag);
-
-  switch (ulFlag)
-  {
-    /* InitInstance */
-    case 0:
-    {
-      if (_CRT_init() != 0)
-        return 0;
-      __ctordtorInit();
-      if (fcntl_locking_init(FALSE) != NO_ERROR)
-        return 0;
-      break;
-    }
-
-      /* TermInstance */
-    case 1:
-    {
-      __ctordtorTerm();
-      _CRT_term();
-      break;
-    }
-
-    default:
-      return 0;
-  }
-
-  /* Success */
-  return 1;
-}
-
-/**
- * Called upon any process termination (even after a crash where _DLL_InitTerm
- * is not called).
- */
-static void APIENTRY ProcessExit(ULONG reason)
-{
-  TRACE("reason %d\n", reason);
-
-  fcntl_locking_term();
-
-  DosExitList(EXLST_EXIT, NULL);
 }

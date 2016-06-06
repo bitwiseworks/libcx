@@ -15,6 +15,7 @@ libcx_TEMPLATE = Dll
 libcx_NAME = libcx0 # must match libcx.def
 libcx_SOURCES = \
   fcntl/fcntl.c \
+  shared.c \
   libcx.def
 
 #
