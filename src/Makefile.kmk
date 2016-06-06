@@ -9,7 +9,7 @@ include $(KBUILD_PATH)/subheader.kmk
 # Main libcx DLL
 #
 
-DLLS = libcx
+DLLS += libcx
 
 libcx_TEMPLATE = Dll
 libcx_NAME = libcx0 # must match libcx.def
@@ -21,11 +21,11 @@ libcx_SOURCES = \
 # Tests
 #
 
-PROGRAMS = tst-flock2
+PROGRAMS += tst-flock2
 tst-flock2_TEMPLATE = Test
 tst-flock2_SOURCES = fcntl/tst-flock2.c
 
-PROGRAMS = tst-deadlk
+PROGRAMS += tst-deadlk
 tst-deadlk_TEMPLATE = Test
 tst-deadlk_SOURCES = fcntl/tst-deadlk.c
 
