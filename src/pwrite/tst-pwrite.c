@@ -1,14 +1,14 @@
-/* Copyright (C) 2002-2016 Free Software Foundation, Inc.
-   This file is part of the GNU C Library.
-   Contributed by Ulrich Drepper <drepper@redhat.com>, 2002.
+/* Copyright (C) 2016 bww bitwise works GmbH.
+   This file is part of the kLIBC Extension Library.
+   Authored by Dmitry Kuminov <coding@dmik.org>, 2016.
 
-   The GNU C Library is free software; you can redistribute it and/or
-   modify it under the terms of the GNU Lesser General Public
+   The kLIBC Extension Library is free software; you can redistribute it
+   and/or modify it under the terms of the GNU Lesser General Public
    License as published by the Free Software Foundation; either
    version 2.1 of the License, or (at your option) any later version.
 
-   The GNU C Library is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   The kLIBC Extension Library is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
    Lesser General Public License for more details.
 
@@ -31,7 +31,7 @@
 #endif
 
 #define FILE_SIZE 128
-#define ITERATIONS 1000000
+#define ITERATIONS 100000
 
 char buf[FILE_SIZE];
 
@@ -56,14 +56,16 @@ do_test (void)
   for (i = 0; i < FILE_SIZE; ++i)
     buf[i] = i;
 
-  if (TEMP_FAILURE_RETRY (pwrite(fd, buf, FILE_SIZE, 0)) != FILE_SIZE)
+  if (TEMP_FAILURE_RETRY ((n = pwrite(fd, buf, FILE_SIZE, 0))) != FILE_SIZE)
     {
-      puts ("pwrite failed");
+      printf ("write failed (read %d bytes instead of %d)\n", n, FILE_SIZE);
       return 1;
     }
 
   struct stat st;
   pid_t pid1, pid2;
+
+  printf ("Will do %d iterations of pread/pwrite to %s\n", ITERATIONS, tmp);
 
   if ((pid1 = fork ()))
     {
@@ -77,7 +79,7 @@ do_test (void)
           {
             if (TEMP_FAILURE_RETRY ((n = pread(fd, buf, FILE_SIZE, 0))) != FILE_SIZE)
               {
-                printf ("pread failed (read %d instead of %d)\n", n, FILE_SIZE);
+                printf ("pread failed (read %d bytes instead of %d)\n", n, FILE_SIZE);
                 rc = 1;
                 break;
               }
@@ -86,7 +88,7 @@ do_test (void)
               {
                 if (buf[i] != i)
                 {
-                  printf ("integrity of %s broken (offset %d)\n", tmp, i);
+                  printf ("integrity is broken (offset %d contains %d)\n", i, buf[i]);
                   rc = 1;
                   break;
                 }
@@ -101,7 +103,7 @@ do_test (void)
 
             if ((int)st.st_size != FILE_SIZE)
               {
-                printf ("file size is wrong (%d instead of %d)\n", (int)st.st_size, FILE_SIZE);
+                printf ("file size is wrong (%d bytes instead of %d)\n", (int)st.st_size, FILE_SIZE);
                 rc = 1;
                 break;
               }
@@ -126,9 +128,16 @@ do_test (void)
               return 1;
             }
 
-          unlink (tmp);
+          if (rc == 0)
+            rc = status1 || status2;
 
-          return status1 ? status1 : status2 ? status2 : 0;
+          if (rc == 0)
+            {
+              close (fd);
+              unlink (tmp);
+            }
+
+          return rc;
         }
     }
 
@@ -163,11 +172,13 @@ do_test (void)
       {
         if (TEMP_FAILURE_RETRY (n = pwrite(fd, buf + start, len, start)) != len)
           {
-            printf ("pwrite failed in child %d (wrote %d instead of %d)\n", !!pid1, n, len);
+            printf ("pwrite failed in child %d (wrote %d bytes instead of %d)\n", !!pid1, n, len);
             return 1;
           }
       }
   }
+
+  printf("Child %d (%d) ending...\n", getpid(), !!pid1);
 
   return 0;
 }

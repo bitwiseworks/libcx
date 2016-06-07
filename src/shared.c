@@ -207,6 +207,7 @@ static void shared_term()
             while (desc)
             {
               struct FileDesc *next = desc->next;
+              pwrite_filedesc_term(desc);
               fcntl_locking_filedesc_term(desc);
               free(desc);
               desc = next;
@@ -365,6 +366,7 @@ struct FileDesc *get_file_desc(const char *path, int bNew)
 {
   size_t h;
   struct FileDesc *desc;
+  int rc;
 
   assert(gpData);
   assert(path);
@@ -388,7 +390,14 @@ struct FileDesc *get_file_desc(const char *path, int bNew)
       /* Initialize the new desc */
       strcpy(desc->path, path);
       /* Call component-specific initialization */
-      if (fcntl_locking_filedesc_init(desc) == -1)
+      rc = fcntl_locking_filedesc_init(desc);
+      if (rc == 0)
+      {
+        rc = pwrite_filedesc_init(desc);
+        if (rc == -1)
+          fcntl_locking_filedesc_term(desc);
+      }
+      if (rc == -1)
       {
         free(desc);
         return NULL;

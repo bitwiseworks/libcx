@@ -15,8 +15,12 @@ libcx_TEMPLATE = Dll
 libcx_NAME = libcx0 # must match libcx.def
 libcx_SOURCES = \
   fcntl/fcntl.c \
+  pwrite/pwrite.c \
   shared.c \
   libcx.def
+
+# Debug definitions
+libcx_DEFS.debug = TRACE_ENABLED=1
 
 #
 # Tests
@@ -29,6 +33,10 @@ tst-flock2_SOURCES = fcntl/tst-flock2.c
 PROGRAMS += tst-deadlk
 tst-deadlk_TEMPLATE = Test
 tst-deadlk_SOURCES = fcntl/tst-deadlk.c
+
+PROGRAMS += tst-pwrite
+tst-pwrite_TEMPLATE = Test
+tst-pwrite_SOURCES = pwrite/tst-pwrite.c
 
 
 include $(FILE_KBUILD_SUB_FOOTER)

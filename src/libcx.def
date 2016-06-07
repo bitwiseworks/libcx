@@ -2,3 +2,5 @@ LIBRARY libcx0 INITINSTANCE TERMINSTANCE
 DATA MULTIPLE
 EXPORTS
   "_fcntl"
+  "_pwrite"
+  "_pread"

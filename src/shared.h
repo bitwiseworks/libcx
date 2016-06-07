@@ -54,6 +54,7 @@ struct FileDesc
   struct FileDesc *next;
 
   struct FcntlLock *locks; /* Active fcntl file locks */
+  unsigned long pwrite_lock; /* Mutex used in pwrite/pread */
   char path[0]; /* File name with fill path (must be last!) */
 };
 
@@ -83,3 +84,6 @@ int fcntl_locking_init();
 void fcntl_locking_term();
 int fcntl_locking_filedesc_init(struct FileDesc *desc);
 void fcntl_locking_filedesc_term(struct FileDesc *desc);
+
+int pwrite_filedesc_init(struct FileDesc *desc);
+void pwrite_filedesc_term(struct FileDesc *desc);
