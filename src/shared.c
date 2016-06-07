@@ -34,7 +34,7 @@
 #define MUTEX_LIBCX "\\SEM32\\LIBCX_V1_MUTEX"
 #define SHAREDMEM_LIBCX "\\SHAREMEM\\LIBCX_V1_DATA"
 
-#define HEAP_SIZE 65536 * 2 /* initial size for fcntl data */
+#define HEAP_SIZE 65536 * 2 /* initial size for shared data area */
 
 struct SharedData *gpData = NULL;
 
@@ -54,6 +54,15 @@ static int shared_init(int bKeepLock)
 
   arc = DosExitList(EXLST_ADD, ProcessExit);
   assert(arc == NO_ERROR);
+
+#if TRACE_ENABLED
+  /*
+   * Allocate a larger buffer to fit lengthy TRACE messages and disable
+   * auto-flush on EOL (to avoid breaking lines by stdout operations
+   * from other threads/processes).
+   */
+  setvbuf(stdout, NULL, _IOFBF, 0x10000);
+#endif
 
   while (1)
   {
@@ -112,15 +121,6 @@ static int shared_init(int bKeepLock)
      * Proceed with the initial setup by allocating shared memory and
      * heap.
      */
-
-#if TRACE_ENABLED
-    /*
-     * Allocate a larger buffer to fit lengthy TRACE messages and disable
-     * auto-flush on EOL (to avoid breaking them by stdout operations
-     * from other threads/processes).
-     */
-    setvbuf(stdout, NULL, _IOFBF, 0x10000);
-#endif
 
     /* Allocate shared memory */
     arc = DosAllocSharedMem((PPVOID)&gpData, SHAREDMEM_LIBCX, HEAP_SIZE,
