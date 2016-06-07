@@ -31,24 +31,20 @@
 #include "../shared.h"
 
 /**
- * Initializes the pwrite shared structures.
- * Called after successfull gpData allocation and gpData->heap creation.
- * @return NO_ERROR on success, DOS error code otherwise.
+ * Initializes the pwrite portion of FileDesc.
+ * Called right after the FileDesc pointer is allocated.
+ * Returns 0 on success or -1 on failure.
  */
 int pwrite_filedesc_init(struct FileDesc *desc)
 {
-  APIRET arc;
-
-  arc = DosCreateMutexSem(NULL, &desc->pwrite_lock, DC_SEM_SHARED, FALSE);
-  TRACE("DosCreateMutexSem = %d\n", arc);
-  if (arc)
-    return -1;
+  /* Mutex is lazily craeted in pread_pwrite */
+  assert(!desc->pwrite_lock);
   return 0;
 }
 
 /**
- * Uninitializes the pwrite shared structures.
- * Called before destroying gpData->heap and gpData.
+ * Uninitializes the pwrite portion of FileDesc.
+ * Called right before the FileDesc pointer is freed.
  */
 void pwrite_filedesc_term(struct FileDesc *desc)
 {
@@ -102,7 +98,6 @@ static ssize_t pread_pwrite(int bWrite, int fildes, void *buf,
   }
 
   TRACE("mutex %x\n", mutex);
-  assert(mutex);
 
   arc = DosRequestMutexSem(mutex, SEM_INDEFINITE_WAIT);
   if (arc == ERROR_INVALID_HANDLE)
@@ -110,6 +105,26 @@ static ssize_t pread_pwrite(int bWrite, int fildes, void *buf,
     /* Try to open the mutex for this process */
     arc = DosOpenMutexSem(NULL, &mutex);
     TRACE("DosOpenMutexSem = %d\n", arc);
+    if (arc == ERROR_INVALID_HANDLE)
+    {
+      /* The mutex is no longer valid, create a new one */
+      /* @todo this is a temporary hack, see https://github.com/bitwiseworks/libcx/issues/7 */
+      global_lock();
+      struct FileDesc *desc = get_file_desc(pFH->pszNativePath, TRUE);
+      if (desc)
+      {
+        arc = DosCreateMutexSem(NULL, &desc->pwrite_lock, DC_SEM_SHARED, FALSE);
+        TRACE("DosCreateMutexSem = %d\n", arc);
+        if (arc == NO_ERROR)
+          mutex = desc->pwrite_lock;
+      }
+      global_unlock();
+      if (!desc || arc != NO_ERROR)
+      {
+        errno = ENOMEM;
+        return -1;
+      }
+    }
     arc = DosRequestMutexSem(mutex, SEM_INDEFINITE_WAIT);
   }
   TRACE_IF(arc, "DosRequestMutexSem = %d\n", arc);
