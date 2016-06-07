@@ -316,9 +316,10 @@ static struct FcntlLock *lock_split(struct FcntlLock *l, off_t split)
 int fcntl_locking_filedesc_init(struct FileDesc *desc)
 {
   /* Add one free region that covers the entire file */
-  desc->locks = _ucalloc(gpData->heap, 1, sizeof(*desc->locks));
-  if (!desc->locks)
+  desc->fcntl_locks = _ucalloc(gpData->heap, 1, sizeof(*desc->fcntl_locks));
+  if (!desc->fcntl_locks)
     return -1;
+  return 0;
 }
 
 /**
@@ -327,7 +328,7 @@ int fcntl_locking_filedesc_init(struct FileDesc *desc)
  */
 void fcntl_locking_filedesc_term(struct FileDesc *desc)
 {
-  struct FcntlLock *l = desc->locks;
+  struct FcntlLock *l = desc->fcntl_locks;
   while (l)
   {
     TRACE_BEGIN_IF(l->type, "WARNING! Forgotten lock: type '%c' start %lld, len %lld, ",
@@ -405,7 +406,7 @@ void fcntl_locking_term()
       struct FileDesc *desc = gpData->files[i];
       while (desc)
       {
-        struct FcntlLock *l = desc->locks;
+        struct FcntlLock *l = desc->fcntl_locks;
         while (l)
         {
           if (lock_needs_mark(l, F_UNLCK, pid))
@@ -615,7 +616,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
     TRACE_BEGIN_IF(TRACE_MORE, "Locks before:\n");
     {
       struct FcntlLock *l;
-      for (l = desc->locks; l; l = l->next)
+      for (l = desc->fcntl_locks; l; l = l->next)
       {
         TRACE_CONT("- type '%c', start %lld, ", l->type, (uint64_t)l->start);
         if (l->type == 'r')
@@ -634,9 +635,9 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
     TRACE_END();
 
     /* Search for the first overlapping region */
-    assert(desc->locks);
-    assert(desc->locks->start == 0);
-    lb = desc->locks;
+    assert(desc->fcntl_locks);
+    assert(desc->fcntl_locks->start == 0);
+    lb = desc->fcntl_locks;
     while (lb->next && lb->next->start <= start)
       lb = lb->next;
     /*
@@ -1002,7 +1003,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
   TRACE_BEGIN_IF(TRACE_MORE && cmd != F_GETLK, "Locks after:\n");
   {
     struct FcntlLock *l;
-    for (l = desc->locks; l; l = l->next)
+    for (l = desc->fcntl_locks; l; l = l->next)
     {
       TRACE_CONT("- type '%c', start %lld, ", l->type, (uint64_t)l->start);
       if (l->type == 'r')
