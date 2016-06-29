@@ -44,6 +44,11 @@
 #define TRACE_BEGIN_IF(cond, msg, ...) if (0) { do {} while(0)
 #endif
 
+#if STATS_ENABLED
+void *_ucalloc_stats(Heap_t h, size_t elements, size_t size);
+#define _ucalloc _ucalloc_stats
+#endif
+
 #define FILE_DESC_HASH_SIZE 127 /* Prime */
 
 /**
@@ -65,6 +70,9 @@ struct SharedData
 {
   Heap_t heap; /* shared heap */
   int refcnt; /* number of processes using us */
+#if STATS_ENABLED
+  size_t maxHeapUsed; /* max size of used heap space */
+#endif
   struct FileDesc **files; /* File descriptor hash map of FILE_DESC_HASH_SIZE */
   struct FcntlLocking *fcntl_locking; /* Shared data for fcntl locking */
 };

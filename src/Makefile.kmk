@@ -20,7 +20,7 @@ libcx_SOURCES = \
   libcx.def
 
 # Debug definitions
-libcx_DEFS.debug = TRACE_ENABLED=1
+libcx_DEFS.debug = TRACE_ENABLED=1 STATS_ENABLED=1
 
 #
 # Tests

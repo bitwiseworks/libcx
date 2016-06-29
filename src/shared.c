@@ -42,6 +42,22 @@ static HMTX gMutex = NULLHANDLE;
 
 static void APIENTRY ProcessExit(ULONG);
 
+#if STATS_ENABLED
+#undef _ucalloc
+void *_ucalloc_stats(Heap_t h, size_t elements, size_t size)
+{
+  void *result = _ucalloc(h, elements, size);
+  if (result && gpData && h == gpData->heap)
+  {
+    _HEAPSTATS hst;
+    if (_ustats(h, &hst) == 0 && gpData->maxHeapUsed < hst._used)
+      gpData->maxHeapUsed =  hst._used;
+  }
+  return result;
+}
+#define _ucalloc _ucalloc_stats
+#endif
+
 /**
  * Initializes the shared structures.
  * @param bKeepLock TRUE to leave the mutex locked on success.
@@ -187,6 +203,9 @@ static void shared_term()
   {
     if (gpData->heap)
     {
+#if STATS_ENABLED
+      _HEAPSTATS hst;
+#endif
       int i;
 
       assert(gpData->refcnt);
@@ -221,6 +240,10 @@ static void shared_term()
 
       if (gpData->refcnt == 0)
       {
+#if STATS_ENABLED
+        rc = _ustats(gpData->heap, &hst);
+        TRACE("final heap stats: %d total, %d used now, %d max used\n", hst._provided, hst._used, gpData->maxHeapUsed);
+#endif
         rc = _udestroy(gpData->heap, !_FORCE);
         TRACE("_udestroy = %d (%d)\n", rc, errno);
       }
