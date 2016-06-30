@@ -114,7 +114,7 @@ delete_temp_files (void)
 {
   while (temp_name_list != NULL)
     {
-      remove (temp_name_list->name);
+      unlink (temp_name_list->name);
       free (temp_name_list->name);
 
       struct temp_name_list *next
