@@ -25,7 +25,7 @@
 
 /*
  * We use different parameter list for fcntl (see below)
- * so rename the origina libc version.
+ * so rename the original libc version.
  */
 #define fcntl fcntl_libc
 
@@ -103,6 +103,22 @@ static struct PidList *copy_pids(const struct PidList *list)
   return nlist;
 }
 
+static pid_t first_pid(struct FcntlLock *l)
+{
+  if (l->type == 0)
+    return 0;
+  if (l->type == 'r')
+  {
+    int i;
+    assert(l->pids && l->pids->used);
+    for (i = 0; i < l->pids->size; ++i)
+      if (l->pids->list[i])
+        return l->pids->list[i];
+    assert(FALSE);
+  }
+  return l->pid;
+}
+
 static int lock_has_pid(struct FcntlLock *l, pid_t pid)
 {
   assert(l->type != 0 && pid != 0);
@@ -176,7 +192,7 @@ static int lock_mark(struct FcntlLock *l, short type, pid_t pid)
           }
           else if (l->pids->used == 2 && l->pids->list[i])
           {
-            /* Save the other pid in the table */
+            /* Remember the other pid in the table */
             p = l->pids->list[i];
           }
         }
@@ -513,7 +529,8 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
                      cmd == F_SETLKW ? "F_SETLKW" : "?",
         fl->l_type, fl->l_type == F_RDLCK ? "F_RDLCK" :
                     fl->l_type == F_UNLCK ? "F_UNLCK" :
-                    fl->l_type == F_WRLCK ? "F_WRLCK" : "?",
+                    fl->l_type == F_WRLCK ? "F_WRLCK" :
+                    fl->l_type == -1 ? "(get lock)" : "?",
         fl->l_whence, fl->l_whence == SEEK_SET ? "SEEK_SET" :
                       fl->l_whence == SEEK_CUR ? "SEEK_CUR" :
                       fl->l_whence == SEEK_END ? "SEEK_END" : "?",
@@ -603,6 +620,14 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
       if (cmd == F_GETLK)
       {
         /* No any locks on this file */
+        if (fl->l_type == -1)
+        {
+          /* LIBCx extension: return the existing lock at the given positon */
+          fl->l_start = 0;
+          fl->l_len = 0;
+          fl->l_pid = 0;
+          fl->l_whence = SEEK_SET;
+        }
         fl->l_type = F_UNLCK;
         break;
       }
@@ -613,7 +638,8 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
       }
     }
 
-    TRACE_BEGIN_IF(TRACE_MORE, "Locks before:\n");
+    TRACE_BEGIN_IF(TRACE_MORE && !(cmd == F_GETLK && fl->l_type == -1),
+                   "Locks before:\n");
     {
       struct FcntlLock *l;
       for (l = desc->fcntl_locks; l; l = l->next)
@@ -640,6 +666,18 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
     lb = desc->fcntl_locks;
     while (lb->next && lb->next->start <= start)
       lb = lb->next;
+
+    if (cmd == F_GETLK && fl->l_type == -1)
+    {
+      /* LIBCx extension: return the existing lock at the given position */
+      fl->l_type = lb->type == 'W' ? F_WRLCK : lb->type == 0 ? F_UNLCK : F_RDLCK;
+      fl->l_start = lb->start;
+      fl->l_whence = SEEK_SET;
+      fl->l_len = lock_len(lb);
+      fl->l_pid = first_pid(lb);
+      break;
+    }
+
     /*
      * Search for the last overlapping region and also check if there are any
      * regions locked by other processes (includng the blocking ones).
@@ -699,8 +737,8 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
         fl->l_type = blocker->type == 'W' ? F_WRLCK : F_RDLCK;
         fl->l_whence = SEEK_SET;
         fl->l_start = blocker->start;
-        fl->l_len = blocker->next ? blocker->next->start - blocker->start : 0;
-        fl->l_pid = blocker->type == 'r' ? blocker->pids->list[0] : blocker->pid;
+        fl->l_len = lock_len(blocker);
+        fl->l_pid = first_pid(blocker);
       }
       else
       {
@@ -853,6 +891,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
               }
               if (lb == le)
               {
+                /* No more regions */
                 if (!ln)
                   ln = lb;
                 if (lock_end(ln) > end)
@@ -876,9 +915,11 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
                 break;
             }
           }
-
-          if (lb == le)
+          else if (lb == le)
+          {
+            /* No more regions */
             break;
+          }
 
           /* Process the last region */
           if (lock_needs_mark(le, fl->l_type, pid))
