@@ -52,7 +52,7 @@ static void set_lock(int fd, off_t start, off_t len, short type)
   }
 }
 
-static void check_lock(int fd, off_t pos, off_t start, off_t len, short type)
+static void check_lock_fn(int fd, off_t start, off_t len, short type, int line)
 {
   struct flock fl;
 
@@ -60,7 +60,7 @@ static void check_lock(int fd, off_t pos, off_t start, off_t len, short type)
    * the existing lock at the given position -- this extension is intended to be
    * used only for the purposes of this test case */
   fl.l_type = -1;
-  fl.l_start = pos;
+  fl.l_start = start;
   fl.l_len = 1;
 
   if (TEMP_FAILURE_RETRY(fcntl(fd, F_GETLK, &fl)) != 0)
@@ -71,25 +71,27 @@ static void check_lock(int fd, off_t pos, off_t start, off_t len, short type)
 
   if (fl.l_start != start)
   {
-    printf("start: expected %lld, got %lld\n", start, fl.l_start);
+    printf("line #%d: start: expected %lld, got %lld\n", line, start, fl.l_start);
     printf("(region %lld:%lld, type %s)\n", fl.l_start, fl.l_len, fl_type_str(fl.l_type));
     exit(1);
   }
 
   if (fl.l_len != len)
   {
-    printf("len: expected %lld, got %lld\n", len, fl.l_len);
+    printf("line #%d: len: expected %lld, got %lld\n", line, len, fl.l_len);
     printf("(region %lld:%lld, type %s)\n", fl.l_start, fl.l_len, fl_type_str(fl.l_type));
     exit(1);
   }
 
   if (fl.l_type != type)
   {
-    printf("type: expected %s, got %s\n", fl_type_str(type), fl_type_str(fl.l_type));
+    printf("line #%d: type: expected %s, got %s\n", line, fl_type_str(type), fl_type_str(fl.l_type));
     printf("(region %lld:%lld, type %s)\n", fl.l_start, fl.l_len, fl_type_str(fl.l_type));
     exit(1);
   }
 }
+
+#define check_lock(fd, start, len, type) check_lock_fn(fd, start, len, type, __LINE__)
 
 static int do_test(void)
 {
@@ -100,21 +102,136 @@ static int do_test(void)
   if (fd == -1)
     return 1;
 
-  /* simple W lock */
+  /* split:
+   * ...............
+   *      WWWWW
+   * .....WWWWW.....
+   */
   set_lock(fd, 10, 5, F_WRLCK);
-  check_lock(fd, 0, 0, 10, F_UNLCK);
-  check_lock(fd, 10, 10, 5, F_WRLCK);
-  check_lock(fd, 15, 15, 0, F_UNLCK);
+  check_lock(fd, 0, 10, F_UNLCK);
+  check_lock(fd, 10, 5, F_WRLCK);
+  check_lock(fd, 15, 0, F_UNLCK);
 
-  /* simple W lock downgrade to R */
+  /* downgrade:
+   * .....WWWWW.....
+   *      RRRRR
+   * .....RRRRR.....
+   */
   set_lock(fd, 10, 5, F_RDLCK);
-  check_lock(fd, 0, 0, 10, F_UNLCK);
-  check_lock(fd, 10, 10, 5, F_RDLCK);
-  check_lock(fd, 15, 15, 0, F_UNLCK);
+  check_lock(fd, 0, 10, F_UNLCK);
+  check_lock(fd, 10, 5, F_RDLCK);
+  check_lock(fd, 15, 0, F_UNLCK);
 
   /* simple lock remove */
   set_lock(fd, 10, 5, F_UNLCK);
-  check_lock(fd, 0, 0, 0, F_UNLCK);
+  check_lock(fd, 0, 0, F_UNLCK);
+
+  /* split:
+   * .....WWWWW.....
+   *      RRR
+   * .....RRRWW.....
+   */
+  set_lock(fd, 10, 5, F_WRLCK);
+  set_lock(fd, 10, 3, F_RDLCK);
+  check_lock(fd, 0, 10, F_UNLCK);
+  check_lock(fd, 10, 3, F_RDLCK);
+  check_lock(fd, 13, 2, F_WRLCK);
+  check_lock(fd, 15, 0, F_UNLCK);
+
+  /* reset */
+  set_lock(fd, 0, 0, F_UNLCK);
+  check_lock(fd, 0, 0, F_UNLCK);
+
+  /* split:
+   * .....WWWWW.....
+   *        RRR
+   * .....WWRRR.....
+   */
+  set_lock(fd, 10, 5, F_WRLCK);
+  set_lock(fd, 12, 3, F_RDLCK);
+  check_lock(fd, 0, 10, F_UNLCK);
+  check_lock(fd, 10, 2, F_WRLCK);
+  check_lock(fd, 12, 3, F_RDLCK);
+  check_lock(fd, 15, 0, F_UNLCK);
+
+  /* reset */
+  set_lock(fd, 0, 0, F_UNLCK);
+  check_lock(fd, 0, 0, F_UNLCK);
+
+  /* split:
+   * .....WWWWW.....
+   *       RRR
+   * .....WRRRW.....
+   */
+  set_lock(fd, 10, 5, F_WRLCK);
+  set_lock(fd, 11, 3, F_RDLCK);
+  check_lock(fd, 0, 10, F_UNLCK);
+  check_lock(fd, 10, 1, F_WRLCK);
+  check_lock(fd, 11, 3, F_RDLCK);
+  check_lock(fd, 14, 1, F_WRLCK);
+  check_lock(fd, 15, 0, F_UNLCK);
+
+  /* reset */
+  set_lock(fd, 0, 0, F_UNLCK);
+  check_lock(fd, 0, 0, F_UNLCK);
+
+  /* split:
+   * .....WWWWW.....
+   *          RRR
+   * .....WWWWRRR...
+   */
+  set_lock(fd, 10, 5, F_WRLCK);
+  set_lock(fd, 14, 3, F_RDLCK);
+  check_lock(fd, 0, 10, F_UNLCK);
+  check_lock(fd, 10, 4, F_WRLCK);
+  check_lock(fd, 14, 3, F_RDLCK);
+  check_lock(fd, 17, 0, F_UNLCK);
+
+  /* reset */
+  set_lock(fd, 0, 0, F_UNLCK);
+  check_lock(fd, 0, 0, F_UNLCK);
+
+  /* join:
+   * .....RRRWW.....
+   *         RR
+   * .....RRRRR.....
+   */
+  set_lock(fd, 10, 3, F_RDLCK);
+  set_lock(fd, 13, 2, F_WRLCK);
+  set_lock(fd, 13, 2, F_RDLCK);
+  check_lock(fd, 0, 10, F_UNLCK);
+  check_lock(fd, 10, 5, F_RDLCK);
+  check_lock(fd, 15, 0, F_UNLCK);
+
+  /* join:
+   * .....RRRRR.....
+   *       ...
+   *      ..
+   *          .
+   * ...............
+   */
+  set_lock(fd, 11, 3, F_UNLCK);
+  set_lock(fd, 10, 2, F_UNLCK);
+  check_lock(fd, 0, 14, F_UNLCK);
+  check_lock(fd, 14, 1, F_RDLCK);
+  check_lock(fd, 15, 0, F_UNLCK);
+  set_lock(fd, 14, 1, F_UNLCK);
+  check_lock(fd, 0, 0, F_UNLCK);
+
+  /* join:
+   * .....R.R.R.....
+   *     WWWWWWW
+   * ....WWWWWWW....
+   */
+  set_lock(fd, 10, 1, F_RDLCK);
+  set_lock(fd, 12, 1, F_RDLCK);
+  set_lock(fd, 14, 1, F_RDLCK);
+  set_lock(fd, 9, 7, F_WRLCK);
+  check_lock(fd, 0, 9, F_UNLCK);
+  check_lock(fd, 9, 7, F_WRLCK);
+  check_lock(fd, 16, 0, F_UNLCK);
+
+  /* @todo Add another process for 'r' test cases */
 
   return 0;
 }

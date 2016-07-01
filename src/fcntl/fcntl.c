@@ -119,6 +119,29 @@ static pid_t first_pid(struct FcntlLock *l)
   return l->pid;
 }
 
+static int equal_pids(struct PidList *l1, struct PidList *l2)
+{
+  int i1, i2;
+
+  if (l1->used != l2->used)
+    return 0;
+
+  for (i1 = 0; i1 < l1->size; ++i1)
+  {
+    if (l1->list[i1])
+    {
+      for (i2 = 0; i2 < l2->size; ++i2)
+        if (l2->list[i2] && l1->list[i1] == l2->list[i2])
+          break;
+      /* fail the comparison if l1 pid is not found in l2 */
+      if (i2 == l2->size)
+        return 0;
+    }
+  }
+
+  return 1;
+}
+
 static int lock_has_pid(struct FcntlLock *l, pid_t pid)
 {
   assert(l->type != 0 && pid != 0);
@@ -515,7 +538,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
   int rc, bSeenOtherPid, bNoMem = 0, bNeededMark = 0;
   off_t start, end;
   struct FileDesc *desc = NULL;
-  struct FcntlLock *lll = NULL, *lb = NULL, *le = NULL;
+  struct FcntlLock *lpb = NULL, *lb = NULL, *le = NULL;
   struct FcntlLock *blocker = NULL;
   struct ProcBlock *blocked = NULL;
   struct stat st;
@@ -663,9 +686,13 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
     /* Search for the first overlapping region */
     assert(desc->fcntl_locks);
     assert(desc->fcntl_locks->start == 0);
+    lpb = NULL; /* prev to lb or NULL */
     lb = desc->fcntl_locks;
     while (lb->next && lb->next->start <= start)
+    {
+      lpb = lb;
       lb = lb->next;
+    }
 
     if (cmd == F_GETLK && fl->l_type == -1)
     {
@@ -892,24 +919,31 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
               if (lb == le)
               {
                 /* No more regions */
-                if (!ln)
-                  ln = lb;
-                if (lock_end(ln) > end)
+                if (ln)
+                {
+                  /* Update lpb/lb, it is used later */
+                  lpb = lb;
+                  lb = ln;
+                }
+                if (lock_end(lb) > end)
                 {
                   /* Split the non-aligned region (tail) */
-                  if (!lock_split(ln, end + 1))
+                  if (!lock_split(lb, end + 1))
                   {
                     rc = -1;
                     break;
                   }
                 }
                 /* All done */
-                rc = lock_mark(ln, fl->l_type, pid);
+                rc = lock_mark(lb, fl->l_type, pid);
                 break;
               }
-              /* Update lb, it is used later */
               if (ln)
+              {
+                /* Update lpb/lb, it is used later */
+                lpb = lb;
                 lb = ln;
+              }
               rc = lock_mark(lb, fl->l_type, pid);
               if (rc == -1)
                 break;
@@ -972,6 +1006,8 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
               /* Move the start point of the last region */
               le->start = end + 1;
             }
+            /* Update le, it is used later */
+            le = lb;
           }
           else
           {
@@ -996,6 +1032,30 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
         /* We may only get -1 above due to mem alloc failure */
         if (rc == -1)
           bNoMem = 1;
+        else
+        {
+          /* Optimize regions by joining matching ones */
+          assert((!lpb && lb == desc->fcntl_locks) || lpb->next == lb);
+          struct FcntlLock *l = lpb ? lpb : lb;
+          /* Note that we don't specifically check for reaching le->next
+           * in the loop as we will hit a region type mismatch anyway */
+          while (l->next)
+          {
+            struct FcntlLock *ln = l->next;
+            if (l->type == ln->type)
+            {
+              if (l->type == 0 ||
+                  (l->type == 'r' ? equal_pids(l->pids, ln->pids) : l->pid == ln->pid))
+              {
+                /* Region types match, join them */
+                l->next = ln->next;
+                lock_free(ln);
+                continue;
+              }
+            }
+            l = l->next;
+          }
+        }
       }
     }
 
