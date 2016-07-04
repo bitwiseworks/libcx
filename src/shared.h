@@ -64,10 +64,11 @@ struct FileDesc
 };
 
 /**
- * Global shared data structure.
+ * Global shared data structure (header).
  */
 struct SharedData
 {
+  size_t size; /* committed size */
   Heap_t heap; /* shared heap */
   int refcnt; /* number of processes using us */
 #if STATS_ENABLED
@@ -75,6 +76,7 @@ struct SharedData
 #endif
   struct FileDesc **files; /* File descriptor hash map of FILE_DESC_HASH_SIZE */
   struct FcntlLocking *fcntl_locking; /* Shared data for fcntl locking */
+  /* heap memory follows here */
 };
 
 /**

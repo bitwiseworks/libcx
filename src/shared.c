@@ -34,7 +34,9 @@
 #define MUTEX_LIBCX "\\SEM32\\LIBCX_V1_MUTEX"
 #define SHAREDMEM_LIBCX "\\SHAREMEM\\LIBCX_V1_DATA"
 
-#define HEAP_SIZE 65536 * 2 /* initial size for shared data area */
+#define HEAP_SIZE (1024 * 1024 * 2) /* 2MB - total shared data area size */
+#define HEAP_INIT_SIZE 65536 /* Initial size of committed memory */
+#define HEAP_INC_SIZE 65536 /* Heap increment amount */
 
 struct SharedData *gpData = NULL;
 
@@ -57,6 +59,45 @@ void *_ucalloc_stats(Heap_t h, size_t elements, size_t size)
 }
 #define _ucalloc _ucalloc_stats
 #endif
+
+/*
+ * @todo Currently we reserve a static block of HEAP_SIZE at LIBCx init
+ * which we commit/release as needed. The disadvantage is obvious - we
+ * constantly occupy the address space that could be needed for other
+ * purposes, but limit the max memory size which may be not enough under
+ * certain LIBCx load. But in order to allow for dynamic allocation of
+ * shared memory we need to track all proccess IDs that are currently
+ * using LIBCx so that we give them the newly allocated shared memory.
+ * This is for later. See https://github.com/bitwiseworks/libcx/issues/9.
+ */
+static void *mem_alloc(Heap_t h, size_t *psize, int *pclean)
+{
+  APIRET arc;
+  char *mem;
+  size_t size;
+
+  TRACE("psize %d\n", *psize);
+
+  /* Round requested size up to HEAP_INC_SIZE */
+  size = (*psize + HEAP_INC_SIZE - 1) / HEAP_INC_SIZE * HEAP_INC_SIZE;
+  if (size + gpData->size > HEAP_SIZE)
+    return NULL;
+
+  mem = (char *)gpData + gpData->size;
+
+  /* DosAllocSharedMem gives us zeroed mem */
+  *pclean = _BLOCK_CLEAN;
+
+  /* Commit the new block */
+  arc = DosSetMem(mem, size, PAG_DEFAULT | PAG_COMMIT);
+  TRACE("DosSetMem(%p, %d) = %d\n", mem, size, arc);
+
+  if (arc)
+    return NULL;
+
+  gpData->size += size;
+  return mem;
+}
 
 /**
  * Initializes the shared structures.
@@ -140,23 +181,32 @@ static int shared_init(int bKeepLock)
 
     /* Allocate shared memory */
     arc = DosAllocSharedMem((PPVOID)&gpData, SHAREDMEM_LIBCX, HEAP_SIZE,
-                            PAG_COMMIT | PAG_READ | PAG_WRITE | OBJ_ANY);
+                            PAG_READ | PAG_WRITE | OBJ_ANY);
     TRACE("DosAllocSharedMem(OBJ_ANY) = %d\n", arc);
 
     if (arc && arc != ERROR_ALREADY_EXISTS)
     {
       /* High memory may be unavailable, try w/o OBJ_ANY */
       arc = DosAllocSharedMem((PPVOID)&gpData, SHAREDMEM_LIBCX, HEAP_SIZE,
-                              PAG_COMMIT | PAG_READ | PAG_WRITE);
+                              PAG_READ | PAG_WRITE);
       TRACE("DosAllocSharedMem = %d\n", arc);
     }
 
     if (arc == NO_ERROR)
     {
+      /* Commit the initial block */
+      arc = DosSetMem(gpData, HEAP_INIT_SIZE, PAG_DEFAULT | PAG_COMMIT);
+      TRACE("DosSetMem = %d\n", arc);
+
+      gpData->size = HEAP_INIT_SIZE;
+    }
+
+    if (arc == NO_ERROR)
+    {
       /* Create shared heap */
-      gpData->heap = _ucreate(gpData + 1, HEAP_SIZE - sizeof(struct SharedData),
+      gpData->heap = _ucreate(gpData + 1, HEAP_INIT_SIZE - sizeof(*gpData),
                               _BLOCK_CLEAN, _HEAP_REGULAR | _HEAP_SHARED,
-                              NULL, NULL);
+                              mem_alloc, NULL);
       TRACE("gpData->heap = %p\n", gpData->heap);
       assert(gpData->heap);
 
@@ -240,9 +290,10 @@ static void shared_term()
 
       if (gpData->refcnt == 0)
       {
+        TRACE("total committed memory size %d\n", gpData->size);
 #if STATS_ENABLED
         rc = _ustats(gpData->heap, &hst);
-        TRACE("final heap stats: %d total, %d used now, %d max used\n", hst._provided, hst._used, gpData->maxHeapUsed);
+        TRACE("final heap stats: %d total, %d used now, %d used max\n", hst._provided, hst._used, gpData->maxHeapUsed);
 #endif
         rc = _udestroy(gpData->heap, !_FORCE);
         TRACE("_udestroy = %d (%d)\n", rc, errno);
