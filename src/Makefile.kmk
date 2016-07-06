@@ -16,6 +16,7 @@ libcx_NAME = libcx0 # must match libcx.def
 libcx_SOURCES = \
   fcntl/fcntl.c \
   pwrite/pwrite.c \
+  poll/poll.c \
   shared.c \
   libcx.def
 

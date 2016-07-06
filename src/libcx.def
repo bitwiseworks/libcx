@@ -4,3 +4,4 @@ EXPORTS
   "_fcntl"
   "_pwrite"
   "_pread"
+  "_poll"

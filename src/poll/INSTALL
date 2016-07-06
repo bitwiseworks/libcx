@@ -1,0 +1,62 @@
+BUILDING AND INSTALLING
+-----------------------
+
+1) Edit the Makefile, adjusting any necessary definitions. Pay specific
+   attention to the value of PREFIX and the compiler settings.
+2) Type "make" to build the "libpoll.a" and "libpoll.so" libraries.
+3) Type "make install" to install the shared and static libraries in
+   $(PREFIX)/lib (default: /usr/local/lib) and the poll.h header file
+   in $(PREFIX)/include (default: /usr/local/include)
+
+
+USING THE POLL EMULATOR
+-----------------------
+
+Compiling:
+
+	To compile a program that wants the poll.h header file, you need
+	to include the appropriate "-I" option on the compiler command line.
+	If you set PREFIX to "/usr/local", then use "-I/usr/local/include".
+	For instance:
+
+		cc -c -I/usr/local/include mypollprog.c
+
+Linking:
+
+	To link a program that uses poll, you need to link against the
+	static or shared version of the library you built and installed.
+	Use the "-L" and "-l" options:
+
+		cc -o mypollprog mypollprog.o -L/usr/local/lib -lpoll
+
+        If you need to force static linkage, add "-static" (with gcc) to
+	force use of "libpoll.a":
+
+		cc -o mypollprog mypollprog.o -L/usr/local/lib -lpoll -static
+
+POSSIBLE ISSUES
+---------------
+
+1. John Gilmore <gnu@toad.com> encountered a linking problem on Mac OS X
+   10.5 (Leopard). Note that I have not seen this problem on my 10.4
+   (Tiger) Mac:
+
+       We couldn't merely compile our code and link it with poll.c and have
+       it work; we got a conflict with the system library:
+
+       /usr/bin/ld: warning multiple definitions of symbol _poll
+       /var/tmp//ccSgmsaN.o definition of _poll in section (__TEXT,__text)
+       /usr/lib/gcc/powerpc-apple-darwin8/4.0.0/../../../libSystem.dylib(poll.So) definition of _poll
+
+       Instead we added -Dpoll=myfakepoll when compiling routines that call
+       poll(), and when compiling poll.c itself, so there'd be no name
+       conflict.
+
+   If you encounter this problem:
+
+   a) Uncomment the POLL_RENAME definition in the Makefile, rebuild the
+      poll emulator library, and reinstall it.
+   b) Be sure to add -Dpoll=pollemu to the C compilation command line for
+      any program you write that uses the poll emulator.
+
+---------------------------------------------------------------------------
