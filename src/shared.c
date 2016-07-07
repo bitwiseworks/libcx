@@ -53,7 +53,7 @@ void *_ucalloc_stats(Heap_t h, size_t elements, size_t size)
   {
     _HEAPSTATS hst;
     if (_ustats(h, &hst) == 0 && gpData->maxHeapUsed < hst._used)
-      gpData->maxHeapUsed =  hst._used;
+      gpData->maxHeapUsed = hst._used;
   }
   return result;
 }
@@ -288,13 +288,15 @@ static void shared_term()
 
       _uclose(gpData->heap);
 
+      TRACE("reserved memory size %d\n", HEAP_SIZE);
+      TRACE("committed memory size %d\n", gpData->size);
+#if STATS_ENABLED
+      rc = _ustats(gpData->heap, &hst);
+      TRACE("heap stats: %d total, %d used now, %d used max\n", hst._provided, hst._used, gpData->maxHeapUsed);
+#endif
+
       if (gpData->refcnt == 0)
       {
-        TRACE("total committed memory size %d\n", gpData->size);
-#if STATS_ENABLED
-        rc = _ustats(gpData->heap, &hst);
-        TRACE("final heap stats: %d total, %d used now, %d used max\n", hst._provided, hst._used, gpData->maxHeapUsed);
-#endif
         rc = _udestroy(gpData->heap, !_FORCE);
         TRACE("_udestroy = %d (%d)\n", rc, errno);
       }
@@ -483,4 +485,27 @@ struct FileDesc *get_file_desc(const char *path, int bNew)
   }
 
   return desc;
+}
+
+/**
+ * Prints LIBCx memory usage statistics to stdout.
+ */
+void print_stats()
+{
+  int rc;
+  _HEAPSTATS hst;
+
+  global_lock();
+
+  printf("Reserved memory size:  %d bytes\n", HEAP_SIZE);
+  printf("Committed memory size: %d bytes\n", gpData->size);
+  rc = _ustats(gpData->heap, &hst);
+  assert(rc == 0);
+  printf("Heap size total:       %d bytes\n"
+         "Heap size used now:    %d bytes\n", hst._provided, hst._used);
+#if STATS_ENABLED
+  printf("Heap size used max:    %d bytes\n", gpData->maxHeapUsed);
+#endif
+
+  global_unlock();
 }

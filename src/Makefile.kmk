@@ -24,6 +24,14 @@ libcx_SOURCES = \
 libcx_DEFS.debug = TRACE_ENABLED=1 STATS_ENABLED=1
 
 #
+# Utilities
+#
+
+PROGRAMS += libcx-stats
+libcx-stats_TEMPLATE = Util
+libcx-stats_SOURCES = libcx-stats.c
+
+#
 # Tests
 #
 

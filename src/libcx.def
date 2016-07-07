@@ -5,3 +5,5 @@ EXPORTS
   "_pwrite"
   "_pread"
   "_poll"
+  ; private symbols
+  _print_stats @60000 NONAME
