@@ -106,6 +106,19 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
   }
   else
   {
+    struct timeval t_new;
+
+    if (n_ready_fds)
+    {
+      /*
+       * Regular files must end select immediately but we want to
+       * check for other descriptors too, so use zero wait time.
+       */
+      t_new.tv_sec = 0;
+      t_new.tv_usec = 0;
+      timeout = &t_new;
+    }
+
     nfds_ret = _std_select(max_fd + 1,
                            readfds ? &r_new : NULL,
                            writefds ? &w_new : NULL,
