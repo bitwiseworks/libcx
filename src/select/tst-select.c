@@ -221,7 +221,7 @@ static int do_test(void)
   }
 
   /*
-   * Test sockets
+   * Test sockets & files
    */
 
   FD_ZERO (&rset);
@@ -237,12 +237,12 @@ static int do_test(void)
   rc = select(p[0] + 1, &rset, &wset, &eset, &tm);
   if (rc == -1)
   {
-    perror("select socket/file failed");
+    perror("select socket/file for R/E failed");
     return 1;
   }
   if (rc != 1 || FD_ISSET(p[0], &rset) || !FD_ISSET(fd, &eset))
   {
-    printf("select socket/file returned %d and FD_ISSET(socket) %d FD_ISSET(file) %d\n",
+    printf("select socket/file for R/E returned %d and FD_ISSET(socket) %d FD_ISSET(file) %d\n",
            rc, !!FD_ISSET(p[0], &rset), !!FD_ISSET(p[0], &eset));
     return 1;
   }
