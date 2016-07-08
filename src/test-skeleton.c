@@ -21,7 +21,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
+#ifndef __APPLE__
 #include <malloc.h>
+#endif
 #include <paths.h>
 #include <search.h>
 #include <signal.h>
@@ -34,7 +36,7 @@
 #include <sys/param.h>
 #include <time.h>
 
-#ifdef __EMX__
+#if defined(__EMX__) || defined(__APPLE__)
 /* EMX has no public definition qelem (que_elem is used internally) */
 struct qelem {
   struct qelem *q_forw;
@@ -42,7 +44,18 @@ struct qelem {
   char q_data[1];
 };
 /* This is only to be used inside main */
+#if defined(__APPLE__)
+static inline const char *_getname (const char *path)
+{
+  const char *n = strrchr (path, '/');
+  return n ? n + 1 : path;
+}
+#endif
 #define program_invocation_short_name (_getname (argv[0]))
+#endif
+
+#if defined(__APPLE__)
+#define TEMP_FAILURE_RETRY(fn) fn
 #endif
 
 /* The test function is normally called `do_test' and it is called
@@ -307,7 +320,7 @@ main (int argc, char *argv[])
   unsigned int timeoutfactor = 1;
   pid_t termpid;
 
-#ifndef __EMX__
+#if !defined(__EMX__) && !defined(__APPLE__)
   /* Make uses of freed and uninitialized memory known.  */
   mallopt (M_PERTURB, 42);
 #endif
