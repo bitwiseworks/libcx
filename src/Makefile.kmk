@@ -51,5 +51,8 @@ PROGRAMS += tst-pwrite
 tst-pwrite_TEMPLATE = Test
 tst-pwrite_SOURCES = pwrite/tst-pwrite.c
 
+PROGRAMS += tst-poll
+tst-poll_TEMPLATE = Test
+tst-poll_SOURCES = poll/tst-poll.c
 
 include $(FILE_KBUILD_SUB_FOOTER)
