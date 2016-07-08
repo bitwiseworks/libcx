@@ -78,7 +78,6 @@
 #include <sys/time.h>                        /* time definitions */
 #include <assert.h>                          /* assertion macros */
 #include <string.h>                          /* string functions */
-#include <sys/stat.h>                        /* fstat */
 #include "poll.h"                            /* this package */
 
 /*---------------------------------------------------------------------------*\
@@ -99,8 +98,7 @@ static int map_poll_spec
                          nfds_t         n_fds,
 			  fd_set        *pReadSet,
 			  fd_set        *pWriteSet,
-			  fd_set        *pExceptSet,
-			  nfds_t        *n_ready_fds)
+			  fd_set        *pExceptSet)
 #else
 			 (pArray, n_fds, pReadSet, pWriteSet, pExceptSet)
 			  struct pollfd *pArray;
@@ -108,16 +106,11 @@ static int map_poll_spec
 			  fd_set        *pReadSet;
 			  fd_set        *pWriteSet;
 			  fd_set        *pExceptSet;
-			  nfds_t         n_ready_fds;
 #endif
 {
     register nfds_t  i;                      /* loop control */
     register struct  pollfd *pCur;           /* current array element */
     register int     max_fd = -1;            /* return value */
-    struct stat      st;                     /* for fstat */
-
-    /* Start with no fds set ready by this function. */
-    *n_ready_fds = 0;
 
     /*
        Map the poll() structures into the file descriptor sets required
@@ -129,25 +122,6 @@ static int map_poll_spec
 
         if (pCur->fd < 0)
             continue;
-
-        if (fstat (pCur->fd, &st) == -1)
-        {
-            /* This is normally EBADF which should translate to POLLNVAL. */
-            pCur->revents = POLLNVAL;
-            ++ *n_ready_fds;
-            continue;
-        }
-
-        if (S_ISREG (st.st_mode))
-        {
-            /* Regular filres should be always immediately ready for I/O */
-            pCur->revents = pCur->events & (POLLIN | POLLOUT | POLLPRI);
-            if (pCur->revents)
-                ++ *n_ready_fds;
-            continue;
-        }
-
-        pCur->revents = 0;
 
 	if ((pCur->events & POLLIN) || (pCur->events & POLLRDNORM))
 	{
@@ -262,14 +236,9 @@ static void map_select_results
         if (pCur->fd < 0)
             continue;
 
-        if (pCur->revents)
-        {
-            /* We already set necessary bits in map_poll_spec(). */
-            continue;
-        }
-
 	/* Exception events take priority over input events. */
 
+	pCur->revents = 0;
 	if (FD_ISSET (pCur->fd, pExceptSet))
         {
             if (pCur->events & POLLPRI)
@@ -327,7 +296,6 @@ int poll
     int	    ready_descriptors;                   /* function result */
     int	    max_fd;                              /* maximum fd value */
     struct  timeval *pTimeout;                   /* actually passed */
-    nfds_t  n_ready_fds;                         /* fds set ready before select */
 
     FD_ZERO (&read_descs);
     FD_ZERO (&write_descs);
@@ -338,8 +306,7 @@ int poll
     /* Map the poll() file descriptor list in the select() data structures. */
 
     max_fd = map_poll_spec (pArray, n_fds,
-			    &read_descs, &write_descs, &except_descs,
-			    &n_ready_fds);
+			    &read_descs, &write_descs, &except_descs);
 
     /* Map the poll() timeout value in the select() timeout structure. */
 
@@ -347,21 +314,14 @@ int poll
 
     /* Make the select() call. */
 
-    if (max_fd == -1 && n_ready_fds > 0)
-    {
-        ready_descriptors = 0;
-    }
-    else
-    {
-        ready_descriptors = select (max_fd + 1, &read_descs, &write_descs,
-                                    &except_descs, pTimeout);
+    ready_descriptors = select (max_fd + 1, &read_descs, &write_descs,
+				&except_descs, pTimeout);
 
-        if (ready_descriptors >= 0)
-        {
-            map_select_results (pArray, n_fds,
-                                &read_descs, &write_descs, &except_descs);
-        }
+    if (ready_descriptors >= 0)
+    {
+	map_select_results (pArray, n_fds,
+			    &read_descs, &write_descs, &except_descs);
     }
 
-    return ready_descriptors + n_ready_fds;
+    return ready_descriptors;
 }
