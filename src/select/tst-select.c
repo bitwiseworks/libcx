@@ -150,7 +150,7 @@ static int do_test(void)
     return 1;
   }
 
-  pid_t pid = fork ();
+  pid_t pid = fork();
   if (pid == -1)
   {
     perror("fork failed");
@@ -168,7 +168,6 @@ static int do_test(void)
       exit(1);
     }
 
-    sleep(1);
     exit(0);
   }
 
