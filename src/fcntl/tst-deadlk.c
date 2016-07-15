@@ -27,19 +27,19 @@
 /* This test case is roughly based on this snippet:
    http://stackoverflow.com/questions/27694721/why-dont-i-see-deadlock-edeadlk-when-several-processes-lock-the-same-fd-with */
 
+static int do_test(void);
+#define TEST_FUNCTION do_test()
+#include "../test-skeleton.c"
+
 static int
 do_test (void)
 {
-  char tmp [] = "/tmp/tst-deadlk-XXXXXX";
-
-  int fd = mkstemp (tmp);
+  int fd = create_temp_file("tst-deadlk-", NULL);
   if (fd == -1)
     {
-      puts ("mkstemp failed");
+      puts ("create_temp_file failed");
       return 1;
     }
-
-  unlink (tmp);
 
   pid_t pid1, pid2;
 
@@ -129,6 +129,3 @@ do_test (void)
 
   return 0;
 }
-
-#define TEST_FUNCTION do_test ()
-#include "../test-skeleton.c"

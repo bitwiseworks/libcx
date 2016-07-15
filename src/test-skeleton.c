@@ -55,7 +55,7 @@ static inline const char *_getname (const char *path)
 #endif
 
 #if defined(__APPLE__)
-#define TEMP_FAILURE_RETRY(fn) fn
+#define TEMP_FAILURE_RETRY(fn) (fn)
 #endif
 
 /* The test function is normally called `do_test' and it is called
@@ -99,12 +99,13 @@ struct temp_name_list
 {
   struct qelem q;
   char *name;
+  int fd;
 } *temp_name_list;
 
 /* Add temporary files in list.  */
 static void
 __attribute__ ((unused))
-add_temp_file (const char *name)
+add_temp_file (const char *name, int fd)
 {
   struct temp_name_list *newp
     = (struct temp_name_list *) calloc (sizeof (*newp), 1);
@@ -112,6 +113,7 @@ add_temp_file (const char *name)
   if (newp != NULL && newname != NULL)
     {
       newp->name = newname;
+      newp->fd = fd;
       if (temp_name_list == NULL)
 	temp_name_list = (struct temp_name_list *) &newp->q;
       else
@@ -127,6 +129,7 @@ delete_temp_files (void)
 {
   while (temp_name_list != NULL)
     {
+      close (temp_name_list->fd);
       unlink (temp_name_list->name);
       free (temp_name_list->name);
 
@@ -165,7 +168,7 @@ create_temp_file (const char *base, char **filename)
       return -1;
     }
 
-  add_temp_file (fname);
+  add_temp_file (fname, fd);
   if (filename != NULL)
     *filename = fname;
   else

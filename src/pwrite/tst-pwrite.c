@@ -26,26 +26,25 @@
 #include <sys/wait.h>
 #include <sys/stat.h>
 
-#ifndef _GNU_SOURCE
-#define TEMP_FAILURE_RETRY
-#endif
-
 #define FILE_SIZE 128
 #define ITERATIONS 100000
 
 char buf[FILE_SIZE];
+
+static int do_test(void);
+#define TEST_FUNCTION do_test ()
+#include "../test-skeleton.c"
 
 static int
 do_test (void)
 {
   int rc;
   int i, n;
-  char tmp [] = "/tmp/tst-pwrite-XXXXXX";
 
-  int fd = mkstemp (tmp);
+  int fd = create_temp_file("tst-pwrite-", NULL);
   if (fd == -1)
     {
-      puts ("mkstemp failed");
+      puts ("create_temp_file failed");
       return 1;
     }
 
@@ -65,7 +64,7 @@ do_test (void)
   struct stat st;
   pid_t pid1, pid2;
 
-  printf ("Will do %d iterations of pread/pwrite to %s\n", ITERATIONS, tmp);
+  printf ("Will do %d iterations of pread/pwrite\n", ITERATIONS);
 
   if ((pid1 = fork ()))
     {
@@ -131,12 +130,6 @@ do_test (void)
           if (rc == 0)
             rc = status1 || status2;
 
-          if (rc == 0)
-            {
-              close (fd);
-              unlink (tmp);
-            }
-
           return rc;
         }
     }
@@ -178,17 +171,9 @@ do_test (void)
       }
   }
 
-  printf("Child %d (%d) ending...\n", getpid(), !!pid1);
+  printf ("Child %d (%d) ending...\n", getpid(), !!pid1);
+
+  close (fd);
 
   return 0;
 }
-
-#ifndef _GNU_SOURCE
-int main ()
-{
-  return do_test ();
-}
-#else
-#define TEST_FUNCTION do_test ()
-#include "../test-skeleton.c"
-#endif

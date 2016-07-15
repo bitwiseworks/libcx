@@ -29,6 +29,10 @@
 #define INCL_BASE
 #include <os2.h>
 
+static int do_test(void);
+#define TEST_FUNCTION do_test()
+#include "../test-skeleton.c"
+
 typedef struct pthread_barrier_t
 {
   HMTX hmtx;
@@ -114,16 +118,12 @@ tf (void *arg)
 static int
 do_test (void)
 {
-  char tmp[] = "/tmp/tst-flock2-XXXXXX";
-
-  fd = mkstemp (tmp);
+  fd = create_temp_file("tst-flock2-", NULL);
   if (fd == -1)
     {
-      puts ("mkstemp failed");
+      puts ("create_temp_file failed");
       return 1;
     }
-
-  unlink (tmp);
 
   int i;
   for (i = 0; i < 20; ++i)
@@ -354,6 +354,3 @@ do_test (void)
 
   return status;
 }
-
-#define TEST_FUNCTION do_test ()
-#include "../test-skeleton.c"
