@@ -6,11 +6,5 @@ EXPORTS
   "_pread"
   "_poll"
   "_select"
-  ; urpo
-  ; @todo URPO is disabled, see #5
-;  "_unlink_deferred"
-;  "_rmdir_deferred"
-;  "_remove_deferred"
-;  "_close"
   ; private symbols
   _print_stats @60000 NONAME

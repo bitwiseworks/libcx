@@ -228,9 +228,6 @@ static int shared_init(int bKeepLock)
   {
     /* Initialize individual components */
     arc = fcntl_locking_init();
-    // @todo URPO is disabled, see #5
-//    if (!arc)
-//      arc = urpo_init();
   }
 
   if (!bKeepLock || arc != NO_ERROR)
@@ -265,8 +262,6 @@ static void shared_term()
       gpData->refcnt--;
 
       /* Uninitialize individual components */
-      // @todo URPO is disabled, see #5
-//      urpo_term();
       fcntl_locking_term();
 
       if (gpData->refcnt == 0)
