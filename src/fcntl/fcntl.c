@@ -1155,3 +1155,59 @@ int fcntl(int fildes, int cmd, intptr_t *arg)
       return _std_fcntl(fildes, cmd, arg);
   }
 }
+
+/**
+ * LIBC close callback. Called before actually closing the file.
+ */
+int fcntl_locking_close(int fildes)
+{
+  struct FileDesc *desc = NULL;
+  __LIBC_PFH pFH;
+
+  pFH = __libc_FH(fildes);
+  if (!pFH || !pFH->pszNativePath)
+  {
+    errno = !pFH ? EBADF : EINVAL;
+    return -1;
+  }
+
+  TRACE("pszNativePath %s, fFlags %x\n", pFH->pszNativePath, pFH->fFlags);
+
+  global_lock();
+
+  assert(gpData->files);
+
+  desc = get_file_desc(pFH->pszNativePath, FALSE);
+  if (desc)
+  {
+    pid_t pid = getpid();
+    int bNeededMark = 0;
+
+    struct FcntlLock *l = desc->fcntl_locks;
+    while (l)
+    {
+      if (lock_needs_mark(l, F_UNLCK, pid))
+      {
+        TRACE("Will unlock [%s], type '%c', start %lld, len %lld\n",
+              desc->path, l->type, (uint64_t)l->start, (uint64_t)lock_len(l));
+        int rc = lock_mark(l, F_UNLCK, pid);
+        TRACE_IF(rc, "rc = %d\n", rc);
+        bNeededMark = 1;
+      }
+      l = l->next;
+    }
+
+    if (bNeededMark && gpData->fcntl_locking->blocked)
+    {
+      /* We unblocked something and there are blocked threads, release them */
+      APIRET arc = DosPostEventSem(gpData->fcntl_locking->hEvSem);
+      TRACE("DosPostEventSem = %d\n", arc);
+      /* Invalidate the blocked list (see the other DosPostEventSem call) */
+      gpData->fcntl_locking->blocked = NULL;
+    }
+  }
+
+  global_unlock();
+
+  return 0;
+}

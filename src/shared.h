@@ -95,6 +95,8 @@ void fcntl_locking_term();
 int fcntl_locking_filedesc_init(struct FileDesc *desc);
 void fcntl_locking_filedesc_term(struct FileDesc *desc);
 
+int fcntl_locking_close(int fildes);
+
 int pwrite_filedesc_init(struct FileDesc *desc);
 void pwrite_filedesc_term(struct FileDesc *desc);
 

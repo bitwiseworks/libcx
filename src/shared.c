@@ -488,6 +488,19 @@ struct FileDesc *get_file_desc(const char *path, int bNew)
 }
 
 /**
+ * LIBC close replacement. Used for performing extra processing on file
+ * close.
+ */
+int close(int fildes)
+{
+  TRACE("fildes %d\n", fildes);
+
+  if (fcntl_locking_close(fildes) == -1)
+    return -1;
+  return _std_close(fildes);
+}
+
+/**
  * Prints LIBCx memory usage statistics to stdout.
  */
 void print_stats()

@@ -59,6 +59,7 @@ static void check_lock_fn(int fd, off_t start, off_t len, short type, int line)
   /* This uses the LIBCx-specific extension of passing -1 in l_type to request
    * the existing lock at the given position -- this extension is intended to be
    * used only for the purposes of this test case */
+  fl.l_whence  = SEEK_SET;
   fl.l_type = -1;
   fl.l_start = start;
   fl.l_len = 1;
@@ -97,10 +98,14 @@ static int do_test(void)
 {
   int fd;
   struct flock fl;
+  char *tmp;
 
-  fd = create_temp_file("tst-flock-sj-", NULL);
+  fd = create_temp_file("tst-flock-sj-", &tmp);
   if (fd == -1)
+  {
+    perror("create_temp_file failed");
     return 1;
+  }
 
   /* split:
    * ...............
@@ -232,6 +237,64 @@ static int do_test(void)
   check_lock(fd, 16, 0, F_UNLCK);
 
   /* @todo Add another process for 'r' test cases */
+
+  /*
+   * Close the file (should remove all locks)
+   */
+
+  close(fd);
+
+  pid_t pid = fork();
+  if (pid == -1)
+  {
+    perror("fork failed");
+    return 1;
+  }
+
+  if (pid == 0)
+  {
+    /* Child */
+
+    /* Reopen the closed file */
+    fd = open(tmp, O_RDWR);
+    if (fd == -1)
+    {
+      perror("create_temp_file failed");
+      return 1;
+    }
+
+    struct flock fl;
+    fl.l_start = 9;
+    fl.l_len = 7;
+    fl.l_type = F_WRLCK;
+    fl.l_whence  = SEEK_SET;
+
+    printf("Child locking fd %d, region %lld:%lld, type %s\n", fd, fl.l_start, fl.l_len,
+           fl_type_str(fl.l_type));
+
+    if (TEMP_FAILURE_RETRY(fcntl(fd, F_SETLK, &fl)) == -1)
+    {
+      perror("child fcntl(F_SETLK) failed");
+      exit(1);
+    }
+
+    exit(0);
+  }
+
+  /* Parent */
+
+  int status;
+  if (TEMP_FAILURE_RETRY(waitpid(pid, &status, 0)) != pid)
+  {
+    perror("waitpid failed");
+    return 1;
+  }
+
+  if (!WIFEXITED(status) || WEXITSTATUS(status))
+  {
+    puts("child terminated abnormally or with error");
+    return 1;
+  }
 
   return 0;
 }

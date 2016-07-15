@@ -6,5 +6,6 @@ EXPORTS
   "_pread"
   "_poll"
   "_select"
+  "_close"
   ; private symbols
   _print_stats @60000 NONAME
