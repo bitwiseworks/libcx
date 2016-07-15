@@ -348,6 +348,38 @@ static struct FcntlLock *lock_split(struct FcntlLock *l, off_t split)
 }
 
 /**
+ * Optimize file lock regions by joining matching ones.
+ * @a desc is the file description, @a lpb is the region preceeding @a lb,
+ * @a lb is the first region that was changed and could introduce
+ * a need for optmimizaiton and @a le is the last changed region
+ * (may be NULL to scan till the end).
+ */
+static void optimize_locks(struct FileDesc *desc, struct FcntlLock *lpb,
+                           struct FcntlLock *lb, struct FcntlLock *le)
+{
+  /* Optimize regions by joining matching ones */
+  assert(desc);
+  assert((!lpb && lb == desc->fcntl_locks) || lpb->next == lb);
+  struct FcntlLock *l = lpb ? lpb : lb;
+  while (l->next && (!le || l != le->next))
+  {
+    struct FcntlLock *ln = l->next;
+    if (l->type == ln->type)
+    {
+      if (l->type == 0 ||
+          (l->type == 'r' ? equal_pids(l->pids, ln->pids) : l->pid == ln->pid))
+      {
+        /* Region types match, join them */
+        l->next = ln->next;
+        lock_free(ln);
+        continue;
+      }
+    }
+    l = l->next;
+  }
+}
+
+/**
  * Initializes the fcntl portion of FileDesc.
  * Called right after the FileDesc pointer is allocated.
  * Returns 0 on success or -1 on failure.
@@ -441,6 +473,7 @@ void fcntl_locking_term()
     int bNeededMark = 0;
 
     /* Go through all locks to unlock any regions this process owns */
+    /* Note: this code is similar to one in fcntl_locking_close */
     for (i = 0; i < FILE_DESC_HASH_SIZE; ++i)
     {
       struct FileDesc *desc = gpData->files[i];
@@ -459,6 +492,9 @@ void fcntl_locking_term()
           }
           l = l->next;
         }
+
+        if (bNeededMark)
+          optimize_locks(desc, NULL, desc->fcntl_locks, NULL);
 
         desc = desc->next;
       }
@@ -1034,29 +1070,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
         if (rc == -1)
           bNoMem = 1;
         else
-        {
-          /* Optimize regions by joining matching ones */
-          assert((!lpb && lb == desc->fcntl_locks) || lpb->next == lb);
-          struct FcntlLock *l = lpb ? lpb : lb;
-          /* Note that we don't specifically check for reaching le->next
-           * in the loop as we will hit a region type mismatch anyway */
-          while (l->next)
-          {
-            struct FcntlLock *ln = l->next;
-            if (l->type == ln->type)
-            {
-              if (l->type == 0 ||
-                  (l->type == 'r' ? equal_pids(l->pids, ln->pids) : l->pid == ln->pid))
-              {
-                /* Region types match, join them */
-                l->next = ln->next;
-                lock_free(ln);
-                continue;
-              }
-            }
-            l = l->next;
-          }
-        }
+          optimize_locks(desc, lpb, lb, le);
       }
     }
 
@@ -1183,6 +1197,8 @@ int fcntl_locking_close(int fildes)
     pid_t pid = getpid();
     int bNeededMark = 0;
 
+    /* Go through all locks to unlock any regions this process owns */
+    /* Note: this code is similar to one in fcntl_locking_term */
     struct FcntlLock *l = desc->fcntl_locks;
     while (l)
     {
@@ -1197,13 +1213,18 @@ int fcntl_locking_close(int fildes)
       l = l->next;
     }
 
-    if (bNeededMark && gpData->fcntl_locking->blocked)
+    if (bNeededMark)
     {
-      /* We unblocked something and there are blocked threads, release them */
-      APIRET arc = DosPostEventSem(gpData->fcntl_locking->hEvSem);
-      TRACE("DosPostEventSem = %d\n", arc);
-      /* Invalidate the blocked list (see the other DosPostEventSem call) */
-      gpData->fcntl_locking->blocked = NULL;
+      optimize_locks(desc, NULL, desc->fcntl_locks, NULL);
+
+      if (gpData->fcntl_locking->blocked)
+      {
+        /* We unblocked something and there are blocked threads, release them */
+        APIRET arc = DosPostEventSem(gpData->fcntl_locking->hEvSem);
+        TRACE("DosPostEventSem = %d\n", arc);
+        /* Invalidate the blocked list (see the other DosPostEventSem call) */
+        gpData->fcntl_locking->blocked = NULL;
+      }
     }
   }
 
