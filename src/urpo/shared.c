@@ -20,129 +20,19 @@
  * Boston, MA 02111-1307, USA.
  */
 
+#define OS2EMX_PLAIN_CHAR
+#define INCL_BASE
+#include <os2.h>
+
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <unistd.h>
+#include <assert.h>
+
 #include "shared.h"
 
-/* global variables */
-static HMTX	hmtxUROP = NULL;
-static MUROP*	pMUROP = NULL;
-static int	refCount;
-
-/**
- * initialize global dll loading/unloading.
- *
- * @returns 1 on success.
- * @returns 0 on failure.
- */
-unsigned long _System _DLL_InitTerm(unsigned long hModule, unsigned long ulFlag)
-{
-    APIRET rc;
-
-    switch (ulFlag) {
-    case 0:
-        {
-            if (_CRT_init() != 0)
-              return 0UL;
-            __ctordtorInit();
-
-	    // init shared mem
-	    uropInit();
-            LOG((stderr, "(%d) urpo dll init pending ops %d (data=%x)\n", getpid(), pMUROP->cUROP));
-            break;
-        }
-
-    case 1:
-        {
-	    // flush buffers
-	    uropPending();
-
-            __ctordtorTerm();
-            _CRT_term();
-            break;
-        }
-
-    default:
-         return 0UL;
-    }
-
-    // success
-    return 1UL;
-}
-
-
-/* 
- * Perform cleanup at process exit
- */
-VOID APIENTRY _cleanupPending(VOID)
-{
-    int rc;
-    rc = uropPending();
-    rc = DosCloseMutexSem( hmtxUROP);
-    LOG((stderr, "(%d) _cleanupPending DosCloseMutexSem rc=%d\n", getpid(), rc));
-	rc = DosExitList(EXLST_EXIT, (PFNEXITLIST) NULL);
-}
-
-/* 
- * Cleanup semaphore in case of early termination.
- * If this code is called, it means we did not have the time to call DosReleaseMutexSem
- * because this handler is removed at function exit.
- */
-VOID APIENTRY _cleanupSemaphore(VOID)
-{
-	APIRET 	rc;
-	PID 		pidOwner = -1;
-	TID     	tidOwner = -1;
-	ULONG	ulCount  = -1;
-	LOG((stderr, "(%d) FATAL ERROR _cleanupSemaphore called!\n", getpid()));
-	rc = DosQueryMutexSem(hmtxUROP, &pidOwner, &tidOwner, &ulCount);
-	LOG((stderr, "(%d) _cleanupSemaphore DosQueryMutexSem rc=%d pidOwner=%d tidOwner=%d ulCount=%d\n", 
-		getpid(), rc, pidOwner, tidOwner, ulCount));
-
-    rc = DosReleaseMutexSem( hmtxUROP);
-    LOG((stderr, "(%d) _cleanupSemaphore DosReleaseMutexSem rc=%d\n", getpid(), rc));
-
-    rc = DosCloseMutexSem( hmtxUROP);
-    LOG((stderr, "(%d) _cleanupSemaphore DosCloseMutexSem rc=%d\n", getpid(), rc));
-	rc = DosExitList(EXLST_EXIT, (PFNEXITLIST) NULL);
-}
-
-/**
- * Initiates the pending structures data.
- *
- * @returns 0 on success.
- * @returns -1 on failure.
- */
-int uropInit(void)
-{
-    APIRET	rc;
-
-    rc = DosGetNamedSharedMem( (PPVOID)&pMUROP, (PSZ)SHMEM_UROP, PAG_READ | PAG_WRITE);
-    if (rc) {
-	// init memory
-	rc = DosAllocSharedMem( (PPVOID)&pMUROP, (PSZ)SHMEM_UROP, sizeof(MUROP), PAG_READ | PAG_WRITE | PAG_EXECUTE | PAG_COMMIT | OBJ_ANY);
-	if (rc == ERROR_ALREADY_EXISTS) // really?
-	    return -1;
-	if (rc)
-	    rc = DosAllocSharedMem( (PPVOID)&pMUROP, (PSZ)SHMEM_UROP, sizeof(MUROP), PAG_READ | PAG_WRITE | PAG_EXECUTE | PAG_COMMIT);
-	if (rc)
-	    return -1;
-    }
-
-    // open the mutex for this process
-    rc = DosOpenMutexSem( SEM_UROP, &hmtxUROP);          
-    if (rc) 
-    {
-	// create unowned semaphore, registered for fork()
-	rc = DosCreateMutexSemEx( SEM_UROP, &hmtxUROP, 0, FALSE);
-	if (rc)
-	    return -1;
-    }
-
-    // success
-    return 0;
-}
+#include "../shared.h"
 
 /**
  * Scan the pending structures and try operation
@@ -152,44 +42,14 @@ int uropInit(void)
  */
 int uropPending(void)
 {
-	APIRET	rc;
+  global_lock();
 
-	// install cleanup code for data: do it always since forked() code does not init again
-	// rc = DosExitList(EXLST_ADD | 0x5000, (PFNEXITLIST) _cleanupPending);
-
-	// install cleanup code for semaphore
-	rc = DosExitList(EXLST_ADD | 0x4000, (PFNEXITLIST) _cleanupSemaphore);
-
-    rc = DosGetNamedSharedMem( (PPVOID)&pMUROP, (PSZ)SHMEM_UROP, PAG_READ | PAG_WRITE);
-    LOG((stderr, "(%d) uropPending DosGetNamedSharedMem %x rc=%d\n", getpid(), pMUROP, rc));
-    if (rc) {
-        rc = uropInit();
-        if (rc) {
-            LOG((stderr, "uropPending uropInit failed rc=%d\n", rc));
-
-			// remove cleanup code for semaphore
-			rc = DosExitList(EXLST_REMOVE, (PFNEXITLIST) _cleanupSemaphore);
-
-            return -1;
-        }
-    }
-
-    // get semaphore
-    rc = DosRequestMutexSem( hmtxUROP,(ULONG) SEM_INDEFINITE_WAIT);
-    if (rc == ERROR_INVALID_HANDLE) {
-        // open the mutex for this process
-        rc = DosOpenMutexSem( SEM_UROP, &hmtxUROP);
-		rc = DosRequestMutexSem( hmtxUROP,(ULONG) SEM_INDEFINITE_WAIT);
-    }
-    if (rc) {
-		LOG((stderr, "(%d) uropPending DosRequestMutexSem failed rc=%d\n", getpid(), rc));
-
-		// remove cleanup code for semaphore
-		rc = DosExitList(EXLST_REMOVE, (PFNEXITLIST) _cleanupSemaphore);
-
-		return -1;
-    }
-    LOG((stderr, "(%d) uropPending DosRequestMutexSem\n", getpid()));
+  MUROP *pMUROP = gpData->urop;
+  if (!pMUROP)
+  {
+    /* Nothing to do */
+    return 0;
+  }
 
     int i=0;
     LOG((stderr, "(%d) uropPending %d ops\n", getpid(), pMUROP->cUROP));
@@ -208,7 +68,7 @@ int uropPending(void)
 
 		} else if (pMUROP->urop[i].szPathNew[0] != 0) { // is it a rename?
 			// call libc directly
-			rc = _std_rename( pMUROP->urop[i].szPathOld, pMUROP->urop[i].szPathNew);
+			int rc = _std_rename( pMUROP->urop[i].szPathOld, pMUROP->urop[i].szPathNew);
 			LOG((stderr, "(%d) uropPending _std_rename %s,%s errno=%d\n", 
 			getpid(), pMUROP->urop[i].szPathOld, pMUROP->urop[i].szPathNew, errno));
 			// if it worked (or file deleted), reset data
@@ -219,7 +79,7 @@ int uropPending(void)
 
 			// call libc directly
 			LOG((stderr, "(%d) uropPending unlinking %s\n", getpid(), pMUROP->urop[i].szPathOld));
-			rc = _std_unlink( pMUROP->urop[i].szPathOld);
+			int rc = _std_unlink( pMUROP->urop[i].szPathOld);
 			if (rc == -1 && errno == EISDIR)
 				rc = _std_rmdir( pMUROP->urop[i].szPathOld);
 			LOG((stderr, "(%d) uropPending _std_unlink/rmdir %s errno=%d\n", getpid(), pMUROP->urop[i].szPathOld, errno));
@@ -244,12 +104,7 @@ int uropPending(void)
 		LOG((stderr, "(%d) uropPending do next one (%d)\n", getpid(), i));
     }
 
-    // release semaphore
-    rc = DosReleaseMutexSem( hmtxUROP);
-    LOG((stderr, "(%d) uropPending DosReleaseMutexSem rc=%d\n", getpid(), rc));
-
-	// remove cleanup code for semaphore
-	rc = DosExitList(EXLST_REMOVE, (PFNEXITLIST) _cleanupSemaphore);
+  global_unlock();
 
     // ok
     return 0;
@@ -263,52 +118,27 @@ int uropPending(void)
  */
 int uropAdd( const char *pszPathOld, const char *pszPathNew)
 {
-    APIRET	rc;
-    int 		i=0;
+  global_lock();
 
-	// install cleanup code for data: do it always since forked() code does not init again
-	// rc = DosExitList(EXLST_ADD | 0x5000, (PFNEXITLIST) _cleanupPending);
-
-	// install cleanup code for semaphore
-	rc = DosExitList(EXLST_ADD | 0x4000, (PFNEXITLIST) _cleanupSemaphore);
-
-    rc = DosGetNamedSharedMem( (PPVOID)&pMUROP, (PSZ)SHMEM_UROP, PAG_READ | PAG_WRITE);
-    if (rc) {
-        rc = uropInit();
-        if (rc) {
-            LOG((stderr, "uropAdd uropInit failed rc=%d\n", rc));
-
-			// remove cleanup code for semaphore
-			rc = DosExitList(EXLST_REMOVE, (PFNEXITLIST) _cleanupSemaphore);
-
-            return -1;
-        }
+  MUROP *pMUROP = gpData->urop;
+  if (!pMUROP)
+  {
+    /* Allocate */
+    pMUROP = _ucalloc(gpData->heap, 1, sizeof(*pMUROP));
+    if (!pMUROP)
+    {
+      TRACE("No memory\n");
+      errno = ENOMEM;
+      return -1;
     }
 
-    // get semaphore
-    rc = DosRequestMutexSem( hmtxUROP,(ULONG) SEM_INDEFINITE_WAIT);
-    if (rc == ERROR_INVALID_HANDLE) {
-        // open the mutex for this process
-        rc = DosOpenMutexSem( SEM_UROP, &hmtxUROP);
-		rc = DosRequestMutexSem( hmtxUROP,(ULONG) SEM_INDEFINITE_WAIT);
-    }
-    if (rc) {
-		LOG((stderr, "(%d) uropAdd DosRequestMutexSem failed rc=%d\n", getpid(), rc));
-
-		// remove cleanup code for semaphore
-		rc = DosExitList(EXLST_REMOVE, (PFNEXITLIST) _cleanupSemaphore);
-
-		return -1;
-    }
-    LOG((stderr, "(%d) uropAdd DosRequestMutexSem\n", getpid()));
+    gpData->urop = pMUROP;
+    TRACE("gpData->urop %p\n", gpData->urop);
+  }
 
     // still free space?
     if (pMUROP->cUROP == MAX_UROP) {
-		rc = DosReleaseMutexSem( hmtxUROP);
 		LOG((stderr, "MAX_UROP reached (%d)\n", MAX_UROP));
-
-		// remove cleanup code for semaphore
-		rc = DosExitList(EXLST_REMOVE, (PFNEXITLIST) _cleanupSemaphore);
 		return -1;
     }
 
@@ -323,12 +153,7 @@ int uropAdd( const char *pszPathOld, const char *pszPathNew)
     pMUROP->cUROP++;
     LOG((stderr, "uropAdd count (%d)\n", pMUROP->cUROP));
 
-    // release semaphore
-    rc = DosReleaseMutexSem( hmtxUROP);
-    LOG((stderr, "(%d) uropAdd DosReleaseMutexSem rc=%d\n", getpid(), rc));
-
-	// remove cleanup code for semaphore
-	rc = DosExitList(EXLST_REMOVE, (PFNEXITLIST) _cleanupSemaphore);
+  global_unlock();
 
     // done
     return 0;
@@ -343,32 +168,17 @@ int uropAdd( const char *pszPathOld, const char *pszPathNew)
  */
 int urpoDump(void)
 {
-    APIRET	rc;
-    int 		i=0;
+  global_lock();
 
-    rc = DosGetNamedSharedMem( (PPVOID)&pMUROP, (PSZ)SHMEM_UROP, PAG_READ | PAG_WRITE);
-    if (rc) {
-        rc = uropInit();
-        if (rc) {
-            LOG((stderr, "uropDump uropInit failed rc=%d\n", rc));
-            return -1;
-        }
-    }
-
-    // get semaphore
-    rc = DosRequestMutexSem( hmtxUROP,(ULONG) SEM_INDEFINITE_WAIT);
-    if (rc == ERROR_INVALID_HANDLE) {
-        // open the mutex for this process
-        rc = DosOpenMutexSem( SEM_UROP, &hmtxUROP);
-	rc = DosRequestMutexSem( hmtxUROP,(ULONG) SEM_INDEFINITE_WAIT);
-    }
-    if (rc) {
-	LOG((stderr, "uropAdd DosRequestMutexSem failed rc=%d\n", rc));
-	return -1;
-    }
+  MUROP *pMUROP = gpData->urop;
+  if (!pMUROP)
+  {
+    /* Nothing to do */
+    return 0;
+  }
 
     // scan array
-    i = 0;
+    int i = 0;
     printf( "uropDump count (%d)\n", pMUROP->cUROP);
     while( i<pMUROP->cUROP) {
 	// if *New!=0 it is a rename
@@ -380,11 +190,7 @@ int urpoDump(void)
 	i++;
     }
 
-    // release semaphore
-    rc = DosReleaseMutexSem( hmtxUROP);
-    if (rc) {
-	LOG((stderr, "(%d) uropDump DosReleaseMutexSem rc=%d\n", getpid(), rc));
-    }
+  global_unlock();
 
     // done
     return 0;
@@ -398,45 +204,54 @@ int urpoDump(void)
  */
 int urpoReset(void)
 {
-    APIRET	rc;
-    int		i=0;
+  global_lock();
 
-    rc = DosGetNamedSharedMem( (PPVOID)&pMUROP, (PSZ)SHMEM_UROP, PAG_READ | PAG_WRITE);
-    if (rc) {
-        rc = uropInit();
-        if (rc) {
-            LOG((stderr, "uropReset uropInit failed rc=%d\n", rc));
-            return -1;
-        }
-    }
-
-    // get semaphore
-    rc = DosRequestMutexSem( hmtxUROP,(ULONG) SEM_INDEFINITE_WAIT);
-    if (rc == ERROR_INVALID_HANDLE) {
-        // open the mutex for this process
-        rc = DosOpenMutexSem( SEM_UROP, &hmtxUROP);
-	rc = DosRequestMutexSem( hmtxUROP,(ULONG) SEM_INDEFINITE_WAIT);
-    }
-    if (rc) {
-	LOG((stderr, "uropAdd DosRequestMutexSem failed rc=%d\n", rc));
-	return -1;
-    }
+  MUROP *pMUROP = gpData->urop;
+  if (!pMUROP)
+  {
+    /* Nothing to do */
+    return 0;
+  }
 
     // scan array
-    for( i = 0; i<MAX_UROP; i++) {
+    int	i;
+    for (i = 0; i<MAX_UROP; i++) {
         pMUROP->urop[i].szPathOld[0] = 0;
         pMUROP->urop[i].szPathNew[0] = 0;
     }
     pMUROP->cUROP = 0;
     printf( "uropReset count (%d)\n", pMUROP->cUROP);
 
-    // release semaphore
-    rc = DosReleaseMutexSem( hmtxUROP);
-    if (rc) {
-	LOG((stderr, "(%d) uropReset DosReleaseMutexSem rc=%d\n", getpid(), rc));
-    }
+  global_unlock();
 
     // done
     return 0;
 }
 
+/**
+ * Initializes the urpo shared structures.
+ * Called after successfull gpData allocation and gpData->heap creation.
+ * @return NO_ERROR on success, DOS error code otherwise.
+ */
+int urpo_init()
+{
+  return 0;
+}
+
+/**
+ * Uninitializes the urpo shared structures.
+ * Called upon each process termination before gpData is uninitialized
+ * or destroyed.
+ */
+void urpo_term()
+{
+  /* Process pending operations */
+  uropPending();
+
+  if (gpData->refcnt == 0)
+  {
+    /* We are the last process, free urpo structures */
+    if (gpData->urop)
+      free(gpData->urop);
+  }
+}

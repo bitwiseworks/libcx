@@ -28,6 +28,39 @@ extern "C" {
 #endif
 
 /**
+ * Unlinks a file, directory, symlink, dev, pipe or socket.
+ *
+ * If unlinking fails due to EACCESS, the operation is deferred until
+ * some files are closed or the process is terminated.
+ *
+ * @returns 0 on success.
+ * @returns Negative error code (errno.h) on failure.
+ * @param   pszPath         Path to the filesystem file/dir/symlink/whatever to remove.
+ */
+int unlink_deferred(const char *pszPath);
+
+/**
+ * Removes a directory.
+ *
+ * If removing fails due to EACCESS or ENOTEMPTY, the operation is deferred until
+ * some files are closed or the process is terminated.
+ *
+ * @returns 0 on success.
+ * @returns Negative error code (errno.h) on failure.
+ * @param   pszPath         Path to the filesystem directory to remove.
+ */
+int rmdir_deferred(const char *pszPath);
+
+/**
+ * Remove a file or directory. Mapped to unlink() implementation.
+ *
+ * @returns 0 on success.
+ * @returns Negative error code (errno.h) on failure.
+ * @param   pszPath         Path to the filesystem file/dir/symlink/whatever to remove.
+ */
+int remove_deferred(const char *pszPath);
+
+/**
  * Renames a file or directory, force renaming for all errors
  *
  * @returns 0 on success.

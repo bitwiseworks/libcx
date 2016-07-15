@@ -76,6 +76,8 @@ struct SharedData
 #endif
   struct FileDesc **files; /* File descriptor hash map of FILE_DESC_HASH_SIZE */
   struct FcntlLocking *fcntl_locking; /* Shared data for fcntl locking */
+// @todo URPO is disabled, see #5
+//  struct _MUROP *urop; /* URPO data */
   /* heap memory follows here */
 };
 
@@ -97,5 +99,9 @@ void fcntl_locking_filedesc_term(struct FileDesc *desc);
 
 int pwrite_filedesc_init(struct FileDesc *desc);
 void pwrite_filedesc_term(struct FileDesc *desc);
+
+// @todo URPO is disabled, see #5
+//int urpo_init();
+//void urpo_term();
 
 void print_stats();

@@ -24,15 +24,12 @@
 #include <string.h>
 #include "shared.h"
 
-/**
- * Unlinks a file, directory, symlink, dev, pipe or socket.
- *
- * @returns 0 on success.
- * @returns Negative error code (errno.h) on failure.
- * @param   pszPath         Path to the filesystem file/dir/symlink/whatever to remove.
- */
-int unlink(const char *pszPath)
+#include "../shared.h"
+
+int unlink_deferred(const char *pszPath)
 {
+    TRACE("pszPath [%s]\n", pszPath);
+
     int rc;
 
     rc = _std_unlink( pszPath);
@@ -80,15 +77,10 @@ int unlink(const char *pszPath)
     return rc;
 }
 
-/**
- * Removes a directory.
- *
- * @returns 0 on success.
- * @returns Negative error code (errno.h) on failure.
- * @param   pszPath         Path to the filesystem file/dir/symlink/whatever to remove.
- */
-int rmdir(const char *pszPath)
+int rmdir_deferred(const char *pszPath)
 {
+	TRACE("pszPath [%s]\n", pszPath);
+
 	int rc;
 
 	rc = _std_rmdir( pszPath);
@@ -134,14 +126,9 @@ int rmdir(const char *pszPath)
 	return rc;
 }
 
-/**
- * Remove a file or directory. Mapped to unlink() implementation.
- *
- * @returns 0 on success.
- * @returns Negative error code (errno.h) on failure.
- * @param   pszPath         Path to the filesystem file/dir/symlink/whatever to remove.
- */
-int remove(const char *pszPath)
+int remove_deferred(const char *pszPath)
 {
-    return unlink( pszPath);
+    TRACE("pszPath [%s]\n", pszPath);
+
+    return unlink_deferred(pszPath);
 }

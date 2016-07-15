@@ -1,12 +1,12 @@
 LIBRARY urpo INITINSTANCE TERMINSTANCE
 DATA MULTIPLE
 EXPORTS
-  "_rmdir"
-  "_rename"
-  "_renameForce"
-  "_unlink"
-  "_remove"
-  "_close"
-  "_fclose"
-  "_urpoDump"
-  "_urpoReset"
+  "_rmdir" = "_rmdir_deferred"
+;  "_rename"
+;  "_renameForce"
+  "_unlink" = "_unlink_deferred"
+  "_remove" = "_remove_deferred"
+;  "_close"
+;  "_fclose"
+;  "_urpoDump"
+;  "_urpoReset"

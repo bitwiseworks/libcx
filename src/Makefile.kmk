@@ -21,8 +21,24 @@ libcx_SOURCES = \
   shared.c \
   libcx.def
 
+# @todo URPO is disabled, see #5
+#  urpo/shared.c \
+#  urpo/unlink.c \
+
 # Debug definitions
 libcx_DEFS.debug = TRACE_ENABLED=1 STATS_ENABLED=1
+
+#
+# Forwarder urpo DLL
+#
+
+# @todo URPO is disabled, see #5
+#DLLS += urpo
+#
+#urpo_TEMPLATE = Dll
+#urpo_LIBS = $(PATH_STAGE_LIB)/libcx0$(SUFF_LIB)
+#urpo_SOURCES = \
+#  urpo/urpo.def
 
 #
 # Utilities
@@ -59,5 +75,12 @@ tst-poll_SOURCES = poll/tst-poll.c
 PROGRAMS += tst-select
 tst-select_TEMPLATE = Test
 tst-select_SOURCES = select/tst-select.c
+
+# @todo URPO is disabled, see #5
+#PROGRAMS += tst-urpo
+#tst-urpo_TEMPLATE = Util
+#tst-urpo_DEFS = _GNU_SOURCE
+#tst-urpo_LIBS = $(PATH_STAGE_LIB)/urpo$(SUFF_LIB)
+#tst-urpo_SOURCES = urpo/tst-urpo.c
 
 include $(FILE_KBUILD_SUB_FOOTER)
