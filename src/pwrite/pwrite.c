@@ -37,7 +37,7 @@
  */
 int pwrite_filedesc_init(struct FileDesc *desc)
 {
-  /* Mutex is lazily craeted in pread_pwrite */
+  /* Mutex is lazily created in pread_pwrite */
   assert(!desc->pwrite_lock);
   return 0;
 }

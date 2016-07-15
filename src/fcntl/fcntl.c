@@ -425,7 +425,8 @@ int fcntl_locking_init()
 
 /**
  * Uninitializes the fcntl shared structures.
- * Called before destroying gpData->heap and gpData.
+ * Called upon each process termination before gpData is uninitialized
+ * or destroyed.
  */
 void fcntl_locking_term()
 {
