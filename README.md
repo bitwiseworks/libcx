@@ -8,3 +8,5 @@ Currently, LIBCx provides the following extensions:
 
  - Improved advisory file locking using the `fcntl()` API. The implementation provided by kLIBC uses `DosSetFileLocks` and is broken as it does not guarantee atomicity of lock/unlock operations in many cases (like overlapping lock regions etc.) and does not have deadlock detection.
  - Improved positional read/write operations provided by `pread()` and `pwrite()` APIs that guarantee atomic behavior. kLIBC emulates these functions using a pair of `lseek` and `read()/write()` calls in non-atomic manner which leads to data corruption when accessing the same file from multiple threads or processes.
+ - Improved `select()` that now supports regular file descriptors instead of returning EINVAL (22) on them as kLIBC does. Regular files are always reported ready for writing/reading/exceptions (as per POSIX requirements).
+ - Implementation of `poll()` using `select()`. kLIBC does not provide the `poll()` call at all.
