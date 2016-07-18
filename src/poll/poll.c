@@ -123,19 +123,19 @@ static int map_poll_spec
         if (pCur->fd < 0)
             continue;
 
-	if ((pCur->events & POLLIN) || (pCur->events & POLLRDNORM))
+	if (pCur->events & (POLLIN | POLLRDNORM))
 	{
 	    /* "Input Ready" notification desired. */
 	    FD_SET (pCur->fd, pReadSet);
 	}
 
-	if ((pCur->events & POLLOUT) || (pCur->events & POLLWRNORM))
+	if (pCur->events & (POLLOUT | POLLWRNORM))
 	{
 	    /* "Output Possible" notification desired. */
 	    FD_SET (pCur->fd, pWriteSet);
 	}
 
-	if ((pCur->events & POLLPRI) || (pCur->events & POLLRDBAND) || (pCur->events & POLLWRBAND))
+	if (pCur->events & (POLLPRI | POLLRDBAND))
 	{
 	    /*
 	       "Exception Occurred" notification desired.  (Exceptions
@@ -246,9 +246,6 @@ static void map_select_results
 
             if (pCur->events & POLLRDBAND)
 	        pCur->revents |= POLLRDBAND;
-
-            if (pCur->events & POLLWRBAND)
-	        pCur->revents |= POLLWRBAND;
         }
 
 	else if (FD_ISSET (pCur->fd, pReadSet))
