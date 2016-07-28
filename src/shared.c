@@ -85,15 +85,17 @@ static void *mem_alloc(Heap_t h, size_t *psize, int *pclean)
 
   mem = (char *)gpData + gpData->size;
 
-  /* DosAllocSharedMem gives us zeroed mem */
-  *pclean = _BLOCK_CLEAN;
-
   /* Commit the new block */
   arc = DosSetMem(mem, size, PAG_DEFAULT | PAG_COMMIT);
   TRACE("DosSetMem(%p, %d) = %d\n", mem, size, arc);
 
   if (arc)
     return NULL;
+
+  /* DosAllocSharedMem gives us zeroed mem */
+  *pclean = _BLOCK_CLEAN;
+  /* Return the actually allocated number of bytes */
+  *psize = size;
 
   gpData->size += size;
   return mem;
