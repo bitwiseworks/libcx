@@ -9,3 +9,9 @@ EXPORTS
   "_close"
   ; private symbols
   _print_stats @60000 NONAME
+  ; debug symbols (absent from release builds)
+  ;ddd "_gpData"
+  ;ddd "_global_lock"
+  ;ddd "_global_unlock"
+  ;ddd "_global_alloc"
+  ;ddd "_global_free"

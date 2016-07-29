@@ -44,22 +44,6 @@ static HMTX gMutex = NULLHANDLE;
 
 static void APIENTRY ProcessExit(ULONG);
 
-#if STATS_ENABLED
-#undef _ucalloc
-void *_ucalloc_stats(Heap_t h, size_t elements, size_t size)
-{
-  void *result = _ucalloc(h, elements, size);
-  if (result && gpData && h == gpData->heap)
-  {
-    _HEAPSTATS hst;
-    if (_ustats(h, &hst) == 0 && gpData->maxHeapUsed < hst._used)
-      gpData->maxHeapUsed = hst._used;
-  }
-  return result;
-}
-#define _ucalloc _ucalloc_stats
-#endif
-
 /*
  * @todo Currently we reserve a static block of HEAP_SIZE at LIBCx init
  * which we commit/release as needed. The disadvantage is obvious - we
@@ -218,7 +202,7 @@ static int shared_init(int bKeepLock)
       gpData->refcnt = 1;
 
       /* Initialize common structures */
-      gpData->files = _ucalloc(gpData->heap, FILE_DESC_HASH_SIZE, sizeof(*gpData->files));
+      gpData->files = global_alloc(FILE_DESC_HASH_SIZE * sizeof(*gpData->files));
       TRACE("gpData->files = %p\n", gpData->files);
       assert(gpData->files);
     }
@@ -412,6 +396,27 @@ void global_unlock()
   assert(arc == NO_ERROR);
 }
 
+void *global_alloc(size_t size)
+{
+#if STATS_ENABLED
+  void *result = _ucalloc(gpData->heap, 1, size);
+  if (result)
+  {
+    _HEAPSTATS hst;
+    if (_ustats(gpData->heap, &hst) == 0 && gpData->maxHeapUsed < hst._used)
+      gpData->maxHeapUsed = hst._used;
+  }
+  return result;
+#else
+  return _ucalloc(gpData->heap, 1, size);
+#endif
+}
+
+void global_free(void *data)
+{
+  free(data);
+}
+
 static size_t hash_string(const char *str)
 {
   /*
@@ -462,7 +467,7 @@ struct FileDesc *get_file_desc(const char *path, int bNew)
 
   if (!desc && bNew)
   {
-    desc = _ucalloc(gpData->heap, 1, sizeof(*desc) + strlen(path) + 1);
+    desc = global_alloc(sizeof(*desc) + strlen(path) + 1);
     if (desc)
     {
       /* Initialize the new desc */

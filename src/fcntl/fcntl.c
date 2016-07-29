@@ -97,7 +97,7 @@ static struct PidList *copy_pids(const struct PidList *list)
 {
   assert(list);
   size_t size = sizeof(*list) + sizeof(list->list[0]) * list->size;
-  struct PidList *nlist = _ucalloc(gpData->heap, 1, size);
+  struct PidList *nlist = global_alloc(size);
   if (nlist)
     memcpy(nlist, list, size);
   return nlist;
@@ -270,7 +270,7 @@ static int lock_mark(struct FcntlLock *l, short type, pid_t pid)
         assert(l->pid && l->pid != pid);
         size_t nsize = PID_LIST_MIN_SIZE;
         struct PidList *nlist =
-            _ucalloc(gpData->heap, 1, sizeof(*l->pids) + sizeof(l->pids->list[0]) * nsize);
+            global_alloc(sizeof(*l->pids) + sizeof(l->pids->list[0]) * nsize);
         if (!nlist)
           return -1;
         nlist->size = nsize;
@@ -324,7 +324,7 @@ static struct FcntlLock *lock_split(struct FcntlLock *l, off_t split)
   assert(l);
   assert(l->start < split && split <= lock_end(l));
 
-  ln = _ucalloc(gpData->heap, 1, sizeof(*ln));
+  ln = global_alloc(sizeof(*ln));
   if (!ln)
     return NULL;
 
@@ -387,7 +387,7 @@ static void optimize_locks(struct FileDesc *desc, struct FcntlLock *lpb,
 int fcntl_locking_filedesc_init(struct FileDesc *desc)
 {
   /* Add one free region that covers the entire file */
-  desc->fcntl_locks = _ucalloc(gpData->heap, 1, sizeof(*desc->fcntl_locks));
+  desc->fcntl_locks = global_alloc(sizeof(*desc->fcntl_locks));
   if (!desc->fcntl_locks)
     return -1;
   return 0;
@@ -435,7 +435,7 @@ int fcntl_locking_init()
   if (gpData->refcnt == 1)
   {
     /* We are the first processs, initialize fcntl structures */
-    gpData->fcntl_locking = _ucalloc(gpData->heap, 1, sizeof(*gpData->fcntl_locking));
+    gpData->fcntl_locking = global_alloc(sizeof(*gpData->fcntl_locking));
     assert(gpData->fcntl_locking);
 
     arc = DosCreateEventSem(NULL, &gpData->fcntl_locking->hEvSem,
@@ -857,7 +857,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
           /* Initialze the blocking struct if needed */
           if (!blocked)
           {
-            blocked = _ucalloc(gpData->heap, 1, sizeof(*blocked));
+            blocked = global_alloc(sizeof(*blocked));
             if (!blocked)
             {
               bNoMem = 1;

@@ -44,11 +44,6 @@
 #define TRACE_BEGIN_IF(cond, msg, ...) if (0) { do {} while(0)
 #endif
 
-#if STATS_ENABLED
-void *_ucalloc_stats(Heap_t h, size_t elements, size_t size);
-#define _ucalloc _ucalloc_stats
-#endif
-
 #define FILE_DESC_HASH_SIZE 127 /* Prime */
 
 /**
@@ -87,6 +82,9 @@ extern struct SharedData *gpData;
 
 void global_lock();
 void global_unlock();
+
+void *global_alloc(size_t size);
+void global_free(void *data);
 
 struct FileDesc *get_file_desc(const char *path, int bNew);
 

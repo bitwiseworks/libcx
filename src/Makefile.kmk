@@ -18,11 +18,17 @@ libcx_SOURCES = \
   pwrite/pwrite.c \
   poll/poll.c \
   select/select.c \
-  shared.c \
-  libcx.def
+  shared.c
+
+libcx_SOURCES.release += libcx.def
 
 # Debug definitions
-libcx_DEFS.debug = TRACE_ENABLED=1 STATS_ENABLED=1
+libcx_DEFS.debug = TRACE_ENABLED=1 STATS_ENABLED=1 DEBUG
+libcx_SOURCES.debug += $(PATH_OBJ)/libcx-debug.def
+
+$(PATH_OBJ)/libcx-debug.def: $(PATH_SUB_CURRENT)/libcx.def
+	$(call MSG_L1,Generating $@)
+	$(QUIET)sed -e 's/  ;ddd /  /' < $< > $@
 
 #
 # Utilities
@@ -35,6 +41,10 @@ libcx-stats_SOURCES = libcx-stats.c
 #
 # Tests
 #
+
+PROGRAMS.debug += tst-shared
+tst-shared_TEMPLATE = Test
+tst-shared_SOURCES = tst-shared.c
 
 PROGRAMS += tst-flock2
 tst-flock2_TEMPLATE = Test
