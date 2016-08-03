@@ -1181,8 +1181,8 @@ int fcntl_locking_close(int fildes)
   pFH = __libc_FH(fildes);
   if (!pFH || !pFH->pszNativePath)
   {
-    errno = !pFH ? EBADF : EINVAL;
-    return -1;
+    /* Don't fail here as we want normal close to proceed. */
+    return 0;
   }
 
   TRACE("pszNativePath %s, fFlags %x\n", pFH->pszNativePath, pFH->fFlags);
