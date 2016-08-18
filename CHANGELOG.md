@@ -1,5 +1,10 @@
 # History of changes for LIBCx
 
+Version 0.2.1 (2016-08-19)
+
+* Don't prevent real close from be called after the close hook (also caused failed return values).
+* Fix committed memory overgrowth under heavy load (caused ENOMEM in fcntl locks).
+
 Version 0.2 (2016-07-18)
 
 * fcntl: Implement joining adjacent lock regions which greatly reduces memory footprint.
