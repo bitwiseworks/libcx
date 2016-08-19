@@ -23,6 +23,10 @@
 #define INCL_BASE
 #include <os2.h>
 
+#define INCL_LIBLOADEXCEPTQ
+#define INCL_FORKEXCEPTQ
+#include <exceptq.h>
+
 #include <memory.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -53,20 +57,30 @@ extern int libc__beginthread(void (*start)(void *arg), void *stack,
  */
 static void threadWrapper(void *d)
 {
-  EXCEPTIONREGISTRATIONRECORD libcXcptRec;
+  EXCEPTIONREGISTRATIONRECORD exceptqXcptRec;
 
-  /* Install the LIBCx own exception handler for various needs */
-  libcXcptRec.ExceptionHandler = libcxExceptionHandler;
-  libcXcptRec.prev_structure = END_OF_CHAIN;
-  DosSetExceptionHandler(&libcXcptRec);
+  /* Install the EXCEPTQ trap generator */
+  LibLoadExceptq(&exceptqXcptRec);
 
-  /* Thread data is on heap, make a copy on stack and free it */
-  struct threaddata data = *(struct threaddata *)d;
-  free(d);
+  /* Use new block to ensure proper order on stack */
+  {
+    EXCEPTIONREGISTRATIONRECORD libcXcptRec;
 
-  data.start(data.arg);
+    /* Install the LIBCx own exception handler for various needs */
+    libcXcptRec.ExceptionHandler = libcxExceptionHandler;
+    libcXcptRec.prev_structure = END_OF_CHAIN;
+    DosSetExceptionHandler(&libcXcptRec);
 
-  DosUnsetExceptionHandler(&libcXcptRec);
+    /* Thread data is on heap, make a copy on stack and free it */
+    struct threaddata data = *(struct threaddata *)d;
+    free(d);
+
+    data.start(data.arg);
+
+    DosUnsetExceptionHandler(&libcXcptRec);
+  }
+
+  UninstallExceptq(&exceptqXcptRec);
 }
 
 /**
