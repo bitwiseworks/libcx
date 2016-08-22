@@ -26,7 +26,7 @@ libcx_SOURCES = \
 libcx_SOURCES.release += libcx.def
 
 # Debug definitions
-libcx_DEFS.debug = TRACE_ENABLED=1 STATS_ENABLED=1 DEBUG
+libcx_DEFS.debug = TRACE_ENABLED STATS_ENABLED DEBUG
 libcx_SOURCES.debug += $(PATH_OBJ)/libcx-debug.def
 
 $(PATH_OBJ)/libcx-debug.def: $(PATH_SUB_CURRENT)/libcx.def

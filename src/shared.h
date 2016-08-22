@@ -22,7 +22,7 @@
 #include <stdio.h>
 #include <umalloc.h>
 
-#if TRACE_ENABLED
+#ifdef TRACE_ENABLED
 #ifndef TRACE_MORE
 #define TRACE_MORE 1
 #endif
@@ -66,9 +66,7 @@ struct SharedData
   size_t size; /* committed size */
   Heap_t heap; /* shared heap */
   int refcnt; /* number of processes using us */
-#if STATS_ENABLED
   size_t maxHeapUsed; /* max size of used heap space */
-#endif
   struct FileDesc **files; /* File descriptor hash map of FILE_DESC_HASH_SIZE */
   struct FcntlLocking *fcntl_locking; /* Shared data for fcntl locking */
   /* heap memory follows here */

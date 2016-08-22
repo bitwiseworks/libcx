@@ -98,7 +98,7 @@ static int shared_init(int bKeepLock)
   arc = DosExitList(EXLST_ADD, ProcessExit);
   assert(arc == NO_ERROR);
 
-#if TRACE_ENABLED
+#ifdef TRACE_ENABLED
   /*
    * Allocate a larger buffer to fit lengthy TRACE messages and disable
    * auto-flush on EOL (to avoid breaking lines by stdout operations
@@ -239,7 +239,7 @@ static void shared_term()
   {
     if (gpData->heap)
     {
-#if STATS_ENABLED
+#ifdef STATS_ENABLED
       _HEAPSTATS hst;
 #endif
       int i;
@@ -276,7 +276,7 @@ static void shared_term()
 
       TRACE("reserved memory size %d\n", HEAP_SIZE);
       TRACE("committed memory size %d\n", gpData->size);
-#if STATS_ENABLED
+#ifdef STATS_ENABLED
       rc = _ustats(gpData->heap, &hst);
       TRACE("heap stats: %d total, %d used now, %d used max\n", hst._provided, hst._used, gpData->maxHeapUsed);
 #endif
@@ -398,7 +398,7 @@ void global_unlock()
 
 void *global_alloc(size_t size)
 {
-#if STATS_ENABLED
+#ifdef STATS_ENABLED
   void *result = _ucalloc(gpData->heap, 1, size);
   if (result)
   {
@@ -523,7 +523,7 @@ void print_stats()
   assert(rc == 0);
   printf("Heap size total:       %d bytes\n"
          "Heap size used now:    %d bytes\n", hst._provided, hst._used);
-#if STATS_ENABLED
+#ifdef STATS_ENABLED
   printf("Heap size used max:    %d bytes\n", gpData->maxHeapUsed);
 #endif
 
