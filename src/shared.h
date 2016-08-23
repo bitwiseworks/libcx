@@ -23,18 +23,46 @@
 #include <umalloc.h>
 
 #ifdef TRACE_ENABLED
+
+#ifndef TRACE_USE_LIBC_LOG
+#define TRACE_USE_LIBC_LOG 1
+#endif
+
+#ifdef TRACE_USE_LIBC_LOG
+#ifndef TRACE_GROUP
+#define TRACE_GROUP 0
+#endif
+#define __LIBC_LOG_GROUP TRACE_GROUP
+#include <InnoTekLIBC/logstrict.h>
+/* The below defs must be in sync with the logGroup array */
+#define TRACE_GROUP_FCNTL 1
+#define TRACE_GROUP_PWRITE 2
+#define TRACE_GROUP_SELECT 3
+#define TRACE_GROUP_MMAP 4
+#endif
+
 #ifndef TRACE_MORE
 #define TRACE_MORE 1
 #endif
+
+#ifdef TRACE_USE_LIBC_LOG
+void trace(unsigned traceGroup, const char *file, int line, const char *func, const char *format, ...);
+#define TRACE_FLUSH() do {} while (0)
+#define TRACE_RAW(msg, ...) trace(TRACE_GROUP, __FILE__, __LINE__, __FUNCTION__, msg, ## __VA_ARGS__)
+#define TRACE_CONT(msg, ...) trace(TRACE_GROUP, NULL, 0, NULL, msg, ## __VA_ARGS__)
+#else
+#define TRACE_FLUSH() fflush(stdout)
 #define TRACE_RAW(msg, ...) printf("*** [%d:%d] %s:%d:%s: " msg, getpid(), _gettid(), __FILE__, __LINE__, __FUNCTION__, ## __VA_ARGS__)
-#define TRACE(msg, ...) do { TRACE_RAW(msg, ## __VA_ARGS__); fflush(stdout); } while(0)
-#define TRACE_BEGIN(msg, ...) { do { TRACE_RAW(msg, ## __VA_ARGS__); } while(0)
 #define TRACE_CONT(msg, ...) printf(msg, ## __VA_ARGS__)
-#define TRACE_END() fflush(stdout); } do {} while(0)
+#endif
+#define TRACE(msg, ...) do { TRACE_RAW(msg, ## __VA_ARGS__); TRACE_FLUSH(); } while(0)
+#define TRACE_BEGIN(msg, ...) { do { TRACE_RAW(msg, ## __VA_ARGS__); } while(0)
+#define TRACE_END() TRACE_FLUSH(); } do {} while(0)
 #define TRACE_IF(cond, msg, ...) if (cond) TRACE(msg, ## __VA_ARGS__)
 #define TRACE_BEGIN_IF(cond, msg, ...) if (cond) TRACE_BEGIN(msg, ## __VA_ARGS__)
 #else
 #define TRACE_MORE 0
+#define TRACE_FLUSH() do {} while (0)
 #define TRACE_RAW(msg, ...) do {} while (0)
 #define TRACE(msg, ...) do {} while (0)
 #define TRACE_BEGIN(msg, ...) if (0) { do {} while(0)
@@ -42,7 +70,8 @@
 #define TRACE_END() } do {} while(0)
 #define TRACE_IF(cond, msg, ...) do {} while (0)
 #define TRACE_BEGIN_IF(cond, msg, ...) if (0) { do {} while(0)
-#endif
+
+#endif /* TRACE_ENABLED */
 
 #define FILE_DESC_HASH_SIZE 127 /* Prime */
 

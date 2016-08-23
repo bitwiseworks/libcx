@@ -28,6 +28,7 @@
 #include <assert.h>
 #include <emx/io.h>
 
+#define TRACE_GROUP TRACE_GROUP_PWRITE
 #include "../shared.h"
 
 /**

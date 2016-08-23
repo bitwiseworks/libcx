@@ -39,6 +39,7 @@
 
 #undef fcntl
 
+#define TRACE_GROUP TRACE_GROUP_FCNTL
 #include "../shared.h"
 
 #define PID_LIST_MIN_SIZE 8

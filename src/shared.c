@@ -28,6 +28,8 @@
 #include <stdlib.h>
 #include <limits.h>
 #include <assert.h>
+#include <process.h>
+#include <stdarg.h>
 
 #include "shared.h"
 
@@ -37,6 +39,28 @@
 #define HEAP_SIZE (1024 * 1024 * 2) /* 2MB - total shared data area size */
 #define HEAP_INIT_SIZE 65536 /* Initial size of committed memory */
 #define HEAP_INC_SIZE 65536 /* Heap increment amount */
+
+#if defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG)
+
+#include <InnoTekLIBC/fork.h>
+
+static __LIBC_LOGGROUP  logGroup[] =
+{
+  { 1, "nogroup" },           /*  0 */
+  { 1, "fcntl" },             /*  1 */
+  { 1, "pwrite" },            /*  2 */
+  { 1, "select" },            /*  3 */
+  { 1, "mmap" },              /*  4 */
+};
+
+static __LIBC_LOGGROUPS logGroups =
+{
+  0, sizeof(logGroup)/sizeof(logGroup[0]), logGroup
+};
+
+void *gLogInstance = NULL;
+
+#endif
 
 struct SharedData *gpData = NULL;
 
@@ -98,7 +122,7 @@ static int shared_init(int bKeepLock)
   arc = DosExitList(EXLST_ADD, ProcessExit);
   assert(arc == NO_ERROR);
 
-#ifdef TRACE_ENABLED
+#if defined(TRACE_ENABLED) && !defined(TRACE_USE_LIBC_LOG)
   /*
    * Allocate a larger buffer to fit lengthy TRACE messages and disable
    * auto-flush on EOL (to avoid breaking lines by stdout operations
@@ -529,3 +553,72 @@ void print_stats()
 
   global_unlock();
 }
+
+#if defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG)
+
+void trace(unsigned traceGroup, const char *file, int line, const char *func, const char *format, ...)
+{
+  va_list args;
+  char *msg;
+  unsigned cch;
+  int n;
+
+  enum { MaxBuf = 513 };
+
+  if (!gLogInstance)
+  {
+    __libc_LogGroupInit(&logGroups, "LIBCX_TRACE");
+    gLogInstance = __libc_LogInit(0, &logGroups, "NUL");
+    assert(gLogInstance);
+
+    /*
+     * This is a dirty hack to write logs to the console,
+     * LIBC isn't capable of it on its own (@todo fix LIBC).
+     */
+    typedef struct __libc_logInstance
+    {
+        /** Write Semaphore. */
+        HMTX                    hmtx;
+        /** Filehandle. */
+        HFILE                   hFile;
+        /** Api groups. */
+        __LIBC_PLOGGROUPS       pGroups;
+    } __LIBC_LOGINST, *__LIBC_PLOGINST;
+
+    DosDupHandle(1, &((__LIBC_PLOGINST)gLogInstance)->hFile);
+  }
+
+  msg = (char *)alloca(MaxBuf);
+  if (!msg)
+      return;
+
+  if (file == NULL || line == 0 || func == NULL)
+    n = snprintf(msg, MaxBuf, "*** [%d:%d] ", getpid(), _gettid());
+  else
+    n = snprintf(msg, MaxBuf, "*** [%d:%d] %s:%d:%s: ", getpid(), _gettid(), _getname(file), line, func);
+  if (n < MaxBuf)
+  {
+    va_start(args, format);
+    n += vsnprintf(msg + n, MaxBuf - n, format, args);
+    va_end(args);
+  }
+  if (n < MaxBuf)
+    cch = n;
+  else
+    cch = MaxBuf - 1;
+
+  __libc_LogRaw(gLogInstance, traceGroup | __LIBC_LOG_MSGF_FLUSH, msg, cch);
+}
+
+static int forkChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation)
+{
+  if (enmOperation != __LIBC_FORK_OP_FORK_CHILD)
+    return 0;
+
+  /* Reset the log instance in the child process */
+  gLogInstance = NULL;
+}
+
+_FORK_CHILD1(0, forkChild);
+
+#endif /* defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG) */

@@ -23,6 +23,7 @@
 #include <sys/select.h>
 #include <sys/stat.h>
 
+#define TRACE_GROUP TRACE_GROUP_SELECT
 #include "../shared.h"
 
 #ifndef MAX
