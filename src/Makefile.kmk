@@ -18,6 +18,7 @@ libcx_SOURCES = \
   pwrite/pwrite.c \
   poll/poll.c \
   select/select.c \
+  mmap/mmap.c \
   beginthread.c \
   main.c \
   main.s \

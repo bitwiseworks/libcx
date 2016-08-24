@@ -98,6 +98,7 @@ struct SharedData
   size_t maxHeapUsed; /* max size of used heap space */
   struct FileDesc **files; /* File descriptor hash map of FILE_DESC_HASH_SIZE */
   struct FcntlLocking *fcntl_locking; /* Shared data for fcntl locking */
+  struct MemMap *mmaps; /* mmap mappings */
   /* heap memory follows here */
 };
 
@@ -107,11 +108,18 @@ struct SharedData
  */
 extern struct SharedData *gpData;
 
+struct _EXCEPTIONREPORTRECORD;
+struct _EXCEPTIONREGISTRATIONRECORD;
+struct _CONTEXT;
+
 void global_lock();
 void global_unlock();
 
 void *global_alloc(size_t size);
 void global_free(void *data);
+
+#define GLOBAL_NEW(ptr) ptr = (__typeof(ptr))global_alloc(sizeof(*ptr))
+#define GLOBAL_NEW_ARRAY(ptr, sz) ptr = (__typeof(ptr))global_alloc(sizeof(*ptr) * sz)
 
 struct FileDesc *get_file_desc(const char *path, int bNew);
 
@@ -124,5 +132,10 @@ int fcntl_locking_close(int fildes);
 
 int pwrite_filedesc_init(struct FileDesc *desc);
 void pwrite_filedesc_term(struct FileDesc *desc);
+
+void mmap_term();
+int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
+                   struct _EXCEPTIONREGISTRATIONRECORD *reg,
+                   struct _CONTEXT *ctx);
 
 void print_stats();

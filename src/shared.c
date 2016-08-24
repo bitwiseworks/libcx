@@ -33,8 +33,8 @@
 
 #include "shared.h"
 
-#define MUTEX_LIBCX "\\SEM32\\LIBCX_MUTEX_V2"
-#define SHAREDMEM_LIBCX "\\SHAREMEM\\LIBCX_DATA_V2"
+#define MUTEX_LIBCX "\\SEM32\\LIBCX_MUTEX_V3"
+#define SHAREDMEM_LIBCX "\\SHAREMEM\\LIBCX_DATA_V3"
 
 #define HEAP_SIZE (1024 * 1024 * 2) /* 2MB - total shared data area size */
 #define HEAP_INIT_SIZE 65536 /* Initial size of committed memory */
@@ -272,6 +272,7 @@ static void shared_term()
       gpData->refcnt--;
 
       /* Uninitialize individual components */
+      mmap_term();
       fcntl_locking_term();
 
       if (gpData->refcnt == 0)
