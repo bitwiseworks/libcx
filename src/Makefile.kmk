@@ -74,4 +74,8 @@ PROGRAMS += tst-select
 tst-select_TEMPLATE = Test
 tst-select_SOURCES = select/tst-select.c
 
+PROGRAMS += tst-anon_mmap
+tst-anon_mmap_TEMPLATE = Test
+tst-anon_mmap_SOURCES = mmap/tst-anon_mmap.c
+
 include $(FILE_KBUILD_SUB_FOOTER)
