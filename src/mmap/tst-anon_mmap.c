@@ -14,8 +14,9 @@
    child process without having to create a mapped file, either through the
    creation of an anonymous memory mapping or through the mapping of /dev/zero.
 */
-#ifdef __KLIBC__
+#if defined(__KLIBC__) || defined(__APPLE__)
 #define USE_MAP_ANON
+#define MAP_ANONYMOUS MAP_ANON  /* Until kLIBC header is fixed */
 #endif
 #ifdef USE_MAP_ANON
 #define _BSD_SOURCE             /* Get MAP_ANONYMOUS definition */
@@ -31,12 +32,14 @@
 #include <errno.h>      /* Declares errno and defines error constants */
 #include <string.h>     /* Commonly used string-handling functions */
 
+static int do_test(void);
+#define TEST_FUNCTION do_test()
+#include "../test-skeleton.c"
 
-int
-main(int argc, char *argv[])
+static int do_test(void)
 {
     int *addr;                  /* Pointer to shared memory region */
-
+    int status;
     /* Parent creates mapped region prior to calling fork() */
 
 #ifdef USE_MAP_ANON             /* Use MAP_ANONYMOUS */
@@ -78,8 +81,12 @@ main(int argc, char *argv[])
         exit(EXIT_SUCCESS);
 
     default:                    /* Parent: wait for child to terminate */
-        if (wait(NULL) == -1){
+        if (wait(&status) == -1){
 	        fprintf(stderr,"wait failed - errno = %d\n",errno);
+		exit(-1);
+		}
+        if (!WIFEXITED(status) || WEXITSTATUS(status)) {
+            fprintf(stderr,"child crashed or returned non-zero (status %x)\n", status);
 		exit(-1);
 		}
         printf("In parent, value = %d\n", *addr);
