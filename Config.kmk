@@ -40,7 +40,9 @@ TEMPLATE_Dll = DLLs
 TEMPLATE_Dll_EXTENDS = C
 TEMPLATE_Dll_LDFLAGS = -Zhigh-mem
 # Create a.out import libraries when installing
-TEMPLATE_Dll_POST_INST_CMDS = $$(QUIET)$$(TOOL_GCC3OMF_AR_IMP) $$@ -o $$(@:$(SUFF_DLL)=.a)
+TEMPLATE_Dll_POST_INST_CMDS = \
+  $$(QUIET)$$(TOOL_GCC3OMF_AR_IMP) $$@ -o $$(@:$(SUFF_DLL)=.a) \
+  $$(NL)$$(TAB)$$(QUIET)$$(TOOL_GCC3OMF_AR_IMP) $$@ -o $$(@D)/$(target).a
 
 TEMPLATE_Util = Utils
 TEMPLATE_Util_EXTENDS = C
