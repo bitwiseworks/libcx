@@ -586,6 +586,9 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
         __LIBC_PLOGGROUPS       pGroups;
     } __LIBC_LOGINST, *__LIBC_PLOGINST;
 
+    /* Sanity check */
+    assert(((__LIBC_PLOGINST)gLogInstance)->pGroups == &logGroups);
+
     DosDupHandle(1, &((__LIBC_PLOGINST)gLogInstance)->hFile);
   }
 
@@ -611,6 +614,26 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
   __libc_LogRaw(gLogInstance, traceGroup | __LIBC_LOG_MSGF_FLUSH, msg, cch);
 }
 
+/*
+ * @tod We would like to reset the log instance to NULL here to have it
+ * properly re-initialized in the child process but this crashes the child
+ * because LIBC Heap can't be used at that point. A solution would be either:
+ *
+ * - Re-init the log instance w/o allocation but __libc_LogInit doesn't support
+ * that.
+ * - Use __LIBC_PFORKHANDLE::pfnCompletionCallback from a fork parent callback
+ * to install a function called at the very end of fork() but unfortunately
+ * no user functions may be scheduled past LIBC completion functions (where
+ * the LIBC Heap is unlocked) and hence they are useful. This is still a way
+ * to go when this is fixed in LIBC (a proposal is in
+ * http://trac.netlabs.org/libc/ticket/366#comment:4).
+ *
+ * For now, we don't do anything and this is accidentially fine for us because
+ * we force logging to the console above and the console handles in the child
+ * process are identical to the parent (even the one we craete with
+ * DosDupHandle as it's inherited by default).
+ */
+#if 0
 static int forkChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation)
 {
   if (enmOperation != __LIBC_FORK_OP_FORK_CHILD)
@@ -618,8 +641,10 @@ static int forkChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation)
 
   /* Reset the log instance in the child process */
   gLogInstance = NULL;
+  return 0;
 }
 
 _FORK_CHILD1(0, forkChild);
+#endif
 
 #endif /* defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG) */
