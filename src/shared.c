@@ -597,9 +597,9 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
       return;
 
   if (file == NULL || line == 0 || func == NULL)
-    n = snprintf(msg, MaxBuf, "*** [%d:%d] ", getpid(), _gettid());
+    n = snprintf(msg, MaxBuf, "*** [%x:%d] ", getpid(), _gettid());
   else
-    n = snprintf(msg, MaxBuf, "*** [%d:%d] %s:%d:%s: ", getpid(), _gettid(), _getname(file), line, func);
+    n = snprintf(msg, MaxBuf, "*** [%x:%d] %s:%d:%s: ", getpid(), _gettid(), _getname(file), line, func);
   if (n < MaxBuf)
   {
     va_start(args, format);

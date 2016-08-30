@@ -46,7 +46,7 @@
 #endif
 
 #ifdef TRACE_USE_LIBC_LOG
-void trace(unsigned traceGroup, const char *file, int line, const char *func, const char *format, ...);
+void trace(unsigned traceGroup, const char *file, int line, const char *func, const char *format, ...) __printflike(5, 6);
 #define TRACE_FLUSH() do {} while (0)
 #define TRACE_RAW(msg, ...) trace(TRACE_GROUP, __FILE__, __LINE__, __FUNCTION__, msg, ## __VA_ARGS__)
 #define TRACE_CONT(msg, ...) trace(TRACE_GROUP, NULL, 0, NULL, msg, ## __VA_ARGS__)
@@ -84,7 +84,7 @@ struct FileDesc
 
   struct FcntlLock *fcntl_locks; /* Active fcntl file locks */
   unsigned long pwrite_lock; /* Mutex used in pwrite/pread */
-  char path[0]; /* File name with fill path (must be last!) */
+  char path[0]; /* File name with full path (must be last!) */
 };
 
 /**
