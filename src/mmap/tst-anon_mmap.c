@@ -1,3 +1,23 @@
+/*
+ * Testcase for anonymous shared mmap.
+ * Copyright (C) 2016 bww bitwise works GmbH.
+ * This file is part of the kLIBC Extension Library.
+ * Authored by Dmitry Kuminov <coding@dmik.org>, 2016.
+ *
+ * The kLIBC Extension Library is free software; you can redistribute it
+ * and/or modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * The kLIBC Extension Library is distributed in the hope that it will be
+ * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with the GNU C Library; if not, see
+ * <http://www.gnu.org/licenses/>.
+ */
 /*************************************************************************\
 *                  Copyright (C) Michael Kerrisk, 2014.                   *
 *                                                                         *
@@ -47,8 +67,8 @@ static int do_test(void)
                 MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (addr == MAP_FAILED){
         fprintf(stderr,"mmap failed - errno = %d\n",errno);
-	exit(-1);
-	}
+        exit(-1);
+    }
 
 #else                           /* Map /dev/zero */
     int fd;
@@ -65,6 +85,10 @@ static int do_test(void)
         errExit("close");
 #endif
 
+    /*
+     * Part 1. Test successful parent-chlid-grandchild access.
+     */
+
     *addr = 1;                  /* Initialize integer in mapped region */
 
     switch (fork()) {           /* Parent and child share mapping */
@@ -72,28 +96,108 @@ static int do_test(void)
         fprintf(stderr,"fork failed - errno = %d\n",errno);
 	exit(-1);
     case 0:                     /* Child: increment shared integer and exit */
-        printf("Child started, value = %d\n", *addr);
+        printf("Child started, ");
+        printf("value = %d\n", *addr);
         (*addr)++;
-        if (munmap(addr, sizeof(int)) == -1){
-	        fprintf(stderr,"munmap failed - errno = %d\n",errno);
-		exit(-1);
-		}
-        exit(EXIT_SUCCESS);
+        if (*addr != 2) {
+            fprintf(stderr,"value is %d, must be 2\n",*addr);
+            exit(-1);
+        }
+        switch (fork()) {       /* Parent and child share mapping */
+        case -1:
+            fprintf(stderr,"fork failed - errno = %d\n",errno);
+            exit(-1);
+        case 0:                 /* Child: increment shared integer and exit */
+            printf("Grand child started, ");
+            printf("value = %d\n", *addr);
+            (*addr)++;
+            if (*addr != 3) {
+                fprintf(stderr,"value is %d, must be 3\n",*addr);
+                exit(-1);
+            }
+            if (munmap(addr, sizeof(int)) == -1){
+                fprintf(stderr,"munmap failed - errno = %d\n",errno);
+                exit(-1);
+            }
+            exit(EXIT_SUCCESS);
+        default:                /* Parent: wait for child to terminate */
+            if (wait(&status) == -1){
+                fprintf(stderr,"wait failed - errno = %d\n",errno);
+                exit(-1);
+            }
+            if (!WIFEXITED(status) || WEXITSTATUS(status)) {
+                fprintf(stderr,"child crashed or returned non-zero (status %x)\n", status);
+                exit(-1);
+            }
+            printf("In child, value = %d\n", *addr);
+            if (*addr != 3) {
+                fprintf(stderr,"value is %d, must be 3\n",*addr);
+                exit(-1);
+            }
+            if (munmap(addr, sizeof(int)) == -1){
+                fprintf(stderr,"munmap failed - errno = %d\n",errno);
+                exit(-1);
+            }
+            exit(EXIT_SUCCESS);
+        }
 
     default:                    /* Parent: wait for child to terminate */
         if (wait(&status) == -1){
-	        fprintf(stderr,"wait failed - errno = %d\n",errno);
-		exit(-1);
-		}
+	    fprintf(stderr,"wait failed - errno = %d\n",errno);
+	    exit(-1);
+	}
         if (!WIFEXITED(status) || WEXITSTATUS(status)) {
             fprintf(stderr,"child crashed or returned non-zero (status %x)\n", status);
-		exit(-1);
-		}
+            exit(-1);
+	}
         printf("In parent, value = %d\n", *addr);
+        if (*addr != 3) {
+            fprintf(stderr,"value is %d, must be 3\n",*addr);
+            exit(-1);
+        }
+    }
+
+    /*
+     * Part 2. Test unsuccessful parent-chlid access.
+     */
+
+    switch (fork()) {           /* Parent and child share mapping */
+    case -1:
+        fprintf(stderr,"fork failed - errno = %d\n",errno);
+	exit(-1);
+    case 0:                     /* Child: increment shared integer and exit */
+        printf("Child started, ");
+        printf("value = %d\n", *addr);
+        (*addr)++;
+        if (*addr != 4) {
+            fprintf(stderr,"value is %d, must be 4\n",*addr);
+            exit(-1);
+        }
         if (munmap(addr, sizeof(int)) == -1){
-	        fprintf(stderr,"munmap failed - errno = %d\n",errno);
-		exit(-1);
-		}
+                fprintf(stderr,"munmap failed - errno = %d\n",errno);
+                exit(-1);
+        }
+        /* This should crash the child with SIGSEGV */
+        (*addr)++;
+        exit(EXIT_SUCCESS);
+    default:                    /* Parent: wait for child to terminate */
+        if (wait(&status) == -1){
+            fprintf(stderr,"wait failed - errno = %d\n",errno);
+            exit(-1);
+        }
+        if (WIFEXITED(status) || !WIFSIGNALED(status) || WTERMSIG(status) != SIGSEGV) {
+            fprintf(stderr,"child ended sucessfully or crashed not with SIGSEGV (status %x)\n", status);
+            exit(-1);
+        }
+        printf("In parent, value = %d\n", *addr);
+        if (*addr != 4) {
+            fprintf(stderr,"value is %d, must be 4\n",*addr);
+            exit(-1);
+        }
+        if (munmap(addr, sizeof(int)) == -1){
+            fprintf(stderr,"munmap failed - errno = %d\n",errno);
+            exit(-1);
+        }
         exit(EXIT_SUCCESS);
     }
 }
