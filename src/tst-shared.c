@@ -100,10 +100,10 @@ static int do_test(void)
 
   check_mem(5, hdr_size, 65536 * 2);
 
-  global_free(data4);
-  global_free(data3);
-  global_free(data2);
-  global_free(data);
+  free(data4);
+  free(data3);
+  free(data2);
+  free(data);
 
   global_unlock();
 

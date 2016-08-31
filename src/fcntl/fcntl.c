@@ -325,7 +325,7 @@ static struct FcntlLock *lock_split(struct FcntlLock *l, off_t split)
   assert(l);
   assert(l->start < split && split <= lock_end(l));
 
-  ln = global_alloc(sizeof(*ln));
+  GLOBAL_NEW(ln);
   if (!ln)
     return NULL;
 
@@ -388,7 +388,7 @@ static void optimize_locks(struct FileDesc *desc, struct FcntlLock *lpb,
 int fcntl_locking_filedesc_init(struct FileDesc *desc)
 {
   /* Add one free region that covers the entire file */
-  desc->fcntl_locks = global_alloc(sizeof(*desc->fcntl_locks));
+  GLOBAL_NEW(desc->fcntl_locks);
   if (!desc->fcntl_locks)
     return -1;
   return 0;
@@ -436,7 +436,7 @@ int fcntl_locking_init()
   if (gpData->refcnt == 1)
   {
     /* We are the first processs, initialize fcntl structures */
-    gpData->fcntl_locking = global_alloc(sizeof(*gpData->fcntl_locking));
+    GLOBAL_NEW(gpData->fcntl_locking);
     assert(gpData->fcntl_locking);
 
     arc = DosCreateEventSem(NULL, &gpData->fcntl_locking->hEvSem,
@@ -858,7 +858,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
           /* Initialze the blocking struct if needed */
           if (!blocked)
           {
-            blocked = global_alloc(sizeof(*blocked));
+            GLOBAL_NEW(blocked);
             if (!blocked)
             {
               bNoMem = 1;

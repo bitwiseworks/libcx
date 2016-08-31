@@ -18,7 +18,6 @@ EXPORTS
   ;ddd "_global_lock"
   ;ddd "_global_unlock"
   ;ddd "_global_alloc"
-  ;ddd "_global_free"
 IMPORTS
   _libc___init_app=libc066.___init_app
   _libc__beginthread=libc066.__beginthread

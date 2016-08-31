@@ -460,11 +460,6 @@ void *global_alloc(size_t size)
 #endif
 }
 
-void global_free(void *data)
-{
-  free(data);
-}
-
 static size_t hash_string(const char *str)
 {
   /*
@@ -573,7 +568,7 @@ struct FileDesc *get_file_desc(const char *path, int bNew)
 
   if (!desc && bNew)
   {
-    desc = global_alloc(sizeof(*desc) + strlen(path) + 1);
+    GLOBAL_NEW_PLUS(desc, strlen(path) + 1);
     if (desc)
     {
       /* Initialize the new desc */
