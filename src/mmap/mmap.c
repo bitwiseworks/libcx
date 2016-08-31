@@ -293,10 +293,11 @@ int munmap(void *addr, size_t len)
     {
       /* Simplest case: the whole region is unmapped */
       arc = DosFreeMem((PVOID)addr);
-      TRACE("DosFreeMem=%ld\n", arc);
-      /* Dereference and delete the mapping when appropriate */
+      TRACE("DosFreeMem = %ld\n", arc);
+      /* Dereference and free the mapping when appropriate */
       if (m->flags & MAP_SHARED)
       {
+        TRACE("Releasing shared mapping %p\n", m);
         assert(m->sh->refcnt);
         --(m->sh->refcnt);
       }
@@ -340,6 +341,7 @@ void mmap_term()
 {
   struct ProcDesc *desc;
   struct MemMap *m, *pm;
+  APIRET arc;
 
   /* Free all private mmap structures */
   desc = find_proc_desc(getpid());
@@ -349,26 +351,47 @@ void mmap_term()
     while (m)
     {
       struct MemMap *n = m->next;
-      TRACE("Removing private mapping %p\n", m);
+      TRACE("Removing private mapping %p (start %lx)\n", m, m->start);
+      arc = DosFreeMem((PVOID)m->start);
+      TRACE("DosFreeMem = %ld\n", arc);
       free(m);
       m = n;
     }
     desc->mmaps = NULL;
   }
 
-  if (gpData->refcnt == 0)
+  /* Dereference and free shared map structures when appropriate */
+  pm = NULL;
+  m = gpData->mmaps;
+  while (m)
   {
-    /* We are the last process, free shared mmap structures */
-    m = gpData->mmaps;
-    while (m)
+    struct MemMap *n = m->next;
+    ULONG len = m->end - m->start;
+    ULONG dosFlags;
+    arc = DosQueryMem((PVOID)m->start, &len, &dosFlags);
+    if (!arc && !(dosFlags & PAG_FREE))
     {
-      struct MemMap *n = m->next;
-      TRACE("Removing shared mapping %p\n", m);
-      free(m);
-      m = n;
+      /* This mapping is used in this process, releasea it */
+      TRACE("Releasing shared mapping %p (start %lx, refcnt %d)\n", m, m->start, m->sh->refcnt);
+      arc = DosFreeMem((PVOID)m->start);
+      TRACE("DosFreeMem = %ld\n", arc);
+      assert(m->sh->refcnt);
+      --(m->sh->refcnt);
+      if (m->sh->refcnt == 0)
+      {
+        TRACE("Removing shared mapping %p\n", m);
+        if (pm)
+          pm->next = n;
+        else
+          gpData->mmaps = n;
+        free(m);
+      }
     }
-    gpData->mmaps = NULL;
+    m = n;
   }
+
+  TRACE_IF(gpData->refcnt == 0, "gpData->mmaps = %p\n", gpData->mmaps);
+  assert(gpData->refcnt > 0 || gpData->mmaps == NULL);
 }
 
 /**
@@ -437,7 +460,7 @@ static int forkParent(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation
     assert(m->flags && MAP_SHARED);
     TRACE("giving mapping %p (start %lx) to pid %x\n", m, m->start, pForkHandle->pidChild);
     arc = DosGiveSharedMem((PVOID)m->start, pForkHandle->pidChild, m->dosFlags);
-    TRACE_IF(arc, "DosGiveSharedMem=%ld\n", arc);
+    TRACE_IF(arc, "DosGiveSharedMem = %ld\n", arc);
     ++(m->sh->refcnt);
     m = m->next;
   }
