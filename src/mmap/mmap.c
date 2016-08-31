@@ -254,6 +254,7 @@ static struct MemMap *find_mmap(ULONG addr, ULONG addr_end, struct MemMap **pm_o
 int munmap(void *addr, size_t len)
 {
   APIRET arc;
+  int rc = 0;
 
   TRACE("addr %p, len %u\n", addr, len);
 
@@ -287,6 +288,7 @@ int munmap(void *addr, size_t len)
     return mmap_munmap(addr, len);
   }
 
+  /* Note that when no mapping is found, POSIX requires to return success */
   if (m)
   {
     if (m->start == (ULONG)addr && m->end == addr_end)
@@ -321,15 +323,17 @@ int munmap(void *addr, size_t len)
        * munmap to unmap two or more adjacent regions which is not explicitly
        * supported by DosFreeMem either but we can achieve this by hand (this
        * will require to change the while statemet above and also to sort
-       * the mmap list by start addr). For now just succeed cause this is
-       * the requirement of POSI as well.
+       * the mmap list by start addr). For now just fail with ENOMEM as if it
+       * would require a split of the region but there is no memory for it.
        */
+       errno = ENOMEM;
+       rc = -1;
     }
   }
 
   global_unlock();
 
-  return 0;
+  return rc;
 }
 
 /**
