@@ -108,6 +108,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   GLOBAL_NEW_PLUS(mmap, flags & MAP_SHARED ? sizeof(*mmap->sh) : 0);
   if (!mmap)
   {
+    global_unlock();
     errno = ENOMEM;
     return MAP_FAILED;
   }
@@ -174,6 +175,8 @@ void *mmap(void *addr, size_t len, int prot, int flags,
     struct ProcDesc *desc = get_proc_desc(getpid());
     if (!desc)
     {
+      DosFreeMem((PVOID)mmap->start);
+      free(mmap);
       global_unlock();
       errno = ENOMEM;
       return MAP_FAILED;

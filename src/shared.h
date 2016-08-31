@@ -134,8 +134,8 @@ void *global_alloc(size_t size);
 void global_free(void *data);
 
 #define GLOBAL_NEW(ptr) ptr = (__typeof(ptr))global_alloc(sizeof(*ptr))
-#define GLOBAL_NEW_PLUS(ptr, more) ptr = (__typeof(ptr))global_alloc(sizeof(*ptr) + more)
-#define GLOBAL_NEW_ARRAY(ptr, sz) ptr = (__typeof(ptr))global_alloc(sizeof(*ptr) * sz)
+#define GLOBAL_NEW_PLUS(ptr, more) ptr = (__typeof(ptr))global_alloc(sizeof(*ptr) + (more))
+#define GLOBAL_NEW_ARRAY(ptr, sz) ptr = (__typeof(ptr))global_alloc(sizeof(*ptr) * (sz))
 
 enum HashMapOpt
 {

@@ -503,7 +503,8 @@ struct ProcDesc *get_proc_desc_ex(pid_t pid, enum HashMapOpt opt)
 
   assert(gpData);
 
-  /* We use identity as the hash function as we get a regularly ascending
+  /*
+   * We use identity as the hash function as we get a regularly ascending
    * sequence of PIDs on input and prime for the hash table size.
    */
   h = pid % PROC_DESC_HASH_SIZE;

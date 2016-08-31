@@ -81,7 +81,7 @@ static int do_test(void)
     case -1:
       perror("fork failed");
       exit(-1);
-    case 0:                     /* Child: increment shared integer and exit */
+    case 0:
       mem = (char *)mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE,
                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
       if (mem == MAP_FAILED)
