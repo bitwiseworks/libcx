@@ -27,6 +27,7 @@
 #include <process.h>
 #include <sys/types.h>
 #include <assert.h>
+#include <stdlib.h>
 
 #include <InnoTekLIBC/fork.h>
 
@@ -51,7 +52,12 @@ struct MemMap
   ULONG dosFlags; /* DosAllocMem protection flags */
   int fd; /* -1 for MAP_ANONYMOUS */
   off_t off;
-  pid_t pid; /* Creator PID */
+  /* Additional fields for shared mmaps */
+  struct Shared
+  {
+    pid_t pid; /* Creator PID */
+    int refcnt; /* Number of PIDs using it */
+  } sh[0];
 };
 
 /* Temporary import from MMAP.DLL */
@@ -65,23 +71,25 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   APIRET arc;
   struct MemMap *mmap;
 
-  /* For now we only support MAP_SHARED and non-file mappigs */
-  if ((flags & (MAP_SHARED | MAP_ANON)) != (MAP_SHARED | MAP_ANON) ||
-      fildes != -1)
+  /* For now we only support MAP_ANOPN mappings */
+  if (!(flags & MAP_ANON) || fildes != -1)
     return mmap_mmap(addr, len, prot, flags, fildes, off);
 
-  TRACE("addr %p, len %u, prot %x=%c%c%c, flags %x=%c%c, fildes %d, off %llu\n",
+  TRACE("addr %p, len %u, prot %x=%c%c%c, flags %x=%c%c%c%c, fildes %d, off %llu\n",
         addr, len, prot,
         prot & PROT_READ ? 'R' : '-',
         prot & PROT_WRITE ? 'W' : '-',
         prot & PROT_EXEC ? 'X' : '-',
         flags,
+        flags & MAP_SHARED ? 'S' : '-',
+        flags & MAP_PRIVATE ? 'P' : '-',
         flags & MAP_FIXED ? 'F' : '-',
         flags & MAP_ANON ? 'A' : '-',
         fildes, (uint64_t)off);
 
   /* Input validation */
-  if ((flags & (MAP_PRIVATE | MAP_SHARED)) == (MAP_PRIVATE | MAP_SHARED))
+  if ((flags & (MAP_PRIVATE | MAP_SHARED)) == (MAP_PRIVATE | MAP_SHARED) ||
+      (flags & (MAP_PRIVATE | MAP_SHARED)) == 0)
   {
     errno = EINVAL;
     return MAP_FAILED;
@@ -94,8 +102,10 @@ void *mmap(void *addr, size_t len, int prot, int flags,
     return MAP_FAILED;
   }
 
+  global_lock();
+
   /* Allocate a new entry */
-  GLOBAL_NEW(mmap);
+  GLOBAL_NEW_PLUS(mmap, flags & MAP_SHARED ? sizeof(*mmap->sh) : 0);
   if (!mmap)
   {
     errno = ENOMEM;
@@ -105,7 +115,6 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   mmap->flags = flags;
   mmap->fd = fildes;
   mmap->off = off;
-  mmap->pid = getpid();
 
   mmap->dosFlags = 0;
   if (prot & PROT_READ)
@@ -115,17 +124,36 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   if (prot & PROT_EXEC)
     mmap->dosFlags |= PAG_EXECUTE;
 
-  arc = DosAllocSharedMem((PPVOID)&mmap->start, NULL, len, mmap->dosFlags | OBJ_ANY | OBJ_GIVEABLE);
-  TRACE("DosAllocSharedMem(OBJ_ANY) = %lu\n", arc);
-  if (arc)
+  if (flags & MAP_SHARED)
   {
-    /* High memory may be unavailable, try w/o OBJ_ANY */
-    arc = DosAllocSharedMem((PPVOID)&mmap->start, NULL, len, mmap->dosFlags | OBJ_GIVEABLE);
-    TRACE("DosAllocSharedMem = %lu\n", arc);
+    /* Shared mmap specific data */
+    mmap->sh->pid = getpid();
+    mmap->sh->refcnt = 1;
+
+    arc = DosAllocSharedMem((PPVOID)&mmap->start, NULL, len, mmap->dosFlags | OBJ_ANY | OBJ_GIVEABLE);
+    TRACE("DosAllocSharedMem(OBJ_ANY) = %lu\n", arc);
+    if (arc)
+    {
+      /* High memory may be unavailable, try w/o OBJ_ANY */
+      arc = DosAllocSharedMem((PPVOID)&mmap->start, NULL, len, mmap->dosFlags | OBJ_GIVEABLE);
+      TRACE("DosAllocSharedMem = %lu\n", arc);
+    }
+  }
+  else
+  {
+    arc = DosAllocMem((PPVOID)&mmap->start, len, mmap->dosFlags | OBJ_ANY);
+    TRACE("DosAllocMem(OBJ_ANY) = %lu\n", arc);
+    if (arc)
+    {
+      /* High memory may be unavailable, try w/o OBJ_ANY */
+      arc = DosAllocMem((PPVOID)&mmap->start, len, mmap->dosFlags);
+      TRACE("DosAllocMem = %lu\n", arc);
+    }
   }
   if (arc)
   {
-    global_free(mmap);
+    free(mmap);
+    global_unlock();
     errno = ENOMEM;
     return MAP_FAILED;
   }
@@ -136,14 +164,88 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   /* Check if aligned to page size */
   assert(mmap->start && PAGE_ALIGNED(mmap->start));
 
-  global_lock();
+  if (flags & MAP_SHARED)
+  {
+    mmap->next = gpData->mmaps;
+    gpData->mmaps = mmap;
+  }
+  else
+  {
+    struct ProcDesc *desc = get_proc_desc(getpid());
+    if (!desc)
+    {
+      global_unlock();
+      errno = ENOMEM;
+      return MAP_FAILED;
+    }
 
-  mmap->next = gpData->mmaps;
-  gpData->mmaps = mmap;
+    mmap->next = desc->mmaps;
+    desc->mmaps = mmap;
+  }
 
   global_unlock();
 
   return (void *)mmap->start;
+}
+
+/**
+ * Searches for a mapping containign the given address range. Returns the
+ * found mapping or NULL. Returns the previous mapping in the list if pm_out
+ * is not NULL and the head of the list (private or shared) if head_out is
+ * not NULL. Must be called from under global_lock().
+ */
+static struct MemMap *find_mmap(ULONG addr, ULONG addr_end, struct MemMap **pm_out, struct MemMap ***head_out)
+{
+  struct ProcDesc *desc;
+  struct MemMap *m = NULL, *pm = NULL;
+  struct MemMap **head = NULL;
+
+  /* First, search for the address in our private mmaps */
+  desc = find_proc_desc(getpid());
+  if (desc)
+  {
+    head = &desc->mmaps;
+    m = *head;
+    while (m && !(m->start <= addr && m->end >= addr_end))
+    {
+      pm = m;
+      m = m->next;
+    }
+  }
+
+  if (!m)
+  {
+    /* Second, search for the address in our shared mmaps */
+    head = &gpData->mmaps;
+    m = *head;
+    while (m && !(m->start <= addr && m->end >= addr_end))
+    {
+      pm = m;
+      m = m->next;
+    }
+  }
+
+  TRACE_IF(!m, "mapping not found\n");
+  TRACE_IF(m, "found m %p in %s (start %lx, end %lx, flags %x=%c%c%c%c, dosFlags %lx, fd %d, off %llu, pid %x, refcnt %d)\n",
+           m, head == &gpData->mmaps ? "SHARED" : "PRIVATE", m->start, m->end, m->flags,
+           m->flags & MAP_SHARED ? 'S' : '-',
+           m->flags & MAP_PRIVATE ? 'P' : '-',
+           m->flags & MAP_FIXED ? 'F' : '-',
+           m->flags & MAP_ANON ? 'A' : '-',
+           m->dosFlags, m->fd, (uint64_t)m->off,
+           m->flags & MAP_SHARED ? m->sh->pid : 0,
+           m->flags & MAP_SHARED ? m->sh->refcnt : 0);
+
+  assert(!m ||
+         (head != &gpData->mmaps && m->flags & MAP_PRIVATE) ||
+         (head == &gpData->mmaps && m->flags & MAP_SHARED));
+
+  if (pm_out)
+    *pm_out = pm;
+  if (head_out)
+    *head_out = head;
+
+  return m;
 }
 
 int munmap(void *addr, size_t len)
@@ -168,22 +270,12 @@ int munmap(void *addr, size_t len)
 
   ULONG addr_end = ((ULONG)addr) + len;
 
-  struct MemMap *m;
+  struct MemMap *m = NULL, *pm = NULL;
+  struct MemMap **head;
 
   global_lock();
 
-  /* Search for the address in our mmaps */
-  m = gpData->mmaps;
-  while (m && !(m->start <= (ULONG)addr && m->end >= addr_end))
-    m = m->next;
-
-  TRACE_IF(!m, "mapping not found\n");
-  TRACE_IF(m, "found m %p (start %lx, end %lx, flags %x=%c%c, dosFlags %lx, fd %d, off %llu, pid %d)\n",
-           m, m->start, m->end, m->flags,
-           m->flags & MAP_FIXED ? 'F' : '-',
-           m->flags & MAP_ANON ? 'A' : '-',
-           m->dosFlags, m->fd, (uint64_t)m->off, m->pid);
-
+  m = find_mmap((ULONG)addr, addr_end, &pm, &head);
   if (!m)
   {
     global_unlock();
@@ -192,14 +284,28 @@ int munmap(void *addr, size_t len)
     return mmap_munmap(addr, len);
   }
 
-  /* @todo only support MAP_SHARED for now */
-  if (m && m->flags & MAP_SHARED)
+  if (m)
   {
     if (m->start == (ULONG)addr && m->end == addr_end)
     {
       /* Simplest case: the whole region is unmapped */
       arc = DosFreeMem((PVOID)addr);
       TRACE("DosFreeMem=%ld\n", arc);
+      /* Dereference and delete the mapping when appropriate */
+      if (m->flags & MAP_SHARED)
+      {
+        assert(m->sh->refcnt);
+        --(m->sh->refcnt);
+      }
+      if (m->flags & MAP_PRIVATE || m->sh->refcnt == 0)
+      {
+        TRACE("Removing mapping %p\n", m);
+        if (pm)
+          pm->next = m->next;
+        else
+          *head = m->next;
+        free(m);
+      }
     }
     else
     {
@@ -223,20 +329,39 @@ int munmap(void *addr, size_t len)
 }
 
 /**
- * Uninitializes the mmap shared structures.
+ * Uninitializes the mmap structures.
  * Called upon each process termination before gpData is uninitialized
  * or destroyed.
  */
 void mmap_term()
 {
-  if (gpData->refcnt == 0)
+  struct ProcDesc *desc;
+  struct MemMap *m, *pm;
+
+  /* Free all private mmap structures */
+  desc = find_proc_desc(getpid());
+  if (desc)
   {
-    /* We are the last process, free mmap structures */
-    struct MemMap *m = gpData->mmaps;
+    m = desc->mmaps;
     while (m)
     {
       struct MemMap *n = m->next;
-      global_free(m);
+      TRACE("Removing private mapping %p\n", m);
+      free(m);
+      m = n;
+    }
+    desc->mmaps = NULL;
+  }
+
+  if (gpData->refcnt == 0)
+  {
+    /* We are the last process, free shared mmap structures */
+    m = gpData->mmaps;
+    while (m)
+    {
+      struct MemMap *n = m->next;
+      TRACE("Removing shared mapping %p\n", m);
+      free(m);
       m = n;
     }
     gpData->mmaps = NULL;
@@ -263,20 +388,9 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
 
     global_lock();
 
-    /* Search for the address in our mmaps */
-    m = gpData->mmaps;
-    while (m && !(m->start <= addr && m->end > addr))
-      m = m->next;
+    m = find_mmap(addr, addr + 1, NULL, NULL);
 
-    TRACE_IF(!m, "mapping not found\n");
-    TRACE_IF(m, "found m %p (start %lx, end %lx, flags %x=%c%c, dosFlags %lx, fd %d, off %llu, pid %d)\n",
-             m, m->start, m->end, m->flags,
-             m->flags & MAP_FIXED ? 'F' : '-',
-             m->flags & MAP_ANON ? 'A' : '-',
-             m->dosFlags, m->fd, (uint64_t)m->off, m->pid);
-
-    /* @todo only support MAP_SHARED for now */
-    if (m && m->flags & MAP_SHARED)
+    if (m)
     {
       APIRET arc;
       ULONG len = 1;
@@ -286,7 +400,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
       if (!arc)
       {
         TRACE("dosFlags %lx\n", dosFlags);
-        if (!arc && !(dosFlags & PAG_COMMIT))
+        if (!arc && !(dosFlags & (PAG_FREE | PAG_COMMIT)))
         {
           arc = DosSetMem((PVOID)pageAddr, len, m->dosFlags | PAG_COMMIT);
           if (!arc)
@@ -315,11 +429,13 @@ static int forkParent(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation
 
   /* Give MAP_SHARED mappings to the child process (and all grandchildren) */
   m = gpData->mmaps;
-  while (m && m->flags && MAP_SHARED)
+  while (m)
   {
-    TRACE("giving mapping %lx to pid %d\n", m->start, pForkHandle->pidChild);
+    assert(m->flags && MAP_SHARED);
+    TRACE("giving mapping %p (start %lx) to pid %x\n", m, m->start, pForkHandle->pidChild);
     arc = DosGiveSharedMem((PVOID)m->start, pForkHandle->pidChild, m->dosFlags);
     TRACE_IF(arc, "DosGiveSharedMem=%ld\n", arc);
+    ++(m->sh->refcnt);
     m = m->next;
   }
 

@@ -20,6 +20,7 @@
  */
 
 #include <stdio.h>
+#include <process.h>
 #include <umalloc.h>
 
 #ifdef TRACE_ENABLED
@@ -75,6 +76,19 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
 
 #define FILE_DESC_HASH_SIZE 127 /* Prime */
 
+#define PROC_DESC_HASH_SIZE 17 /* Prime */
+
+/**
+ * Process descriptor (hash map entry).
+ */
+struct ProcDesc
+{
+  struct ProcDesc *next;
+
+  pid_t pid;
+  struct MemMap *mmaps; /* private mmap mappings */
+};
+
 /**
  * File descriptor (hash map entry).
  */
@@ -96,9 +110,10 @@ struct SharedData
   Heap_t heap; /* shared heap */
   int refcnt; /* number of processes using us */
   size_t maxHeapUsed; /* max size of used heap space */
+  struct ProcDesc **procs; /* Process descriptor hash map of PROC_INFO_HASH_SIZE */
   struct FileDesc **files; /* File descriptor hash map of FILE_DESC_HASH_SIZE */
   struct FcntlLocking *fcntl_locking; /* Shared data for fcntl locking */
-  struct MemMap *mmaps; /* mmap mappings */
+  struct MemMap *mmaps; /* shared mmap mappings */
   /* heap memory follows here */
 };
 
@@ -119,7 +134,20 @@ void *global_alloc(size_t size);
 void global_free(void *data);
 
 #define GLOBAL_NEW(ptr) ptr = (__typeof(ptr))global_alloc(sizeof(*ptr))
+#define GLOBAL_NEW_PLUS(ptr, more) ptr = (__typeof(ptr))global_alloc(sizeof(*ptr) + more)
 #define GLOBAL_NEW_ARRAY(ptr, sz) ptr = (__typeof(ptr))global_alloc(sizeof(*ptr) * sz)
+
+enum HashMapOpt
+{
+  HashMapOpt_None = 0,
+  HashMapOpt_New = 1,
+  HashMapOpt_Take = 2,
+};
+
+struct ProcDesc *get_proc_desc_ex(pid_t pid, enum HashMapOpt opt);
+static inline struct ProcDesc *get_proc_desc(pid_t pid) { return get_proc_desc_ex(pid, HashMapOpt_New); }
+static inline struct ProcDesc *find_proc_desc(pid_t pid) { return get_proc_desc_ex(pid, HashMapOpt_None); }
+static inline struct ProcDesc *take_proc_desc(pid_t pid) { return get_proc_desc_ex(pid, HashMapOpt_Take); }
 
 struct FileDesc *get_file_desc(const char *path, int bNew);
 

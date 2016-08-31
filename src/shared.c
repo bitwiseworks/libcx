@@ -226,7 +226,10 @@ static int shared_init(int bKeepLock)
       gpData->refcnt = 1;
 
       /* Initialize common structures */
-      gpData->files = global_alloc(FILE_DESC_HASH_SIZE * sizeof(*gpData->files));
+      GLOBAL_NEW_ARRAY(gpData->procs, PROC_DESC_HASH_SIZE);
+      TRACE("gpData->procs = %p\n", gpData->procs);
+      assert(gpData->procs);
+      GLOBAL_NEW_ARRAY(gpData->files, FILE_DESC_HASH_SIZE);
       TRACE("gpData->files = %p\n", gpData->files);
       assert(gpData->files);
     }
@@ -267,13 +270,23 @@ static void shared_term()
       _HEAPSTATS hst;
 #endif
       int i;
+      struct ProcDesc *desc;
 
       assert(gpData->refcnt);
       gpData->refcnt--;
 
       /* Uninitialize individual components */
-      mmap_term();
       fcntl_locking_term();
+      mmap_term();
+
+      /*
+       * Remove the process description upon process termination (note that
+       * all individual components of the desc should be already uninitialized
+       * above)
+       */
+      desc = take_proc_desc(getpid());
+      if (desc)
+        free(desc);
 
       if (gpData->refcnt == 0)
       {
@@ -287,6 +300,7 @@ static void shared_term()
             while (desc)
             {
               struct FileDesc *next = desc->next;
+              /* Call component-specific uninitialization */
               pwrite_filedesc_term(desc);
               fcntl_locking_filedesc_term(desc);
               free(desc);
@@ -295,6 +309,9 @@ static void shared_term()
           }
           free(gpData->files);
         }
+        TRACE("gpData->procs %p\n", gpData->procs);
+        if (gpData->procs)
+          free(gpData->procs);
       }
 
       _uclose(gpData->heap);
@@ -421,6 +438,12 @@ void global_unlock()
   assert(arc == NO_ERROR);
 }
 
+/**
+ * Allocates a new block of shared LIBCX memory. Must be called under
+ * global_lock() (@todo this is only true until we find a way on how to
+ * initialize forked children at startup,
+ * see http://trac.netlabs.org/libc/ticket/366).
+ */
 void *global_alloc(size_t size)
 {
 #ifdef STATS_ENABLED
@@ -461,6 +484,63 @@ static size_t hash_string(const char *str)
   }
 
   return hash;
+}
+
+/**
+ * Returns a process descriptor sturcture for the given process.
+ * Must be called under global_lock().
+ * Returns NULL when opt is HashMapOpt_New and there is not enough memory
+ * to allocate a new sctructure, or when opt is not HashMapOpt_New and there
+ * is no descriptor for the given process. When opt is HashMapOpt_Take and
+ * the descriptor is found, it will be removed from the hash map (it's then
+ * the responsibility of the caller to free the returned pointer).
+ */
+struct ProcDesc *get_proc_desc_ex(pid_t pid, enum HashMapOpt opt)
+{
+  size_t h;
+  struct ProcDesc *desc, *prev;
+  int rc;
+
+  assert(gpData);
+
+  /* We use identity as the hash function as we get a regularly ascending
+   * sequence of PIDs on input and prime for the hash table size.
+   */
+  h = pid % PROC_DESC_HASH_SIZE;
+  desc = gpData->procs[h];
+  prev = NULL;
+
+  while (desc)
+  {
+    if (desc->pid == pid)
+      break;
+    prev = desc;
+    desc = desc->next;
+  }
+
+  if (!desc && opt == HashMapOpt_New)
+  {
+    GLOBAL_NEW(desc);
+    if (desc)
+    {
+      /* Initialize the new desc */
+      desc->pid = pid;
+      /* Call component-specific initialization */
+      /* NOTE: None at the moment. */
+      /* Put to the head of the bucket */
+      desc->next = gpData->procs[h];
+      gpData->procs[h] = desc;
+    }
+  }
+  else if (desc && opt == HashMapOpt_Take)
+  {
+    if (prev)
+      prev->next = desc->next;
+    else
+      gpData->procs[h] = desc->next;
+  }
+
+  return desc;
 }
 
 /**
@@ -630,7 +710,7 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
  *
  * For now, we don't do anything and this is accidentially fine for us because
  * we force logging to the console above and the console handles in the child
- * process are identical to the parent (even the one we craete with
+ * process are identical to the parent (even the one we create with
  * DosDupHandle as it's inherited by default).
  */
 #if 0
