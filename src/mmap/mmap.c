@@ -28,6 +28,7 @@
 #include <sys/types.h>
 #include <assert.h>
 #include <stdlib.h>
+#include <emx/io.h>
 
 #include <InnoTekLIBC/fork.h>
 
@@ -36,8 +37,8 @@
 #define TRACE_GROUP TRACE_GROUP_MMAP
 #include "../shared.h"
 
-#define PAGE_ALIGNED(addr) (!(((ULONG)addr) & 4095))
-#define PAGE_ALIGN(addr) (((ULONG)addr) & ~4095)
+#define PAGE_ALIGNED(addr) (!(((ULONG)addr) & (PAGE_SIZE - 1)))
+#define PAGE_ALIGN(addr) (((ULONG)addr) & ~(PAGE_SIZE - 1))
 
 /**
  * Memory mapping (linked list entry).
@@ -70,10 +71,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
 {
   APIRET arc;
   struct MemMap *mmap;
-
-  /* For now we only support MAP_ANOPN mappings */
-  if (!(flags & MAP_ANON) || fildes != -1)
-    return mmap_mmap(addr, len, prot, flags, fildes, off);
+  int fd = -1;
 
   TRACE("addr %p, len %u, prot %x=%c%c%c, flags %x=%c%c%c%c, fildes %d, off %llu\n",
         addr, len, prot,
@@ -89,7 +87,10 @@ void *mmap(void *addr, size_t len, int prot, int flags,
 
   /* Input validation */
   if ((flags & (MAP_PRIVATE | MAP_SHARED)) == (MAP_PRIVATE | MAP_SHARED) ||
-      (flags & (MAP_PRIVATE | MAP_SHARED)) == 0)
+      (flags & (MAP_PRIVATE | MAP_SHARED)) == 0 ||
+      ((flags & MAP_ANON) && fildes != -1) ||
+      (!(flags & MAP_ANON) && fildes == -1) ||
+      len == 0)
   {
     errno = EINVAL;
     return MAP_FAILED;
@@ -102,19 +103,94 @@ void *mmap(void *addr, size_t len, int prot, int flags,
     return MAP_FAILED;
   }
 
+  if (!(flags & MAP_ANON))
+  {
+    __LIBC_PFH pFH;
+    FILESTATUS3L st;
+    ULONG mode;
+
+    pFH = __libc_FH(fildes);
+    TRACE_IF(pFH, "pszNativePath [%s], fFlags %x\n", pFH->pszNativePath, pFH->fFlags);
+    if (!pFH || !(pFH->fFlags & F_FILE))
+    {
+      errno = !pFH ? EBADF : ENODEV;
+      return MAP_FAILED;
+    }
+
+    arc = DosQueryFHState(fildes, &mode);
+    TRACE_IF(arc, "DosQueryFHState = %lu\n", arc);
+    if (!arc)
+    {
+      /* Check flags/prot compatibility with file access */
+      TRACE("file mode %lx\n", mode);
+      if ((mode & 0x7) == OPEN_ACCESS_WRITEONLY ||
+          (flags & MAP_SHARED && prot & PROT_WRITE &&
+           (mode & 0x7) != OPEN_ACCESS_READWRITE))
+      {
+        errno = EACCES;
+        return MAP_FAILED;
+      }
+
+      /* Make own file handle since POSIX allows the original one to be closed */
+      arc = DosDupHandle(fildes, (PHFILE)&fd);
+      TRACE_IF(arc, "DosDupHandle = %lu\n", arc);
+      if (arc)
+      {
+        errno = EMFILE;
+        return MAP_FAILED;
+      }
+
+      /* Prevent the system critical-error handler */
+      mode = OPEN_FLAGS_FAIL_ON_ERROR;
+      /* Also disable inheritance for private mappings */
+      if (flags & MAP_PRIVATE)
+        mode |= OPEN_FLAGS_NOINHERIT;
+      arc = DosSetFHState(fd, mode);
+      TRACE_IF(arc, "DosSetFHState = %lu\n", arc);
+    }
+
+    if (arc)
+    {
+      /* This is an unexpected error, return "mmap not supported" */
+      if (fd != -1)
+        DosClose(fd);
+      errno = ENODEV;
+      return MAP_FAILED;
+    }
+
+    arc = DosQueryFileInfo(fd, FIL_STANDARDL, &st, sizeof(st));
+    if (arc)
+    {
+      DosClose(fd);
+      errno = EOVERFLOW;
+      return MAP_FAILED;
+    }
+
+    TRACE("dup fd %d, file size %llu\n", fd, st.cbFile);
+
+    if (off + len > st.cbFile)
+    {
+      DosClose(fd);
+      errno = EOVERFLOW;
+      return MAP_FAILED;
+    }
+  }
+
   global_lock();
 
   /* Allocate a new entry */
   GLOBAL_NEW_PLUS(mmap, flags & MAP_SHARED ? sizeof(*mmap->sh) : 0);
   if (!mmap)
   {
+    if (fd != -1)
+      DosClose(fd);
     global_unlock();
     errno = ENOMEM;
     return MAP_FAILED;
   }
 
   mmap->flags = flags;
-  mmap->fd = fildes;
+  mmap->fd = fd;
   mmap->off = off;
 
   mmap->dosFlags = 0;
@@ -154,13 +230,15 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   if (arc)
   {
     free(mmap);
+    if (fd != -1)
+      DosClose(fd);
     global_unlock();
     errno = ENOMEM;
     return MAP_FAILED;
   }
 
   mmap->end = mmap->start + len;
-  TRACE("mmap->start %lx\n", mmap->start);
+  TRACE("mmap->start %lx, mmap->end %lx\n", mmap->start, mmap->end);
 
   /* Check if aligned to page size */
   assert(mmap->start && PAGE_ALIGNED(mmap->start));
@@ -177,6 +255,8 @@ void *mmap(void *addr, size_t len, int prot, int flags,
     {
       DosFreeMem((PVOID)mmap->start);
       free(mmap);
+      if (fd != -1)
+        DosClose(fd);
       global_unlock();
       errno = ENOMEM;
       return MAP_FAILED;
@@ -284,11 +364,10 @@ int munmap(void *addr, size_t len)
   {
     global_unlock();
 
-    /* Temporarily fall back to MMAP.DLL */
-    return mmap_munmap(addr, len);
+    /* POSIX requires to return silently when no matching region is found */
+    return rc;
   }
 
-  /* Note that when no mapping is found, POSIX requires to return success */
   if (m)
   {
     if (m->start == (ULONG)addr && m->end == addr_end)
@@ -310,6 +389,8 @@ int munmap(void *addr, size_t len)
           pm->next = m->next;
         else
           *head = m->next;
+        if (m->fd != -1)
+          DosClose(m->fd);
         free(m);
       }
     }
@@ -358,6 +439,8 @@ void mmap_term()
       TRACE("Removing private mapping %p (start %lx)\n", m, m->start);
       arc = DosFreeMem((PVOID)m->start);
       TRACE("DosFreeMem = %ld\n", arc);
+      if (m->fd != -1)
+        DosClose(m->fd);
       free(m);
       m = n;
     }
@@ -375,7 +458,7 @@ void mmap_term()
     arc = DosQueryMem((PVOID)m->start, &len, &dosFlags);
     if (!arc && !(dosFlags & PAG_FREE))
     {
-      /* This mapping is used in this process, releasea it */
+      /* This mapping is used in this process, release it */
       TRACE("Releasing shared mapping %p (start %lx, refcnt %d)\n", m, m->start, m->sh->refcnt);
       arc = DosFreeMem((PVOID)m->start);
       TRACE("DosFreeMem = %ld\n", arc);
@@ -388,6 +471,8 @@ void mmap_term()
           pm->next = n;
         else
           gpData->mmaps = n;
+        if (m->fd != -1)
+          DosClose(m->fd);
         free(m);
       }
     }
@@ -434,7 +519,24 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
         {
           arc = DosSetMem((PVOID)pageAddr, len, m->dosFlags | PAG_COMMIT);
           if (!arc)
+          {
             retry = 1;
+            if (m->fd != -1)
+            {
+              /* Read file contents into memory */
+              ULONG read;
+              LONGLONG pos;
+              TRACE("Reading %d bytes to addr %p from fd %d at offset %llu\n",
+                    PAGE_SIZE, pageAddr, m->fd, (uint64_t)m->off + (pageAddr - m->start));
+              arc = DosSetFilePtrL(m->fd, m->off + (pageAddr - m->start), FILE_BEGIN, &pos);
+              TRACE_IF(arc, "DosSetFilePtrL = %ld\n", arc);
+              if (!arc)
+              {
+                arc = DosRead(m->fd, (PVOID)pageAddr, PAGE_SIZE, &read);
+                TRACE_IF(arc, "DosRead = %ld\n", arc);
+              }
+            }
+          }
         }
       }
     }

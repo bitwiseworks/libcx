@@ -21,5 +21,3 @@ EXPORTS
 IMPORTS
   _libc___init_app=libc066.___init_app
   _libc__beginthread=libc066.__beginthread
-  _mmap_mmap=mmap._mmap
-  _mmap_munmap=mmap._munmap

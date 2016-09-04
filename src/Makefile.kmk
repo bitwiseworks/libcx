@@ -82,4 +82,8 @@ PROGRAMS += tst-anon_mmap2
 tst-anon_mmap2_TEMPLATE = Test
 tst-anon_mmap2_SOURCES = mmap/tst-anon_mmap2.c
 
+PROGRAMS += tst-mmap2
+tst-mmap2_TEMPLATE = Test
+tst-mmap2_SOURCES = mmap/tst-mmap2.c
+
 include $(FILE_KBUILD_SUB_FOOTER)
