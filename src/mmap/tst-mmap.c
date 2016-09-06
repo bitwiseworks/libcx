@@ -1,5 +1,5 @@
 /*
- * Testcase for private mmap.
+ * Testcase for shared mmap.
  * Copyright (C) 2016 bww bitwise works GmbH.
  * This file is part of the kLIBC Extension Library.
  * Authored by Dmitry Kuminov <coding@dmik.org>, 2016.
@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <io.h>
 #include <sys/param.h>
 #include <sys/mman.h>
 
@@ -46,7 +47,7 @@ do_test (void)
   unsigned char *addr;
   char *fname;
 
-  int fd = create_temp_file("tst-mmap2-", &fname);
+  int fd = create_temp_file("tst-mmap-", &fname);
   if (fd == -1)
     {
       puts("create_temp_file failed");
@@ -77,7 +78,7 @@ do_test (void)
 
   printf("Test 1\n");
 
-  addr = mmap(NULL, FILE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+  addr = mmap(NULL, FILE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
   if (addr == MAP_FAILED)
   {
     perror("mmap failed");
@@ -107,7 +108,7 @@ do_test (void)
 
   enum { Offset = 11 };
 
-  addr = mmap(NULL, FILE_SIZE - Offset, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, Offset);
+  addr = mmap(NULL, FILE_SIZE - Offset, PROT_READ | PROT_WRITE, MAP_SHARED, fd, Offset);
   if (addr == MAP_FAILED)
   {
     perror("mmap failed");
@@ -124,7 +125,8 @@ do_test (void)
   }
 
   /*
-   * Test 3: modify mmap (should not change the underlying file)
+   * Test 3: modify mmap (should change the underlying file and be visible
+   * in children)
    */
 
   printf("Test 3\n");
@@ -164,9 +166,9 @@ do_test (void)
 
   for (i = 0; i < TEST_SIZE * 2; ++i)
   {
-    if (buf2[i] != buf[i + Offset + PAGE_SIZE - TEST_SIZE])
+    if (buf2[i] != TEST_VAL)
     {
-      printf("buf2[%d] is %u, must be %u\n", i, buf2[i], buf[i + Offset]);
+      printf("buf2[%d] is %u, must be %u\n", i, buf2[i], TEST_VAL);
       return 1;
     }
   }

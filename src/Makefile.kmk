@@ -82,6 +82,10 @@ PROGRAMS += tst-anon_mmap2
 tst-anon_mmap2_TEMPLATE = Test
 tst-anon_mmap2_SOURCES = mmap/tst-anon_mmap2.c
 
+PROGRAMS += tst-mmap
+tst-mmap_TEMPLATE = Test
+tst-mmap_SOURCES = mmap/tst-mmap.c
+
 PROGRAMS += tst-mmap2
 tst-mmap2_TEMPLATE = Test
 tst-mmap2_SOURCES = mmap/tst-mmap2.c

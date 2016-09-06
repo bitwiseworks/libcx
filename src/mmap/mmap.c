@@ -37,8 +37,14 @@
 #define TRACE_GROUP TRACE_GROUP_MMAP
 #include "../shared.h"
 
+#define DIVIDE_UP(count, bucket_sz) (((count) + (bucket_sz - 1)) / (bucket_sz))
+
 #define PAGE_ALIGNED(addr) (!(((ULONG)addr) & (PAGE_SIZE - 1)))
 #define PAGE_ALIGN(addr) (((ULONG)addr) & ~(PAGE_SIZE - 1))
+#define NUM_PAGES(count) DIVIDE_UP((count), PAGE_SIZE)
+
+/* Width of a dirty map entry in bits */
+#define DIRTYMAP_WIDTH (sizeof(*((struct MemMap*)0)->sh->dirty) * 8)
 
 /**
  * Memory mapping (linked list entry).
@@ -58,6 +64,7 @@ struct MemMap
   {
     pid_t pid; /* Creator PID */
     int refcnt; /* Number of PIDs using it */
+    uint32_t dirty[0]; /* Bit array of dirty pages */
   } sh[0];
 };
 
@@ -72,6 +79,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   APIRET arc;
   struct MemMap *mmap;
   int fd = -1;
+  size_t dirtymap_sz = 0;
 
   TRACE("addr %p, len %u, prot %x=%c%c%c, flags %x=%c%c%c%c, fildes %d, off %llu\n",
         addr, len, prot,
@@ -111,8 +119,9 @@ void *mmap(void *addr, size_t len, int prot, int flags,
 
     pFH = __libc_FH(fildes);
     TRACE_IF(pFH, "pszNativePath [%s], fFlags %x\n", pFH->pszNativePath, pFH->fFlags);
-    if (!pFH || !(pFH->fFlags & F_FILE))
+    if (!pFH || (pFH->fFlags & __LIBC_FH_TYPEMASK) != F_FILE)
     {
+      /* We only support regular files now */
       errno = !pFH ? EBADF : ENODEV;
       return MAP_FAILED;
     }
@@ -174,12 +183,17 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       errno = EOVERFLOW;
       return MAP_FAILED;
     }
+
+    /* Calculate the number of bytes (in 4 byte words) needed for the dirty page bitmap */
+    if (flags & MAP_SHARED)
+      dirtymap_sz = DIVIDE_UP(NUM_PAGES(len), DIRTYMAP_WIDTH) * (DIRTYMAP_WIDTH / 8);
   }
 
   global_lock();
 
   /* Allocate a new entry */
-  GLOBAL_NEW_PLUS(mmap, flags & MAP_SHARED ? sizeof(*mmap->sh) : 0);
+  TRACE_IF(flags & MAP_SHARED, "dirty map size %u bytes\n", dirtymap_sz);
+  GLOBAL_NEW_PLUS(mmap, flags & MAP_SHARED ? sizeof(*mmap->sh) + dirtymap_sz : 0);
   if (!mmap)
   {
     if (fd != -1)
@@ -238,7 +252,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   }
 
   mmap->end = mmap->start + len;
-  TRACE("mmap->start %lx, mmap->end %lx\n", mmap->start, mmap->end);
+  TRACE("mmap->start %p, mmap->end %p\n", mmap->start, mmap->end);
 
   /* Check if aligned to page size */
   assert(mmap->start && PAGE_ALIGNED(mmap->start));
@@ -309,7 +323,7 @@ static struct MemMap *find_mmap(ULONG addr, ULONG addr_end, struct MemMap **pm_o
   }
 
   TRACE_IF(!m, "mapping not found\n");
-  TRACE_IF(m, "found m %p in %s (start %lx, end %lx, flags %x=%c%c%c%c, dosFlags %lx, fd %d, off %llu, pid %x, refcnt %d)\n",
+  TRACE_IF(m, "found m %p in %s (start %p, end %p, flags %x=%c%c%c%c, dosFlags %lx, fd %d, off %llu, pid %x, refcnt %d)\n",
            m, head == &gpData->mmaps ? "SHARED" : "PRIVATE", m->start, m->end, m->flags,
            m->flags & MAP_SHARED ? 'S' : '-',
            m->flags & MAP_PRIVATE ? 'P' : '-',
@@ -329,6 +343,47 @@ static struct MemMap *find_mmap(ULONG addr, ULONG addr_end, struct MemMap **pm_o
     *head_out = head;
 
   return m;
+}
+
+static void flush_dirty_pages(struct MemMap *m)
+{
+  TRACE("mapping %p\n", m);
+  assert(m && m->flags & MAP_SHARED && m->dosFlags & PAG_WRITE && m->fd != -1);
+
+  /* Calculate the number of 4 byte words in the dirty page bitmap */
+  size_t dirtymap_len = DIVIDE_UP(NUM_PAGES(m->end - m->start), DIRTYMAP_WIDTH);
+  ULONG base, page;
+  size_t i, j;
+  APIRET arc;
+
+  base = m->start;
+  for (i = 0; i < dirtymap_len; ++i)
+  {
+    /* Checking blocks of 32 pages at once lets us quickly skip clean ones */
+    if (m->sh->dirty[i])
+    {
+      uint32_t bit = 0x1;
+      for (j = 0; j < DIRTYMAP_WIDTH; ++j, bit <<= 1)
+      {
+        if (m->sh->dirty[i] & bit)
+        {
+          ULONG written;
+          LONGLONG pos;
+          page = base + PAGE_SIZE * j;
+          TRACE("Writing %d bytes from addr %p to fd %d at offset %llu\n",
+                PAGE_SIZE, page, m->fd, (uint64_t)m->off + (page - m->start));
+          arc = DosSetFilePtrL(m->fd, m->off + (page - m->start), FILE_BEGIN, &pos);
+          TRACE_IF(arc, "DosSetFilePtrL = %ld\n", arc);
+          if (!arc)
+          {
+            arc = DosWrite(m->fd, (PVOID)page, PAGE_SIZE, &written);
+            TRACE_IF(arc, "DosWrite = %ld\n", arc);
+          }
+        }
+      }
+    }
+    base += PAGE_SIZE * DIRTYMAP_WIDTH;
+  }
 }
 
 int munmap(void *addr, size_t len)
@@ -373,6 +428,8 @@ int munmap(void *addr, size_t len)
     if (m->start == (ULONG)addr && m->end == addr_end)
     {
       /* Simplest case: the whole region is unmapped */
+      if (m->flags & MAP_SHARED && m->dosFlags & PAG_WRITE && m->fd != -1)
+        flush_dirty_pages(m);
       arc = DosFreeMem((PVOID)addr);
       TRACE("DosFreeMem = %ld\n", arc);
       /* Dereference and free the mapping when appropriate */
@@ -436,7 +493,7 @@ void mmap_term()
     while (m)
     {
       struct MemMap *n = m->next;
-      TRACE("Removing private mapping %p (start %lx)\n", m, m->start);
+      TRACE("Removing private mapping %p (start %p)\n", m, m->start);
       arc = DosFreeMem((PVOID)m->start);
       TRACE("DosFreeMem = %ld\n", arc);
       if (m->fd != -1)
@@ -459,7 +516,7 @@ void mmap_term()
     if (!arc && !(dosFlags & PAG_FREE))
     {
       /* This mapping is used in this process, release it */
-      TRACE("Releasing shared mapping %p (start %lx, refcnt %d)\n", m, m->start, m->sh->refcnt);
+      TRACE("Releasing shared mapping %p (start %p, refcnt %d)\n", m, m->start, m->sh->refcnt);
       arc = DosFreeMem((PVOID)m->start);
       TRACE("DosFreeMem = %ld\n", arc);
       assert(m->sh->refcnt);
@@ -499,7 +556,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
 
     ULONG addr = report->ExceptionInfo[1];
 
-    TRACE("addr %lx, info %lx\n", addr, report->ExceptionInfo[0]);
+    TRACE("addr %p, info %lx\n", addr, report->ExceptionInfo[0]);
 
     global_lock();
 
@@ -515,25 +572,95 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
       if (!arc)
       {
         TRACE("dosFlags %lx\n", dosFlags);
-        if (!arc && !(dosFlags & (PAG_FREE | PAG_COMMIT)))
+        if (!arc)
         {
-          arc = DosSetMem((PVOID)pageAddr, len, m->dosFlags | PAG_COMMIT);
-          if (!arc)
+          if (!(dosFlags & (PAG_FREE | PAG_COMMIT)))
           {
-            retry = 1;
-            if (m->fd != -1)
+            /* First access to the allocated but uncommitted page */
+            int revoke_write = 0;
+            if (m->flags & MAP_SHARED && m->dosFlags & PAG_WRITE && m->fd != -1)
             {
-              /* Read file contents into memory */
-              ULONG read;
-              LONGLONG pos;
-              TRACE("Reading %d bytes to addr %p from fd %d at offset %llu\n",
-                    PAGE_SIZE, pageAddr, m->fd, (uint64_t)m->off + (pageAddr - m->start));
-              arc = DosSetFilePtrL(m->fd, m->off + (pageAddr - m->start), FILE_BEGIN, &pos);
-              TRACE_IF(arc, "DosSetFilePtrL = %ld\n", arc);
+              /*
+               * First access to a writable shared mapping page. If it's a read
+               * attempt, then we commit the page and remove PAG_WRITE so that
+               * we will get an exception when the page is first written to
+               * to mark it dirty. If it's a write attempt, we simply mark it
+               * as dirty right away.
+               */
+              if (report->ExceptionInfo[0] == XCPT_WRITE_ACCESS)
+              {
+                ULONG pn = (pageAddr - m->start) / PAGE_SIZE;
+                size_t i = pn / DIRTYMAP_WIDTH;
+                uint32_t bit = 0x1 << (pn % DIRTYMAP_WIDTH);
+                m->sh->dirty[i] |= bit;
+                TRACE("Marked bit 0x%x at idx %u as dirty\n", bit, i);
+              }
+              else
+              {
+                /* DosRead needs PAG_WRITE, so schedule removal for later */
+                revoke_write = 1;
+              }
+            }
+            arc = DosSetMem((PVOID)pageAddr, len, m->dosFlags | PAG_COMMIT);
+            TRACE_IF(arc, "DosSetMem = %ld\n", arc);
+            if (!arc)
+            {
+              if (m->fd != -1)
+              {
+                /*
+                 * Read file contents into memory. Note that if we fail here,
+                 * there is nothing we can do as POSIX doesn't imply such
+                 * a case. @todo We may consider let the exception abort
+                 * the application instead.
+                 */
+                ULONG read;
+                LONGLONG pos;
+                TRACE("Reading %d bytes to addr %p from fd %d at offset %llu\n",
+                      PAGE_SIZE, pageAddr, m->fd, (uint64_t)m->off + (pageAddr - m->start));
+                arc = DosSetFilePtrL(m->fd, m->off + (pageAddr - m->start), FILE_BEGIN, &pos);
+                TRACE_IF(arc, "DosSetFilePtrL = %ld\n", arc);
+                if (!arc)
+                {
+                  arc = DosRead(m->fd, (PVOID)pageAddr, PAGE_SIZE, &read);
+                  TRACE_IF(arc, "DosRead = %ld\n", arc);
+                }
+              }
               if (!arc)
               {
-                arc = DosRead(m->fd, (PVOID)pageAddr, PAGE_SIZE, &read);
-                TRACE_IF(arc, "DosRead = %ld\n", arc);
+                if (revoke_write)
+                {
+                  dosFlags = m->dosFlags & ~PAG_WRITE;
+                  arc = DosSetMem((PVOID)pageAddr, len, m->dosFlags & ~PAG_WRITE);
+                  TRACE_IF(arc, "DosSetMem = %ld\n", arc);
+                }
+                if (!arc)
+                {
+                  /* We successfully committed and read the page, let the app retry */
+                  retry = 1;
+                }
+              }
+            }
+          }
+          else if (dosFlags & PAG_COMMIT)
+          {
+            if (report->ExceptionInfo[0] == XCPT_WRITE_ACCESS &&
+                m->flags & MAP_SHARED && m->dosFlags & PAG_WRITE && m->fd != -1)
+            {
+              /*
+               * First write access to a writable shared mapping page. Mark the
+               * page as dirty and set PAG_WRITE to let the app continue (also
+               * see above).
+               */
+              arc = DosSetMem((PVOID)pageAddr, len, m->dosFlags);
+              if (!arc)
+              {
+                ULONG pn = (pageAddr - m->start) / PAGE_SIZE;
+                size_t i = pn / DIRTYMAP_WIDTH;
+                uint32_t bit = 0x1 << (pn % DIRTYMAP_WIDTH);
+                m->sh->dirty[i] |= bit;
+                TRACE("Marked bit 0x%x at idx %u as dirty\n", bit, i);
+
+                retry = 1;
               }
             }
           }
@@ -564,7 +691,7 @@ static int forkParent(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation
   while (m)
   {
     assert(m->flags && MAP_SHARED);
-    TRACE("giving mapping %p (start %lx) to pid %x\n", m, m->start, pForkHandle->pidChild);
+    TRACE("giving mapping %p (start %p) to pid %x\n", m, m->start, pForkHandle->pidChild);
     arc = DosGiveSharedMem((PVOID)m->start, pForkHandle->pidChild, m->dosFlags);
     TRACE_IF(arc, "DosGiveSharedMem = %ld\n", arc);
     ++(m->sh->refcnt);
