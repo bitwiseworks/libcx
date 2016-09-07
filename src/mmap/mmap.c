@@ -695,8 +695,17 @@ static int forkParent(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation
   while (m)
   {
     assert(m->flags && MAP_SHARED);
+    ULONG dosFlags = m->dosFlags;
     TRACE("giving mapping %p (start %p) to pid %x\n", m, m->start, pForkHandle->pidChild);
-    arc = DosGiveSharedMem((PVOID)m->start, pForkHandle->pidChild, m->dosFlags);
+    if (m->dosFlags & PAG_WRITE && m->fd != -1)
+    {
+      /*
+       * This is a writable shared mapping, remove PAG_WRITE to get an exception
+       * on the first write in child (see mmap_exception above).
+       */
+      dosFlags &= ~PAG_WRITE;
+    }
+    arc = DosGiveSharedMem((PVOID)m->start, pForkHandle->pidChild, dosFlags);
     TRACE_IF(arc, "DosGiveSharedMem = %ld\n", arc);
     ++(m->sh->refcnt);
     m = m->next;

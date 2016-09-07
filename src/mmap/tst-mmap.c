@@ -46,6 +46,7 @@ do_test (void)
   int i, n;
   unsigned char *addr;
   char *fname;
+  int status;
 
   int fd = create_temp_file("tst-mmap-", &fname);
   if (fd == -1)
@@ -131,8 +132,51 @@ do_test (void)
 
   printf("Test 3\n");
 
+  switch (fork())
+  {
+    case -1:
+      perror("fork failed");
+      exit(-1);
+
+    case 0:
+
+      for (i = PAGE_SIZE - TEST_SIZE; i < PAGE_SIZE + TEST_SIZE; ++i)
+      {
+        if (addr[i] != buf[i + Offset])
+        {
+          printf("child: addr[%d] is %u, must be %u\n", i, addr[i], buf[i + Offset]);
+          return 1;
+        }
+      }
+
+      for (i = PAGE_SIZE - TEST_SIZE; i < PAGE_SIZE + TEST_SIZE; ++i)
+        addr[i] = TEST_VAL;
+
+      if (munmap(addr, FILE_SIZE - Offset) == -1)
+      {
+        perror("child: munmap failed");
+        return 1;
+      }
+
+      return 0;
+  }
+
+  if (wait(&status) == -1)
+  {
+    perror("wait failed");
+    return 1;
+  }
+  if (!WIFEXITED(status) || WEXITSTATUS(status))
+  {
+    printf("child crashed or returned non-zero (status %x)\n", status);
+    return 1;
+  }
+
   for (i = PAGE_SIZE - TEST_SIZE; i < PAGE_SIZE + TEST_SIZE; ++i)
-    addr[i] = TEST_VAL;
+  {
+    if (addr[i] != TEST_VAL)
+      printf("addr[%d] is %u, must be %u\n", i, addr[i], TEST_VAL);
+  }
 
   if (munmap(addr, FILE_SIZE - Offset) == -1)
   {
