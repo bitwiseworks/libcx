@@ -521,6 +521,8 @@ void mmap_term()
     {
       /* This mapping is used in this process, release it */
       TRACE("Releasing shared mapping %p (start %p, refcnt %d)\n", m, m->start, m->sh->refcnt);
+      if (m->dosFlags & PAG_WRITE && m->fd != -1)
+        flush_dirty_pages(m);
       arc = DosFreeMem((PVOID)m->start);
       TRACE("DosFreeMem = %ld\n", arc);
       assert(m->sh->refcnt);
