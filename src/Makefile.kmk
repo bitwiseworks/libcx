@@ -76,18 +76,22 @@ tst-select_SOURCES = select/tst-select.c
 
 PROGRAMS += tst-anon_mmap
 tst-anon_mmap_TEMPLATE = Test
+tst-anon_mmap_INCS = mmap
 tst-anon_mmap_SOURCES = mmap/tst-anon_mmap.c
 
 PROGRAMS += tst-anon_mmap2
 tst-anon_mmap2_TEMPLATE = Test
+tst-anon_mmap2_INCS = mmap
 tst-anon_mmap2_SOURCES = mmap/tst-anon_mmap2.c
 
 PROGRAMS += tst-mmap
 tst-mmap_TEMPLATE = Test
+tst-mmap_INCS = mmap
 tst-mmap_SOURCES = mmap/tst-mmap.c
 
 PROGRAMS += tst-mmap2
 tst-mmap2_TEMPLATE = Test
+tst-mmap2_INCS = mmap
 tst-mmap2_SOURCES = mmap/tst-mmap2.c
 
 include $(FILE_KBUILD_SUB_FOOTER)

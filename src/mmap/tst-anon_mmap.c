@@ -36,7 +36,6 @@
 */
 #if defined(__KLIBC__) || defined(__APPLE__)
 #define USE_MAP_ANON
-#define MAP_ANONYMOUS MAP_ANON  /* Until kLIBC header is fixed */
 #endif
 #ifdef USE_MAP_ANON
 #define _BSD_SOURCE             /* Get MAP_ANONYMOUS definition */

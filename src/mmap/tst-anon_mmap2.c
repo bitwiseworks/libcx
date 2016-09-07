@@ -19,9 +19,6 @@
  * <http://www.gnu.org/licenses/>.
  */
 
-#if defined(__KLIBC__) || defined(__APPLE__)
-#define MAP_ANONYMOUS MAP_ANON  /* Until kLIBC header is fixed */
-#endif
 #define _BSD_SOURCE             /* Get MAP_ANONYMOUS definition */
 #include <sys/wait.h>
 #include <sys/mman.h>

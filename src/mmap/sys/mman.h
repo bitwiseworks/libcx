@@ -59,7 +59,6 @@
 #define	PROT_WRITE	0x02	/* pages can be written */
 #define	PROT_EXEC	0x04	/* pages can be executed */
 
-#if 0  /* bird */
 /*
  * Flags contain sharing type and options.
  * Sharing types; choose one.
@@ -85,8 +84,8 @@
  * Mapping type
  */
 #define	MAP_FILE	 0x0000	/* map from file (default) */
-#define	MAP_ANON	 0x1000	/* allocated from memory, swap space */
-
+#define	MAP_ANONYMOUS	 0x1000	/* allocated from memory, swap space */
+#define MAP_ANON	 MAP_ANONYMOUS /* alias for MAP_ANONYMOUS, deprecated */
 /*
  * Extended flags
  */
@@ -150,7 +149,6 @@
 #define	POSIX_MADV_WILLNEED	MADV_WILLNEED
 #define	POSIX_MADV_DONTNEED	MADV_DONTNEED
 #endif
-#endif /* bird */
 
 #ifndef _MODE_T_DECLARED
 typedef	__mode_t	mode_t;
@@ -182,12 +180,12 @@ __BEGIN_DECLS
 /** @todo int	mlock(const void *, size_t); */
 #ifndef _MMAP_DECLARED
 #define	_MMAP_DECLARED
-/** @todo void *	mmap(void *, size_t, int, int, int, off_t); */
+void *	mmap(void *, size_t, int, int, int, off_t);
 #endif
 int	mprotect(const void *, size_t, int);
 /** @todo int	msync(void *, size_t, int); */
 /** @todo int	munlock(const void *, size_t); */
-/** @todo int	munmap(void *, size_t); */
+int	munmap(void *, size_t);
 #if __POSIX_VISIBLE >= 200112
 /** @todo int	posix_madvise(void *, size_t, int); */
 #endif
