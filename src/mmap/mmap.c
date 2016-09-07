@@ -378,6 +378,10 @@ static void flush_dirty_pages(struct MemMap *m)
           {
             arc = DosWrite(m->fd, (PVOID)page, PAGE_SIZE, &written);
             TRACE_IF(arc, "DosWrite = %ld\n", arc);
+
+            /* Reset the dirty bit on success */
+            if (!arc)
+              m->sh->dirty[i] &= ~bit;
           }
         }
       }
