@@ -404,7 +404,7 @@ void fcntl_locking_filedesc_term(struct FileDesc *desc)
   while (l)
   {
     TRACE_BEGIN_IF(l->type, "WARNING! Forgotten lock: type '%c' start %lld, len %lld, ",
-                   l->type, (uint64_t)l->start,
+                   l->type ? l->type : ' ', (uint64_t)l->start,
                    (uint64_t)lock_len(l), l->pid);
     if (l->type == 'r')
     {
@@ -486,7 +486,7 @@ void fcntl_locking_term()
           if (lock_needs_mark(l, F_UNLCK, pid))
           {
             TRACE("Will unlock [%s], type '%c', start %lld, len %lld\n",
-                  desc->path, l->type, (uint64_t)l->start, (uint64_t)lock_len(l));
+                  desc->path, l->type ? l->type : ' ', (uint64_t)l->start, (uint64_t)lock_len(l));
             rc = lock_mark(l, F_UNLCK, pid);
             TRACE_IF(rc, "rc = %d\n", rc);
             bNeededMark = 1;
@@ -705,7 +705,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
       struct FcntlLock *l;
       for (l = desc->fcntl_locks; l; l = l->next)
       {
-        TRACE_CONT("- type '%c', start %lld, ", l->type, (uint64_t)l->start);
+        TRACE_CONT("- type '%c', start %lld, ", l->type ? l->type : ' ', (uint64_t)l->start);
         if (l->type == 'r')
         {
           int i;
@@ -1122,7 +1122,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
     struct FcntlLock *l;
     for (l = desc->fcntl_locks; l; l = l->next)
     {
-      TRACE_CONT("- type '%c', start %lld, ", l->type, (uint64_t)l->start);
+      TRACE_CONT("- type '%c', start %lld, ", l->type ? l->type : ' ', (uint64_t)l->start);
       if (l->type == 'r')
       {
         int i;
@@ -1206,7 +1206,7 @@ int fcntl_locking_close(int fildes)
       if (lock_needs_mark(l, F_UNLCK, pid))
       {
         TRACE("Will unlock [%s], type '%c', start %lld, len %lld\n",
-              desc->path, l->type, (uint64_t)l->start, (uint64_t)lock_len(l));
+              desc->path, l->type ? l->type : ' ', (uint64_t)l->start, (uint64_t)lock_len(l));
         int rc = lock_mark(l, F_UNLCK, pid);
         TRACE_IF(rc, "rc = %d\n", rc);
         bNeededMark = 1;

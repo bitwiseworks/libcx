@@ -639,6 +639,7 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
   char *msg;
   unsigned cch;
   int n;
+  ULONG ts;
 
   enum { MaxBuf = 513 };
 
@@ -672,10 +673,14 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
   if (!msg)
       return;
 
-  if (file == NULL || line == 0 || func == NULL)
-    n = snprintf(msg, MaxBuf, "*** [%x:%d] ", getpid(), _gettid());
+  DosQuerySysInfo(QSV_MS_COUNT, QSV_MS_COUNT, &ts, sizeof(ts));
+
+  if (file != NULL && line != 0 && func != NULL)
+    n = snprintf(msg, MaxBuf, "*** %08lx [%x:%d] %s:%d:%s: ", ts, getpid(), _gettid(), _getname(file), line, func);
+  else if (file == NULL && line == 0 && func == NULL)
+    n = snprintf(msg, MaxBuf, "*** %08lx [%x:%d] ", ts, getpid(), _gettid());
   else
-    n = snprintf(msg, MaxBuf, "*** [%x:%d] %s:%d:%s: ", getpid(), _gettid(), _getname(file), line, func);
+    n = 0;
   if (n < MaxBuf)
   {
     va_start(args, format);

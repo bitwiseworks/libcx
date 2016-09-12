@@ -50,7 +50,7 @@
 void trace(unsigned traceGroup, const char *file, int line, const char *func, const char *format, ...) __printflike(5, 6);
 #define TRACE_FLUSH() do {} while (0)
 #define TRACE_RAW(msg, ...) trace(TRACE_GROUP, __FILE__, __LINE__, __FUNCTION__, msg, ## __VA_ARGS__)
-#define TRACE_CONT(msg, ...) trace(TRACE_GROUP, NULL, 0, NULL, msg, ## __VA_ARGS__)
+#define TRACE_CONT(msg, ...) trace(TRACE_GROUP, NULL, -1, NULL, msg, ## __VA_ARGS__)
 #else
 #define TRACE_FLUSH() fflush(stdout)
 #define TRACE_RAW(msg, ...) printf("*** [%d:%d] %s:%d:%s: " msg, getpid(), _gettid(), __FILE__, __LINE__, __FUNCTION__, ## __VA_ARGS__)
