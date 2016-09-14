@@ -27,7 +27,12 @@
 #include <sys/stat.h>
 
 #define FILE_SIZE 128
+
+#ifdef DEBUG
+#define ITERATIONS 500
+#else
 #define ITERATIONS 100000
+#endif
 
 char buf[FILE_SIZE];
 
