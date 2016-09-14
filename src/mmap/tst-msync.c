@@ -1,5 +1,5 @@
 /*
- * Testcase for shared mmap.
+ * Testcase for automatic mmap sync.
  * Copyright (C) 2016 bww bitwise works GmbH.
  * This file is part of the kLIBC Extension Library.
  * Authored by Dmitry Kuminov <coding@dmik.org>, 2016.
@@ -24,15 +24,25 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#ifdef __OS2__
 #include <io.h>
+#endif
 #include <sys/param.h>
 #include <sys/mman.h>
+
+#ifndef PAGE_SIZE
+#define PAGE_SIZE 4096
+#endif
 
 #define FILE_SIZE (PAGE_SIZE * 2)
 #define TEST_SIZE 10
 #define TEST_VAL 255
 
+/* Shared mapping file flush interval in ms (must match one from mmap.c) */
+#define FLUSH_DELAY 2000
+
 unsigned char buf[FILE_SIZE];
+unsigned char buf_chk[FILE_SIZE];
 unsigned char buf2[TEST_SIZE * 2];
 
 static int do_test(void);
@@ -56,7 +66,7 @@ do_test (void)
     }
 
 #ifdef __OS2__
-  setmode (fd, O_BINARY);
+  setmode(fd, O_BINARY);
 #endif
 
   srand(getpid());
@@ -64,7 +74,7 @@ do_test (void)
   for (i = 0; i < FILE_SIZE; ++i)
     buf[i] = rand() % 255;
 
-  if (TEMP_FAILURE_RETRY((n = write(fd, buf, FILE_SIZE))) != FILE_SIZE)
+  if ((n = write(fd, buf, FILE_SIZE)) != FILE_SIZE)
   {
     if (n != -1)
       printf("write failed (write %d bytes instead of %d)\n", n, FILE_SIZE);
@@ -74,7 +84,8 @@ do_test (void)
   }
 
   /*
-   * Test 1: simple mmap
+   * Test 1: create shared mmap, modify it from child (while letting parent go)
+   * and make sure that changes are flushed to disk after FLUSH_DELAY
    */
 
   printf("Test 1\n");
@@ -95,43 +106,6 @@ do_test (void)
     }
   }
 
-  if (munmap(addr, FILE_SIZE) == -1)
-  {
-    perror("munmap failed");
-    return 1;
-  }
-
-  /*
-   * Test 2: mmap at offset
-   */
-
-  printf("Test 2\n");
-
-  enum { Offset = 11 };
-
-  addr = mmap(NULL, FILE_SIZE - Offset, PROT_READ | PROT_WRITE, MAP_SHARED, fd, Offset);
-  if (addr == MAP_FAILED)
-  {
-    perror("mmap failed");
-    exit(-1);
-  }
-
-  for (i = PAGE_SIZE - TEST_SIZE; i < PAGE_SIZE + TEST_SIZE; ++i)
-  {
-    if (addr[i] != buf[i + Offset])
-    {
-      printf("addr[%d] is %u, must be %u\n", i, addr[i], buf[i + Offset]);
-      return 1;
-    }
-  }
-
-  /*
-   * Test 3: modify mmap (should change the underlying file and be visible
-   * in children)
-   */
-
-  printf("Test 3\n");
-
   switch (fork())
   {
     case -1:
@@ -139,12 +113,15 @@ do_test (void)
       exit(-1);
 
     case 0:
+    {
+      /* Let the parent end first */
+      sleep(1);
 
       for (i = PAGE_SIZE - TEST_SIZE; i < PAGE_SIZE + TEST_SIZE; ++i)
       {
-        if (addr[i] != buf[i + Offset])
+        if (addr[i] != buf[i])
         {
-          printf("child: addr[%d] is %u, must be %u\n", i, addr[i], buf[i + Offset]);
+          printf("child: addr[%d] is %u, must be %u\n", i, addr[i], buf[i]);
           return 1;
         }
       }
@@ -152,14 +129,59 @@ do_test (void)
       for (i = PAGE_SIZE - TEST_SIZE; i < PAGE_SIZE + TEST_SIZE; ++i)
         addr[i] = TEST_VAL;
 
-      if (munmap(addr, FILE_SIZE - Offset) == -1)
+      /* Let mmap auto-sync code flush changed memory back to the file */
+      usleep((FLUSH_DELAY + 500) * 1000);
+
+      /* Now check the file contents */
+      if (lseek(fd, 0, SEEK_SET) == -1)
+      {
+        perror("lseek failed");
+        return 1;
+      }
+
+      if ((n = read(fd, buf_chk, FILE_SIZE)) != FILE_SIZE)
+      {
+        if (n != -1)
+          printf("read failed (read %d bytes instead of %d)\n", n, FILE_SIZE);
+        else
+          perror("read failed");
+        return 1;
+      }
+
+      for (i = 0; i < FILE_SIZE; ++i)
+      {
+        if (addr[i] != buf_chk[i])
+        {
+          printf("buf_chk[%d] is %u, must be %u\n", i, buf_chk[i], addr[i]);
+          return 1;
+        }
+      }
+
+      if (munmap(addr, FILE_SIZE) == -1)
       {
         perror("child: munmap failed");
         return 1;
       }
 
       return 0;
+    }
   }
+
+  /*
+   * @todo Currently, terminating parent before forked child will break
+   * LIBCx functionality (a fix for kLIBC bug #366 is needed to solve that).
+   * For now just hold the parent to let the child start.
+   */
+  sleep(2);
+
+#ifdef DEBUG
+  /*
+   * Force this process LIBCx usage termination to simulate the parent process
+   * termination before the forked child. Simulation is needed because we want
+   * the child exit code so can't really terminate w/o calling wait().
+   */
+  force_libcx_term();
+#endif
 
   if (wait(&status) == -1)
   {
@@ -171,55 +193,6 @@ do_test (void)
     printf("child crashed or returned non-zero (status %x)\n", status);
     return 1;
   }
-
-  for (i = PAGE_SIZE - TEST_SIZE; i < PAGE_SIZE + TEST_SIZE; ++i)
-  {
-    if (addr[i] != TEST_VAL)
-      printf("addr[%d] is %u, must be %u\n", i, addr[i], TEST_VAL);
-  }
-
-  if (munmap(addr, FILE_SIZE - Offset) == -1)
-  {
-    perror("munmap failed");
-    return 1;
-  }
-
-  close(fd);
-
-  fd = open(fname, O_RDONLY);
-  if (fd == -1)
-  {
-    perror("open failed");
-    return 1;
-  }
-
-  if (lseek(fd, Offset + PAGE_SIZE - TEST_SIZE, SEEK_SET) == -1)
-  {
-    perror("lseek failed");
-    return 1;
-  }
-
-  if (TEMP_FAILURE_RETRY((n = read(fd, buf2, TEST_SIZE * 2))) != TEST_SIZE * 2)
-  {
-    if (n != -1)
-      printf("read failed (read %d bytes instead of %d)\n", n, TEST_SIZE * 2);
-    else
-      perror("read failed");
-    return 1;
-  }
-
-  for (i = 0; i < TEST_SIZE * 2; ++i)
-  {
-    if (buf2[i] != TEST_VAL)
-    {
-      printf("buf2[%d] is %u, must be %u\n", i, buf2[i], TEST_VAL);
-      return 1;
-    }
-  }
-
-  close(fd);
-
-  free(fname);
 
   return 0;
 }

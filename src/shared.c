@@ -233,6 +233,7 @@ static void shared_init(int bKeepLock)
   }
 
   /* Initialize individual components */
+  mmap_init();
   fcntl_locking_init();
 
   if (!bKeepLock)
@@ -628,6 +629,17 @@ void print_stats()
 
   global_unlock();
 }
+
+#ifdef DEBUG
+/**
+ * Forces LIBCx unitialization as if the process were terminated. Used
+ * in some tests.
+ */
+void force_libcx_term()
+{
+  shared_term();
+}
+#endif
 
 #if defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG)
 

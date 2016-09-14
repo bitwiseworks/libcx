@@ -28,6 +28,7 @@
 #include <sys/types.h>
 #include <assert.h>
 #include <stdlib.h>
+#include <string.h>
 #include <emx/io.h>
 
 #include <InnoTekLIBC/fork.h>
@@ -46,6 +47,27 @@
 /* Width of a dirty map entry in bits */
 #define DIRTYMAP_WIDTH (sizeof(*((struct MemMap*)0)->sh->dirty) * 8)
 
+/* Flush operation start delay (ms) */
+#define FLUSH_DELAY 2000
+
+/**
+ * Per-process data for memory mappings.
+ */
+struct ProcMemMap
+{
+  int flush_tid; /* Flush thread */
+};
+
+/**
+ * Global data for memory mappings.
+ */
+struct GlobalMemMap
+{
+  HEV flush_sem; /* Semaphore for flush thread */
+  HEV flush_coop_sem; /* Semaphore for flush thread cooperation */
+  int flush_request : 1; /* 1 - semaphore is posted */
+};
+
 /**
  * Memory mapping (linked list entry).
  */
@@ -62,7 +84,7 @@ struct MemMap
   /* Additional fields for shared mmaps */
   struct Shared
   {
-    pid_t pid; /* Creator PID */
+    pid_t pid; /* Creator/owner PID */
     int refcnt; /* Number of PIDs using it */
     uint32_t dirty[0]; /* Bit array of dirty pages */
   } sh[0];
@@ -252,7 +274,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   }
 
   mmap->end = mmap->start + len;
-  TRACE("mmap->start %p, mmap->end %p\n", mmap->start, mmap->end);
+  TRACE("mmap %p, mmap->start %p, mmap->end %p\n", mmap, mmap->start, mmap->end);
 
   /* Check if aligned to page size */
   assert(mmap->start && PAGE_ALIGNED(mmap->start));
@@ -264,17 +286,8 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   }
   else
   {
-    struct ProcDesc *desc = get_proc_desc(getpid());
-    if (!desc)
-    {
-      DosFreeMem((PVOID)mmap->start);
-      free(mmap);
-      if (fd != -1)
-        DosClose(fd);
-      global_unlock();
-      errno = ENOMEM;
-      return MAP_FAILED;
-    }
+    struct ProcDesc *desc = find_proc_desc(getpid());
+    assert(desc);
 
     mmap->next = desc->mmaps;
     desc->mmaps = mmap;
@@ -352,7 +365,7 @@ static void flush_dirty_pages(struct MemMap *m)
 
   /* Calculate the number of 4 byte words in the dirty page bitmap */
   size_t dirtymap_len = DIVIDE_UP(NUM_PAGES(m->end - m->start), DIRTYMAP_WIDTH);
-  ULONG base, page;
+  ULONG base, page, nesting;
   size_t i, j;
   APIRET arc;
 
@@ -367,8 +380,20 @@ static void flush_dirty_pages(struct MemMap *m)
       {
         if (m->sh->dirty[i] & bit)
         {
-          ULONG written;
+          ULONG written, nesting;
           LONGLONG pos;
+
+          /*
+           * Make sure we are not interrupted by process termination and other
+           * async signals in the middle of writing out the dirty page and
+           * resetting the dirty bit to have them in sync. Note that it's OK to
+           * be interrupted prior to writing out all dirty pages because he
+           * remaining ones will be written out from mmap_term() on thread 1 at
+           * process termination anyway, given that the dirty bit correctly
+           * reflects their state.
+           */
+          DosEnterMustComplete(&nesting);
+
           page = base + PAGE_SIZE * j;
           TRACE("Writing %d bytes from addr %p to fd %d at offset %llu\n",
                 PAGE_SIZE, page, m->fd, (uint64_t)m->off + (page - m->start));
@@ -379,15 +404,67 @@ static void flush_dirty_pages(struct MemMap *m)
             arc = DosWrite(m->fd, (PVOID)page, PAGE_SIZE, &written);
             TRACE_IF(arc, "DosWrite = %ld\n", arc);
 
-            /* Reset the dirty bit on success */
+            /*
+             * Reset PAG_WRITE (to cause another exception upon a new write)
+             * and the dirty bit on success.
+             */
             if (!arc)
-              m->sh->dirty[i] &= ~bit;
+            {
+              arc = DosSetMem((PVOID)page, PAGE_SIZE, m->dosFlags & ~PAG_WRITE);
+              TRACE_IF(arc, "DosSetMem = %ld\n", arc);
+              if (!arc)
+                m->sh->dirty[i] &= ~bit;
+            }
           }
+
+          DosExitMustComplete(&nesting);
         }
       }
     }
     base += PAGE_SIZE * DIRTYMAP_WIDTH;
   }
+}
+
+/**
+ * Writes ditry pages in shared mappings of this process to their respecitve
+ * files. Returns 0 if all shared mappings were processed and 1 if there are
+ * some mappings this process doesn't have access to.
+ */
+static int flush_own_mappings()
+{
+  struct MemMap *m;
+  APIRET arc;
+  pid_t pid = getpid();
+  int seen_foreign = 0;
+
+  m = gpData->mmaps;
+  while (m)
+  {
+    struct MemMap *n = m->next;
+    if (m->dosFlags & PAG_WRITE && m->fd != -1)
+    {
+      /* It's a writable shared mapping */
+      ULONG len = m->end - m->start;
+      ULONG dosFlags;
+      if (m->sh->pid != pid)
+        arc = DosQueryMem((PVOID)m->start, &len, &dosFlags);
+      if (m->sh->pid == pid || (!arc && !(dosFlags & PAG_FREE)))
+      {
+        /* This mapping is used in this process, flush it */
+        flush_dirty_pages(m);
+        /* Attach our pid to this mapping if it's unowned */
+        if (m->sh->pid == -1)
+          m->sh->pid = pid;
+      }
+      else if (!seen_foreign)
+        seen_foreign = 1;
+    }
+    m = n;
+  }
+
+  TRACE("seen_foreign %d\n", seen_foreign);
+
+  return seen_foreign;
 }
 
 int munmap(void *addr, size_t len)
@@ -415,6 +492,7 @@ int munmap(void *addr, size_t len)
 
   struct MemMap *m = NULL, *pm = NULL;
   struct MemMap **head;
+  pid_t pid = getpid();
 
   global_lock();
 
@@ -454,6 +532,12 @@ int munmap(void *addr, size_t len)
           DosClose(m->fd);
         free(m);
       }
+      else
+      {
+        /* Detach our pid from this mapping */
+        if (m->sh->pid == pid)
+          m->sh->pid = -1;
+      }
     }
     else
     {
@@ -478,6 +562,108 @@ int munmap(void *addr, size_t len)
   return rc;
 }
 
+static void mmap_flush_thread(void *arg)
+{
+  APIRET arc;
+
+  TRACE("Started\n");
+
+  while (1)
+  {
+    arc = DosWaitEventSem(gpData->mmap->flush_sem, SEM_INDEFINITE_WAIT);
+    TRACE_IF(arc, "DosWaitEventSem = %ld\n", arc);
+
+    global_lock();
+
+    /* Only go further if the request hasn't been handled by another thread yet */
+    if (gpData->mmap->flush_request)
+    {
+      TRACE("got flush request\n");
+
+      if (flush_own_mappings() == 1)
+      {
+        /*
+         * There are mappings we can't flush, so wake up another PID's flush
+         * thread.
+         */
+        arc = DosPostEventSem(gpData->mmap->flush_sem);
+        TRACE_IF(arc, "DosPostEventSem = %ld\n", arc);
+
+        /*
+         * Now wait until other workers handle all the remaining ones (to
+         * avoid giving timeslices to us over and over again).
+         */
+        global_unlock();
+
+        arc = DosWaitEventSem(gpData->mmap->flush_coop_sem, SEM_INDEFINITE_WAIT);
+        TRACE_IF(arc, "DosWaitEventSem = %ld\n", arc);
+
+        continue;
+      }
+      else
+      {
+        /*
+         * We are the thread that finishes completion this flush reques,
+         * reset the flag and wake the ones waiting on completion (see above).
+         */
+        gpData->mmap->flush_request = 0;
+      }
+    }
+
+    global_unlock();
+  }
+
+  TRACE("Stopped\n");
+}
+
+/**
+ * Initializes the mmap structures.
+ * Called after successfull gpData allocation and gpData->heap creation.
+ */
+void mmap_init()
+{
+  struct ProcDesc *desc;
+  APIRET arc;
+
+  if (gpData->refcnt == 1)
+  {
+    /* We are the first processs, initialize global mmap structures */
+    GLOBAL_NEW(gpData->mmap);
+    assert(gpData->mmap);
+
+    arc = DosCreateEventSem(NULL, &gpData->mmap->flush_sem,
+                            DC_SEM_SHARED | DCE_POSTONE, FALSE);
+    TRACE("DosCreateEventSem = %d\n", arc);
+    assert(arc == NO_ERROR);
+
+    arc = DosCreateEventSem(NULL, &gpData->mmap->flush_coop_sem,
+                            DC_SEM_SHARED | DCE_AUTORESET, FALSE);
+    TRACE("DosCreateEventSem = %d\n", arc);
+    assert(arc == NO_ERROR);
+  }
+  else
+  {
+    assert(gpData->mmap);
+    assert(gpData->mmap->flush_sem);
+
+    arc = DosOpenEventSem(NULL, &gpData->mmap->flush_sem);
+    TRACE("DosOpenEventSem = %d\n", arc);
+    assert(arc == NO_ERROR);
+
+    arc = DosOpenEventSem(NULL, &gpData->mmap->flush_coop_sem);
+    TRACE("DosOpenEventSem = %d\n", arc);
+    assert(arc == NO_ERROR);
+  }
+
+  /* Initialize our part of ProcDesc */
+  desc = get_proc_desc(getpid());
+  assert(desc);
+
+  GLOBAL_NEW(desc->mmap);
+  assert(desc->mmap);
+  desc->mmap->flush_tid = -1;
+}
+
 /**
  * Uninitializes the mmap structures.
  * Called upon each process termination before gpData is uninitialized
@@ -488,9 +674,10 @@ void mmap_term()
   struct ProcDesc *desc;
   struct MemMap *m, *pm;
   APIRET arc;
+  pid_t pid = getpid();
 
   /* Free all private mmap structures */
-  desc = find_proc_desc(getpid());
+  desc = find_proc_desc(pid);
   if (desc)
   {
     m = desc->mmaps;
@@ -506,6 +693,7 @@ void mmap_term()
       m = n;
     }
     desc->mmaps = NULL;
+    free(desc->mmap);
   }
 
   /* Dereference and free shared map structures when appropriate */
@@ -516,8 +704,9 @@ void mmap_term()
     struct MemMap *n = m->next;
     ULONG len = m->end - m->start;
     ULONG dosFlags;
-    arc = DosQueryMem((PVOID)m->start, &len, &dosFlags);
-    if (!arc && !(dosFlags & PAG_FREE))
+    if (m->sh->pid != pid)
+      arc = DosQueryMem((PVOID)m->start, &len, &dosFlags);
+    if (m->sh->pid == pid || (!arc && !(dosFlags & PAG_FREE)))
     {
       /* This mapping is used in this process, release it */
       TRACE("Releasing shared mapping %p (start %p, refcnt %d)\n", m, m->start, m->sh->refcnt);
@@ -538,12 +727,72 @@ void mmap_term()
           DosClose(m->fd);
         free(m);
       }
+      else
+      {
+        /* Detach our pid from this mapping */
+        if (m->sh->pid == pid)
+          m->sh->pid = -1;
+      }
     }
     m = n;
   }
 
   TRACE_IF(gpData->refcnt == 0, "gpData->mmaps = %p\n", gpData->mmaps);
   assert(gpData->refcnt > 0 || gpData->mmaps == NULL);
+
+  arc = DosCloseEventSem(gpData->mmap->flush_coop_sem);
+  if (arc == ERROR_SEM_BUSY)
+  {
+    /* The semaphore may be owned by us, try to release it */
+    arc = DosPostEventSem(gpData->mmap->flush_coop_sem);
+    TRACE("DosPostEventSem = %ld\n", arc);
+    arc = DosCloseEventSem(gpData->mmap->flush_coop_sem);
+  }
+  TRACE("DosCloseEventSem = %ld\n", arc);
+
+  arc = DosCloseEventSem(gpData->mmap->flush_sem);
+  if (arc == ERROR_SEM_BUSY)
+  {
+    /* The semaphore may be owned by us, try to release it */
+    arc = DosPostEventSem(gpData->mmap->flush_sem);
+    TRACE("DosPostEventSem = %ld\n", arc);
+    arc = DosCloseEventSem(gpData->mmap->flush_sem);
+  }
+  TRACE("DosCloseEventSem = %ld\n", arc);
+
+  if (gpData->refcnt == 0)
+  {
+    /* We are the last process, free global mmap structures */
+    free(gpData->mmap);
+  }
+}
+
+static void schedule_flush_dirty()
+{
+  struct ProcDesc *desc;
+  APIRET arc;
+  pid_t pid = getpid();
+
+  TRACE("flush_request %d\n", !!gpData->mmap->flush_request);
+
+  desc = find_proc_desc(pid);
+  assert(desc);
+
+  if (desc->mmap->flush_tid == -1)
+  {
+    /* Lazily start a worker thread */
+    desc->mmap->flush_tid = _beginthread(mmap_flush_thread, NULL, 0, NULL);
+    TRACE_IF(desc->mmap->flush_tid == -1, "_beginthread = %s\n", strerror(errno));
+    assert(desc->mmap->flush_tid != -1);
+  }
+
+  if (gpData->mmap->flush_request)
+    return;
+
+  gpData->mmap->flush_request = 1;
+
+  arc = DosAsyncTimer(FLUSH_DELAY, (HSEM)gpData->mmap->flush_sem, NULL);
+  TRACE_IF(arc, "DosAsyncTimer = %ld\n", arc);
 }
 
 /**
@@ -600,6 +849,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
                 uint32_t bit = 0x1 << (pn % DIRTYMAP_WIDTH);
                 m->sh->dirty[i] |= bit;
                 TRACE("Marked bit 0x%x at idx %u as dirty\n", bit, i);
+                schedule_flush_dirty();
               }
               else
               {
@@ -650,6 +900,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
           else if (dosFlags & PAG_COMMIT)
           {
             if (report->ExceptionInfo[0] == XCPT_WRITE_ACCESS &&
+                !(dosFlags & PAG_WRITE) &&
                 m->flags & MAP_SHARED && m->dosFlags & PAG_WRITE && m->fd != -1)
             {
               /*
@@ -658,6 +909,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
                * see above).
                */
               arc = DosSetMem((PVOID)pageAddr, len, m->dosFlags);
+              TRACE_IF(arc, "DosSetMem = %ld\n", arc);
               if (!arc)
               {
                 ULONG pn = (pageAddr - m->start) / PAGE_SIZE;
@@ -665,6 +917,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
                 uint32_t bit = 0x1 << (pn % DIRTYMAP_WIDTH);
                 m->sh->dirty[i] |= bit;
                 TRACE("Marked bit 0x%x at idx %u as dirty\n", bit, i);
+                schedule_flush_dirty();
 
                 retry = 1;
               }
@@ -684,11 +937,11 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
 
 static int forkParent(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation)
 {
-  if (enmOperation != __LIBC_FORK_OP_FORK_PARENT)
-    return 0;
-
   APIRET arc;
   struct MemMap *m;
+
+  if (enmOperation != __LIBC_FORK_OP_FORK_PARENT)
+    return 0;
 
   global_lock();
 

@@ -94,4 +94,14 @@ tst-mmap2_TEMPLATE = Test
 tst-mmap2_INCS = mmap
 tst-mmap2_SOURCES = mmap/tst-mmap2.c
 
+PROGRAMS += tst-msync
+tst-msync_TEMPLATE = Test
+tst-msync_INCS = mmap
+tst-msync_SOURCES = mmap/tst-msync.c
+
+PROGRAMS += tst-msync2
+tst-msync2_TEMPLATE = Test
+tst-msync2_INCS = mmap
+tst-msync2_SOURCES = mmap/tst-msync2.c
+
 include $(FILE_KBUILD_SUB_FOOTER)
