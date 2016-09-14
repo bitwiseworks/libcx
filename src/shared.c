@@ -112,9 +112,8 @@ static void *mem_alloc(Heap_t h, size_t *psize, int *pclean)
 /**
  * Initializes the shared structures.
  * @param bKeepLock TRUE to leave the mutex locked on success.
- * @return NO_ERROR on success, DOS error code otherwise.
  */
-static int shared_init(int bKeepLock)
+static void shared_init(int bKeepLock)
 {
   APIRET arc;
   int rc;
@@ -180,8 +179,7 @@ static int shared_init(int bKeepLock)
       }
     }
 
-    if (arc != NO_ERROR)
-      return arc;
+    assert(arc == NO_ERROR);
 
     /*
      * We are the process that successfully created the main mutex.
@@ -202,51 +200,43 @@ static int shared_init(int bKeepLock)
       TRACE("DosAllocSharedMem = %d\n", arc);
     }
 
-    if (arc == NO_ERROR)
-    {
-      /* Commit the initial block */
-      arc = DosSetMem(gpData, HEAP_INIT_SIZE, PAG_DEFAULT | PAG_COMMIT);
-      TRACE("DosSetMem = %d\n", arc);
+    assert(arc == NO_ERROR);
 
-      gpData->size = HEAP_INIT_SIZE;
-    }
+    /* Commit the initial block */
+    arc = DosSetMem(gpData, HEAP_INIT_SIZE, PAG_DEFAULT | PAG_COMMIT);
+    TRACE("DosSetMem = %d\n", arc);
+    assert(arc == NO_ERROR);
 
-    if (arc == NO_ERROR)
-    {
-      /* Create shared heap */
-      gpData->heap = _ucreate(gpData + 1, HEAP_INIT_SIZE - sizeof(*gpData),
-                              _BLOCK_CLEAN, _HEAP_REGULAR | _HEAP_SHARED,
-                              mem_alloc, NULL);
-      TRACE("gpData->heap = %p\n", gpData->heap);
-      assert(gpData->heap);
+    gpData->size = HEAP_INIT_SIZE;
 
-      rc =_uopen(gpData->heap);
-      assert(rc == 0);
+    /* Create shared heap */
+    gpData->heap = _ucreate(gpData + 1, HEAP_INIT_SIZE - sizeof(*gpData),
+                            _BLOCK_CLEAN, _HEAP_REGULAR | _HEAP_SHARED,
+                            mem_alloc, NULL);
+    TRACE("gpData->heap = %p\n", gpData->heap);
+    assert(gpData->heap);
 
-      gpData->refcnt = 1;
+    rc =_uopen(gpData->heap);
+    assert(rc == 0);
 
-      /* Initialize common structures */
-      GLOBAL_NEW_ARRAY(gpData->procs, PROC_DESC_HASH_SIZE);
-      TRACE("gpData->procs = %p\n", gpData->procs);
-      assert(gpData->procs);
-      GLOBAL_NEW_ARRAY(gpData->files, FILE_DESC_HASH_SIZE);
-      TRACE("gpData->files = %p\n", gpData->files);
-      assert(gpData->files);
-    }
+    gpData->refcnt = 1;
+
+    /* Initialize common structures */
+    GLOBAL_NEW_ARRAY(gpData->procs, PROC_DESC_HASH_SIZE);
+    TRACE("gpData->procs = %p\n", gpData->procs);
+    assert(gpData->procs);
+    GLOBAL_NEW_ARRAY(gpData->files, FILE_DESC_HASH_SIZE);
+    TRACE("gpData->files = %p\n", gpData->files);
+    assert(gpData->files);
 
     break;
   }
 
-  if (arc == NO_ERROR)
-  {
-    /* Initialize individual components */
-    arc = fcntl_locking_init();
-  }
+  /* Initialize individual components */
+  fcntl_locking_init();
 
-  if (!bKeepLock || arc != NO_ERROR)
+  if (!bKeepLock)
     DosReleaseMutexSem(gMutex);
-
-  return arc;
 }
 
 static void shared_term()
@@ -358,18 +348,27 @@ unsigned long _System _DLL_InitTerm(unsigned long hModule, unsigned long ulFlag)
 
   switch (ulFlag)
   {
-    /* InitInstance */
+    /*
+     * InitInstance. Note that this one is NOT called for DLLs in a forked
+     * child. This is why we also call shared_init() from global_lock()
+     * to lazily init forked children on demand. A proper (and single) place
+     * for initialization is a child fork callback but it's not an option for
+     * now due to kLIBC bug #366.
+     */
     case 0:
     {
       if (_CRT_init() != 0)
         return 0;
       __ctordtorInit();
-      if (shared_init(FALSE) != NO_ERROR)
-        return 0;
+      shared_init(FALSE);
       break;
     }
 
-    /* TermInstance */
+    /*
+     * TermInstance. Called for everybody including forked children. We don't
+     * call shared_term() from here at all and prefer a process exit hook
+     * instead (see its description below).
+     */
     case 1:
     {
       __ctordtorTerm();
@@ -410,6 +409,7 @@ void global_lock()
   assert(gpData);
 
   arc = DosRequestMutexSem(gMutex, SEM_INDEFINITE_WAIT);
+  TRACE_IF(arc && arc != ERROR_INVALID_HANDLE, "DosRequestMutexSem = %d\n", arc);
   if (arc == ERROR_INVALID_HANDLE)
   {
     /*
@@ -417,11 +417,8 @@ void global_lock()
      * _DLL_InitTerm(,0) is not called for forks). This call
      * will leave the mutex locked.
      */
-    arc = shared_init(TRUE);
+    shared_init(TRUE);
   }
-
-  TRACE_IF(arc, "DosRequestMutexSem = %d\n", arc);
-  assert(arc == NO_ERROR);
 }
 
 /**
@@ -434,6 +431,7 @@ void global_unlock()
   assert(gMutex != NULLHANDLE);
 
   arc = DosReleaseMutexSem(gMutex);
+  TRACE_IF(arc, "DosReleaseMutexSem = %ld\n", arc);
 
   assert(arc == NO_ERROR);
 }
@@ -696,7 +694,7 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
 }
 
 /*
- * @tod We would like to reset the log instance to NULL here to have it
+ * @todo We would like to reset the log instance to NULL here to have it
  * properly re-initialized in the child process but this crashes the child
  * because LIBC Heap can't be used at that point. A solution would be either:
  *

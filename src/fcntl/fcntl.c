@@ -427,9 +427,8 @@ void fcntl_locking_filedesc_term(struct FileDesc *desc)
 /**
  * Initializes the fcntl shared structures.
  * Called after successfull gpData allocation and gpData->heap creation.
- * @return NO_ERROR on success, DOS error code otherwise.
  */
-int fcntl_locking_init()
+void fcntl_locking_init()
 {
   APIRET arc;
 
@@ -452,8 +451,6 @@ int fcntl_locking_init()
     TRACE("DosOpenEventSem = %d\n", arc);
     assert(arc == NO_ERROR);
   }
-
-  return arc;
 }
 
 /**

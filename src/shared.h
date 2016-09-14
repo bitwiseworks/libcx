@@ -150,7 +150,7 @@ static inline struct ProcDesc *take_proc_desc(pid_t pid) { return get_proc_desc_
 
 struct FileDesc *get_file_desc(const char *path, int bNew);
 
-int fcntl_locking_init();
+void fcntl_locking_init();
 void fcntl_locking_term();
 int fcntl_locking_filedesc_init(struct FileDesc *desc);
 void fcntl_locking_filedesc_term(struct FileDesc *desc);
