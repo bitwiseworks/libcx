@@ -512,7 +512,7 @@ int munmap(void *addr, size_t len)
   global_lock();
 
   m = find_mmap((ULONG)addr, addr_end, &pm, &head);
-  if (!m)
+  if (!m || (m->flags & MAP_SHARED && !is_shared_accessible(m)))
   {
     global_unlock();
 
@@ -520,56 +520,53 @@ int munmap(void *addr, size_t len)
     return rc;
   }
 
-  if (m)
+  if (m->start == (ULONG)addr && m->end == addr_end)
   {
-    if (m->start == (ULONG)addr && m->end == addr_end)
+    /* Simplest case: the whole region is unmapped */
+    if (m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fd != -1)
+      flush_dirty_pages(m);
+    arc = DosFreeMem((PVOID)addr);
+    TRACE("DosFreeMem = %ld\n", arc);
+    /* Dereference and free the mapping when appropriate */
+    if (m->flags & MAP_SHARED)
     {
-      /* Simplest case: the whole region is unmapped */
-      if (m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fd != -1)
-        flush_dirty_pages(m);
-      arc = DosFreeMem((PVOID)addr);
-      TRACE("DosFreeMem = %ld\n", arc);
-      /* Dereference and free the mapping when appropriate */
-      if (m->flags & MAP_SHARED)
-      {
-        TRACE("Releasing shared mapping %p\n", m);
-        assert(m->sh->refcnt);
-        --(m->sh->refcnt);
-      }
-      if (m->flags & MAP_PRIVATE || m->sh->refcnt == 0)
-      {
-        TRACE("Removing mapping %p\n", m);
-        if (pm)
-          pm->next = m->next;
-        else
-          *head = m->next;
-        if (m->fd != -1)
-          DosClose(m->fd);
-        free(m);
-      }
+      TRACE("Releasing shared mapping %p\n", m);
+      assert(m->sh->refcnt);
+      --(m->sh->refcnt);
+    }
+    if (m->flags & MAP_PRIVATE || m->sh->refcnt == 0)
+    {
+      TRACE("Removing mapping %p\n", m);
+      if (pm)
+        pm->next = m->next;
       else
-      {
-        /* Detach our pid from this mapping */
-        if (m->sh->pid == pid)
-          m->sh->pid = -1;
-      }
+        *head = m->next;
+      if (m->fd != -1)
+        DosClose(m->fd);
+      free(m);
     }
     else
     {
-      /*
-       * @todo We can't partially free memory regions on OS/2 so in order to
-       * meet POSIX requirements of generating SIGSEGV for unmapped memory
-       * we should come up with a different solution (like marking pages with
-       * PAGE_GUARD and do some r/w trickery). Note also that POSIX allows
-       * munmap to unmap two or more adjacent regions which is not explicitly
-       * supported by DosFreeMem either but we can achieve this by hand (this
-       * will require to change the while statemet above and also to sort
-       * the mmap list by start addr). For now just fail with ENOMEM as if it
-       * would require a split of the region but there is no memory for it.
-       */
-       errno = ENOMEM;
-       rc = -1;
+      /* Detach our pid from this mapping */
+      if (m->sh->pid == pid)
+        m->sh->pid = -1;
     }
+  }
+  else
+  {
+    /*
+     * @todo We can't partially free memory regions on OS/2 so in order to
+     * meet POSIX requirements of generating SIGSEGV for unmapped memory
+     * we should come up with a different solution (like marking pages with
+     * PAGE_GUARD and do some r/w trickery). Note also that POSIX allows
+     * munmap to unmap two or more adjacent regions which is not explicitly
+     * supported by DosFreeMem either but we can achieve this by hand (this
+     * will require to change the while statemet above and also to sort
+     * the mmap list by start addr). For now just fail with ENOMEM as if it
+     * would require a split of the region but there is no memory for it.
+     */
+     errno = ENOMEM;
+     rc = -1;
   }
 
   global_unlock();
