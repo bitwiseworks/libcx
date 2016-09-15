@@ -78,7 +78,7 @@ struct MemMap
   ULONG start; /* start address */
   ULONG end; /* end address (exclusive) */
   int flags; /* mmap flags */
-  ULONG dosFlags; /* DosAllocMem protection flags */
+  ULONG dos_flags; /* DosAllocMem protection flags */
   int fd; /* -1 for MAP_ANONYMOUS */
   off_t off;
   /* Additional fields for shared mmaps */
@@ -229,13 +229,13 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   mmap->fd = fd;
   mmap->off = off;
 
-  mmap->dosFlags = 0;
+  mmap->dos_flags = 0;
   if (prot & PROT_READ)
-    mmap->dosFlags |= PAG_READ;
+    mmap->dos_flags |= PAG_READ;
   if (prot & PROT_WRITE)
-    mmap->dosFlags |= PAG_WRITE;
+    mmap->dos_flags |= PAG_WRITE;
   if (prot & PROT_EXEC)
-    mmap->dosFlags |= PAG_EXECUTE;
+    mmap->dos_flags |= PAG_EXECUTE;
 
   if (flags & MAP_SHARED)
   {
@@ -243,23 +243,23 @@ void *mmap(void *addr, size_t len, int prot, int flags,
     mmap->sh->pid = getpid();
     mmap->sh->refcnt = 1;
 
-    arc = DosAllocSharedMem((PPVOID)&mmap->start, NULL, len, mmap->dosFlags | OBJ_ANY | OBJ_GIVEABLE);
+    arc = DosAllocSharedMem((PPVOID)&mmap->start, NULL, len, mmap->dos_flags | OBJ_ANY | OBJ_GIVEABLE);
     TRACE("DosAllocSharedMem(OBJ_ANY) = %lu\n", arc);
     if (arc)
     {
       /* High memory may be unavailable, try w/o OBJ_ANY */
-      arc = DosAllocSharedMem((PPVOID)&mmap->start, NULL, len, mmap->dosFlags | OBJ_GIVEABLE);
+      arc = DosAllocSharedMem((PPVOID)&mmap->start, NULL, len, mmap->dos_flags | OBJ_GIVEABLE);
       TRACE("DosAllocSharedMem = %lu\n", arc);
     }
   }
   else
   {
-    arc = DosAllocMem((PPVOID)&mmap->start, len, mmap->dosFlags | OBJ_ANY);
+    arc = DosAllocMem((PPVOID)&mmap->start, len, mmap->dos_flags | OBJ_ANY);
     TRACE("DosAllocMem(OBJ_ANY) = %lu\n", arc);
     if (arc)
     {
       /* High memory may be unavailable, try w/o OBJ_ANY */
-      arc = DosAllocMem((PPVOID)&mmap->start, len, mmap->dosFlags);
+      arc = DosAllocMem((PPVOID)&mmap->start, len, mmap->dos_flags);
       TRACE("DosAllocMem = %lu\n", arc);
     }
   }
@@ -336,13 +336,13 @@ static struct MemMap *find_mmap(ULONG addr, ULONG addr_end, struct MemMap **pm_o
   }
 
   TRACE_IF(!m, "mapping not found\n");
-  TRACE_IF(m, "found m %p in %s (start %p, end %p, flags %x=%c%c%c%c, dosFlags %lx, fd %d, off %llu, pid %x, refcnt %d)\n",
+  TRACE_IF(m, "found m %p in %s (start %p, end %p, flags %x=%c%c%c%c, dos_flags %lx, fd %d, off %llu, pid %x, refcnt %d)\n",
            m, head == &gpData->mmaps ? "SHARED" : "PRIVATE", m->start, m->end, m->flags,
            m->flags & MAP_SHARED ? 'S' : '-',
            m->flags & MAP_PRIVATE ? 'P' : '-',
            m->flags & MAP_FIXED ? 'F' : '-',
            m->flags & MAP_ANON ? 'A' : '-',
-           m->dosFlags, m->fd, (uint64_t)m->off,
+           m->dos_flags, m->fd, (uint64_t)m->off,
            m->flags & MAP_SHARED ? m->sh->pid : 0,
            m->flags & MAP_SHARED ? m->sh->refcnt : 0);
 
@@ -361,7 +361,7 @@ static struct MemMap *find_mmap(ULONG addr, ULONG addr_end, struct MemMap **pm_o
 static void flush_dirty_pages(struct MemMap *m)
 {
   TRACE("mapping %p\n", m);
-  assert(m && m->flags & MAP_SHARED && m->dosFlags & PAG_WRITE && m->fd != -1);
+  assert(m && m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fd != -1);
 
   /* Calculate the number of 4 byte words in the dirty page bitmap */
   size_t dirtymap_len = DIVIDE_UP(NUM_PAGES(m->end - m->start), DIRTYMAP_WIDTH);
@@ -410,7 +410,7 @@ static void flush_dirty_pages(struct MemMap *m)
              */
             if (!arc)
             {
-              arc = DosSetMem((PVOID)page, PAGE_SIZE, m->dosFlags & ~PAG_WRITE);
+              arc = DosSetMem((PVOID)page, PAGE_SIZE, m->dos_flags & ~PAG_WRITE);
               TRACE_IF(arc, "DosSetMem = %ld\n", arc);
               if (!arc)
                 m->sh->dirty[i] &= ~bit;
@@ -423,6 +423,33 @@ static void flush_dirty_pages(struct MemMap *m)
     }
     base += PAGE_SIZE * DIRTYMAP_WIDTH;
   }
+
+  /*
+   * Attach our pid to this mapping if it's currently unowned. This is used to
+   * optimize the detection of access in is_shared_accessible().
+   */
+  if (m->sh->pid == -1)
+    m->sh->pid = getpid();
+}
+
+/**
+ * Returns 1 if the given shared mapping is accessible in this process and 0
+ * otherwise.
+ */
+static int is_shared_accessible(struct MemMap *m)
+{
+  assert(m && m->flags & MAP_SHARED);
+
+  APIRET arc;
+  pid_t pid = getpid();
+  ULONG len = m->end - m->start;
+  ULONG dos_flags;
+
+  if (m->sh->pid == pid)
+    return 1;
+
+  arc = DosQueryMem((PVOID)m->start, &len, &dos_flags);
+  return !arc && !(dos_flags & PAG_FREE);
 }
 
 /**
@@ -433,29 +460,17 @@ static void flush_dirty_pages(struct MemMap *m)
 static int flush_own_mappings()
 {
   struct MemMap *m;
-  APIRET arc;
-  pid_t pid = getpid();
   int seen_foreign = 0;
 
   m = gpData->mmaps;
   while (m)
   {
     struct MemMap *n = m->next;
-    if (m->dosFlags & PAG_WRITE && m->fd != -1)
+    if (m->dos_flags & PAG_WRITE && m->fd != -1)
     {
-      /* It's a writable shared mapping */
-      ULONG len = m->end - m->start;
-      ULONG dosFlags;
-      if (m->sh->pid != pid)
-        arc = DosQueryMem((PVOID)m->start, &len, &dosFlags);
-      if (m->sh->pid == pid || (!arc && !(dosFlags & PAG_FREE)))
-      {
-        /* This mapping is used in this process, flush it */
+      /* It's a writable shared mapping, flush if it's used in this process */
+      if (is_shared_accessible(m))
         flush_dirty_pages(m);
-        /* Attach our pid to this mapping if it's unowned */
-        if (m->sh->pid == -1)
-          m->sh->pid = pid;
-      }
       else if (!seen_foreign)
         seen_foreign = 1;
     }
@@ -510,7 +525,7 @@ int munmap(void *addr, size_t len)
     if (m->start == (ULONG)addr && m->end == addr_end)
     {
       /* Simplest case: the whole region is unmapped */
-      if (m->flags & MAP_SHARED && m->dosFlags & PAG_WRITE && m->fd != -1)
+      if (m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fd != -1)
         flush_dirty_pages(m);
       arc = DosFreeMem((PVOID)addr);
       TRACE("DosFreeMem = %ld\n", arc);
@@ -702,15 +717,11 @@ void mmap_term()
   while (m)
   {
     struct MemMap *n = m->next;
-    ULONG len = m->end - m->start;
-    ULONG dosFlags;
-    if (m->sh->pid != pid)
-      arc = DosQueryMem((PVOID)m->start, &len, &dosFlags);
-    if (m->sh->pid == pid || (!arc && !(dosFlags & PAG_FREE)))
+    if (is_shared_accessible(m))
     {
       /* This mapping is used in this process, release it */
       TRACE("Releasing shared mapping %p (start %p, refcnt %d)\n", m, m->start, m->sh->refcnt);
-      if (m->dosFlags & PAG_WRITE && m->fd != -1)
+      if (m->dos_flags & PAG_WRITE && m->fd != -1)
         flush_dirty_pages(m);
       arc = DosFreeMem((PVOID)m->start);
       TRACE("DosFreeMem = %ld\n", arc);
@@ -821,19 +832,19 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
     {
       APIRET arc;
       ULONG len = 1;
-      ULONG dosFlags;
-      ULONG pageAddr = PAGE_ALIGN(addr);
-      arc = DosQueryMem((PVOID)pageAddr, &len, &dosFlags);
+      ULONG dos_flags;
+      ULONG page_addr = PAGE_ALIGN(addr);
+      arc = DosQueryMem((PVOID)page_addr, &len, &dos_flags);
       if (!arc)
       {
-        TRACE("dosFlags %lx\n", dosFlags);
+        TRACE("dos_flags %lx\n", dos_flags);
         if (!arc)
         {
-          if (!(dosFlags & (PAG_FREE | PAG_COMMIT)))
+          if (!(dos_flags & (PAG_FREE | PAG_COMMIT)))
           {
             /* First access to the allocated but uncommitted page */
             int revoke_write = 0;
-            if (m->flags & MAP_SHARED && m->dosFlags & PAG_WRITE && m->fd != -1)
+            if (m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fd != -1)
             {
               /*
                * First access to a writable shared mapping page. If it's a read
@@ -844,7 +855,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
                */
               if (report->ExceptionInfo[0] == XCPT_WRITE_ACCESS)
               {
-                ULONG pn = (pageAddr - m->start) / PAGE_SIZE;
+                ULONG pn = (page_addr - m->start) / PAGE_SIZE;
                 size_t i = pn / DIRTYMAP_WIDTH;
                 uint32_t bit = 0x1 << (pn % DIRTYMAP_WIDTH);
                 m->sh->dirty[i] |= bit;
@@ -857,7 +868,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
                 revoke_write = 1;
               }
             }
-            arc = DosSetMem((PVOID)pageAddr, len, m->dosFlags | PAG_COMMIT);
+            arc = DosSetMem((PVOID)page_addr, len, m->dos_flags | PAG_COMMIT);
             TRACE_IF(arc, "DosSetMem = %ld\n", arc);
             if (!arc)
             {
@@ -872,12 +883,12 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
                 ULONG read;
                 LONGLONG pos;
                 TRACE("Reading %d bytes to addr %p from fd %d at offset %llu\n",
-                      PAGE_SIZE, pageAddr, m->fd, (uint64_t)m->off + (pageAddr - m->start));
-                arc = DosSetFilePtrL(m->fd, m->off + (pageAddr - m->start), FILE_BEGIN, &pos);
+                      PAGE_SIZE, page_addr, m->fd, (uint64_t)m->off + (page_addr - m->start));
+                arc = DosSetFilePtrL(m->fd, m->off + (page_addr - m->start), FILE_BEGIN, &pos);
                 TRACE_IF(arc, "DosSetFilePtrL = %ld\n", arc);
                 if (!arc)
                 {
-                  arc = DosRead(m->fd, (PVOID)pageAddr, PAGE_SIZE, &read);
+                  arc = DosRead(m->fd, (PVOID)page_addr, PAGE_SIZE, &read);
                   TRACE_IF(arc, "DosRead = %ld\n", arc);
                 }
               }
@@ -885,8 +896,8 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
               {
                 if (revoke_write)
                 {
-                  dosFlags = m->dosFlags & ~PAG_WRITE;
-                  arc = DosSetMem((PVOID)pageAddr, len, m->dosFlags & ~PAG_WRITE);
+                  dos_flags = m->dos_flags & ~PAG_WRITE;
+                  arc = DosSetMem((PVOID)page_addr, len, m->dos_flags & ~PAG_WRITE);
                   TRACE_IF(arc, "DosSetMem = %ld\n", arc);
                 }
                 if (!arc)
@@ -897,22 +908,22 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
               }
             }
           }
-          else if (dosFlags & PAG_COMMIT)
+          else if (dos_flags & PAG_COMMIT)
           {
             if (report->ExceptionInfo[0] == XCPT_WRITE_ACCESS &&
-                !(dosFlags & PAG_WRITE) &&
-                m->flags & MAP_SHARED && m->dosFlags & PAG_WRITE && m->fd != -1)
+                !(dos_flags & PAG_WRITE) &&
+                m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fd != -1)
             {
               /*
                * First write access to a writable shared mapping page. Mark the
                * page as dirty and set PAG_WRITE to let the app continue (also
                * see above).
                */
-              arc = DosSetMem((PVOID)pageAddr, len, m->dosFlags);
+              arc = DosSetMem((PVOID)page_addr, len, m->dos_flags);
               TRACE_IF(arc, "DosSetMem = %ld\n", arc);
               if (!arc)
               {
-                ULONG pn = (pageAddr - m->start) / PAGE_SIZE;
+                ULONG pn = (page_addr - m->start) / PAGE_SIZE;
                 size_t i = pn / DIRTYMAP_WIDTH;
                 uint32_t bit = 0x1 << (pn % DIRTYMAP_WIDTH);
                 m->sh->dirty[i] |= bit;
@@ -950,17 +961,17 @@ static int forkParent(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation
   while (m)
   {
     assert(m->flags && MAP_SHARED);
-    ULONG dosFlags = m->dosFlags;
+    ULONG dos_flags = m->dos_flags;
     TRACE("giving mapping %p (start %p) to pid %x\n", m, m->start, pForkHandle->pidChild);
-    if (m->dosFlags & PAG_WRITE && m->fd != -1)
+    if (m->dos_flags & PAG_WRITE && m->fd != -1)
     {
       /*
        * This is a writable shared mapping, remove PAG_WRITE to get an exception
        * on the first write in child (see mmap_exception above).
        */
-      dosFlags &= ~PAG_WRITE;
+      dos_flags &= ~PAG_WRITE;
     }
-    arc = DosGiveSharedMem((PVOID)m->start, pForkHandle->pidChild, dosFlags);
+    arc = DosGiveSharedMem((PVOID)m->start, pForkHandle->pidChild, dos_flags);
     TRACE_IF(arc, "DosGiveSharedMem = %ld\n", arc);
     ++(m->sh->refcnt);
     m = m->next;
