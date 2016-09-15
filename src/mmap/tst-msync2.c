@@ -173,30 +173,66 @@ do_test (void)
 
         case 0:
         {
+          unsigned char *addr3;
+
+          printf("Test 1.3\n");
+
+          int fd3 = create_temp_file("tst-mmap2-3-", &fname);
+          if (fd3 == -1)
+            {
+              puts("create_temp_file in child failed");
+              return 1;
+            }
+
+#ifdef __OS2__
+          setmode (fd3, O_BINARY);
+#endif
+
+          srand(getpid());
+
+          for (i = 0; i < FILE_SIZE; ++i)
+            buf[i] = rand() % 255;
+
+          if ((n = write(fd3, buf, FILE_SIZE)) != FILE_SIZE)
+          {
+            if (n != -1)
+              printf("write in child failed (write %d bytes instead of %d)\n", n, FILE_SIZE);
+            else
+              perror("write in child failed");
+            return 1;
+          }
+
+          addr3 = mmap(NULL, FILE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd3, 0);
+          if (addr3 == MAP_FAILED)
+          {
+            perror("mmap failed");
+            exit(-1);
+          }
+
           for (i = PAGE_SIZE - TEST_SIZE; i < PAGE_SIZE + TEST_SIZE; ++i)
           {
-            if (addr2[i] != buf[i])
+            if (addr3[i] != buf[i])
             {
-              printf("grandchild: addr2[%d] is %u, must be %u\n", i, addr2[i], buf[i]);
+              printf("grandchild: addr3[%d] is %u, must be %u\n", i, addr3[i], buf[i]);
               return 1;
             }
           }
 
           for (i = PAGE_SIZE - TEST_SIZE; i < PAGE_SIZE + TEST_SIZE; ++i)
-            addr2[i] = TEST_VAL;
+            addr3[i] = TEST_VAL;
 
           /* Let mmap auto-sync code flush changed memory back to the file */
           usleep((FLUSH_DELAY + 500) * 1000);
 
           /* Now check the file contents */
-          if (lseek(fd2, 0, SEEK_SET) == -1)
+          if (lseek(fd3, 0, SEEK_SET) == -1)
           {
             perror("lseek in grandchild failed");
             return 1;
           }
 
           /* Now check the file contents */
-          if ((n = read(fd2, buf_chk, FILE_SIZE)) != FILE_SIZE)
+          if ((n = read(fd3, buf_chk, FILE_SIZE)) != FILE_SIZE)
           {
             if (n != -1)
               printf("read in grandchild failed (read %d bytes instead of %d)\n", n, FILE_SIZE);
@@ -207,14 +243,14 @@ do_test (void)
 
           for (i = 0; i < FILE_SIZE; ++i)
           {
-            if (addr2[i] != buf_chk[i])
+            if (addr3[i] != buf_chk[i])
             {
-              printf("grandchild: buf_chk[%d] is %u, must be %u\n", i, buf_chk[i], addr2[i]);
+              printf("grandchild: buf_chk[%d] is %u, must be %u\n", i, buf_chk[i], addr3[i]);
               return 1;
             }
           }
 
-          if (munmap(addr2, FILE_SIZE) == -1)
+          if (munmap(addr3, FILE_SIZE) == -1)
           {
             perror("child: munmap failed");
             return 1;

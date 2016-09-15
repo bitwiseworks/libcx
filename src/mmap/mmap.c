@@ -590,13 +590,15 @@ static void mmap_flush_thread(void *arg)
 
     global_lock();
 
-    /* Only go further if the request hasn't been handled by another thread yet */
     if (gpData->mmap->flush_request)
     {
+      /* The request hasn't been handled by another thread yet, process it */
       TRACE("got flush request\n");
 
       if (flush_own_mappings() == 1)
       {
+        ULONG cnt;
+
         /*
          * There are mappings we can't flush, so wake up another PID's flush
          * thread.
@@ -605,8 +607,8 @@ static void mmap_flush_thread(void *arg)
         TRACE_IF(arc, "DosPostEventSem = %ld\n", arc);
 
         /*
-         * Now wait until other workers handle all the remaining ones (to
-         * avoid giving timeslices to us over and over again).
+         * Now go to sleep to give other workers an opportunity to actually
+         * pick up the request.
          */
         global_unlock();
 
@@ -618,16 +620,20 @@ static void mmap_flush_thread(void *arg)
       else
       {
         /*
-         * We are the thread that finishes completion this flush reques,
+         * We are the thread that finishes execution of this flush request,
          * reset the flag and wake the ones waiting on completion (see above).
          */
         gpData->mmap->flush_request = 0;
+
+        arc = DosPostEventSem(gpData->mmap->flush_coop_sem);
+        TRACE_IF(arc, "DosPostEventSem = %ld\n", arc);
       }
     }
 
     global_unlock();
   }
 
+  /* Should never reach here, the thread is killed at process termination */
   TRACE("Stopped\n");
 }
 
