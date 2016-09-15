@@ -65,7 +65,7 @@ struct GlobalMemMap
 {
   HEV flush_sem; /* Semaphore for flush thread */
   HEV flush_coop_sem; /* Semaphore for flush thread cooperation */
-  int flush_request : 1; /* 1 - semaphore is posted */
+  int flush_request; /* 1 - semaphore is posted, 2 - waiting for final worker */
 };
 
 /**
@@ -358,30 +358,52 @@ static struct MemMap *find_mmap(ULONG addr, ULONG addr_end, struct MemMap **pm_o
   return m;
 }
 
-static void flush_dirty_pages(struct MemMap *m)
+/**
+ * Flush dirty pages of the given mapping to the underlying file. If @a off
+ * is not 0, it specifies the offest of the first page to flush from the
+ * beginning of the given mapping. If @a len is not 0, it specifies the length
+ * of the region to flush. If it is 0, all pages up to the end of the mapping
+ * are flushed.
+ */
+static void flush_dirty_pages(struct MemMap *m, ULONG off, ULONG len)
 {
-  TRACE("mapping %p\n", m);
+  TRACE("m %p, off %lu, len %lu\n", m, off, len);
   assert(m && m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fd != -1);
+  assert(off + len <= (m->end - m->start));
 
   /* Calculate the number of 4 byte words in the dirty page bitmap */
   size_t dirtymap_len = DIVIDE_UP(NUM_PAGES(m->end - m->start), DIRTYMAP_WIDTH);
-  ULONG base, page, nesting;
+  ULONG page, end;
   size_t i, j;
+  uint32_t bit;
   APIRET arc;
 
-  base = m->start;
-  for (i = 0; i < dirtymap_len; ++i)
+  off = PAGE_ALIGN(off);
+
+  page = m->start + off;
+  end = len ? m->start + off + len : m->end;
+  i = (off / PAGE_SIZE) / DIRTYMAP_WIDTH;
+  j = (off / PAGE_SIZE) % DIRTYMAP_WIDTH;
+  bit = 0x1 << j;
+
+  for (; page < end; ++i, j = 0, bit = 0x1)
   {
-    /* Checking blocks of 32 pages at once lets us quickly skip clean ones */
-    if (m->sh->dirty[i])
+    /* Check a block of DIRTYMAP_WIDTH pages at once to quickly skip clean ones */
+    if (!m->sh->dirty[i])
     {
-      uint32_t bit = 0x1;
-      for (j = 0; j < DIRTYMAP_WIDTH; ++j, bit <<= 1)
+      page += PAGE_SIZE * (DIRTYMAP_WIDTH - j);
+    }
+    else
+    {
+      for (; page < end && bit; page += PAGE_SIZE, bit <<= 1)
       {
         if (m->sh->dirty[i] & bit)
         {
-          ULONG written, nesting;
+          ULONG nesting, written;
           LONGLONG pos;
+
+          TRACE("Writing %d bytes from addr %p to fd %d at offset %llu\n",
+                PAGE_SIZE, page, m->fd, (uint64_t)m->off + (page - m->start));
 
           /*
            * Make sure we are not interrupted by process termination and other
@@ -394,9 +416,6 @@ static void flush_dirty_pages(struct MemMap *m)
            */
           DosEnterMustComplete(&nesting);
 
-          page = base + PAGE_SIZE * j;
-          TRACE("Writing %d bytes from addr %p to fd %d at offset %llu\n",
-                PAGE_SIZE, page, m->fd, (uint64_t)m->off + (page - m->start));
           arc = DosSetFilePtrL(m->fd, m->off + (page - m->start), FILE_BEGIN, &pos);
           TRACE_IF(arc, "DosSetFilePtrL = %ld\n", arc);
           if (!arc)
@@ -421,7 +440,6 @@ static void flush_dirty_pages(struct MemMap *m)
         }
       }
     }
-    base += PAGE_SIZE * DIRTYMAP_WIDTH;
   }
 
   /*
@@ -470,7 +488,7 @@ static int flush_own_mappings()
     {
       /* It's a writable shared mapping, flush if it's used in this process */
       if (is_shared_accessible(m))
-        flush_dirty_pages(m);
+        flush_dirty_pages(m, 0, 0);
       else if (!seen_foreign)
         seen_foreign = 1;
     }
@@ -524,7 +542,7 @@ int munmap(void *addr, size_t len)
   {
     /* Simplest case: the whole region is unmapped */
     if (m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fd != -1)
-      flush_dirty_pages(m);
+      flush_dirty_pages(m, 0, 0);
     arc = DosFreeMem((PVOID)addr);
     TRACE("DosFreeMem = %ld\n", arc);
     /* Dereference and free the mapping when appropriate */
@@ -594,8 +612,6 @@ static void mmap_flush_thread(void *arg)
 
       if (flush_own_mappings() == 1)
       {
-        ULONG cnt;
-
         /*
          * There are mappings we can't flush, so wake up another PID's flush
          * thread.
@@ -607,6 +623,8 @@ static void mmap_flush_thread(void *arg)
          * Now go to sleep to give other workers an opportunity to actually
          * pick up the request.
          */
+        gpData->mmap->flush_request = 2;
+
         global_unlock();
 
         arc = DosWaitEventSem(gpData->mmap->flush_coop_sem, SEM_INDEFINITE_WAIT);
@@ -618,12 +636,17 @@ static void mmap_flush_thread(void *arg)
       {
         /*
          * We are the thread that finishes execution of this flush request,
-         * reset the flag and wake the ones waiting on completion (see above).
+         * wake the ones waiting on completion if any (see above) and reset
+         * the flag and.
          */
+        if (gpData->mmap->flush_request == 2)
+        {
+          arc = DosPostEventSem(gpData->mmap->flush_coop_sem);
+          TRACE_IF(arc, "DosPostEventSem = %ld\n", arc);
+        }
+
         gpData->mmap->flush_request = 0;
 
-        arc = DosPostEventSem(gpData->mmap->flush_coop_sem);
-        TRACE_IF(arc, "DosPostEventSem = %ld\n", arc);
       }
     }
 
@@ -725,7 +748,7 @@ void mmap_term()
       /* This mapping is used in this process, release it */
       TRACE("Releasing shared mapping %p (start %p, refcnt %d)\n", m, m->start, m->sh->refcnt);
       if (m->dos_flags & PAG_WRITE && m->fd != -1)
-        flush_dirty_pages(m);
+        flush_dirty_pages(m, 0, 0);
       arc = DosFreeMem((PVOID)m->start);
       TRACE("DosFreeMem = %ld\n", arc);
       assert(m->sh->refcnt);
@@ -781,13 +804,18 @@ void mmap_term()
   }
 }
 
-static void schedule_flush_dirty()
+/**
+ * Schedules a background flush of dirty pages to the underlying file.
+ * @param immediate 1 for an immediate request, 0 for adeferred one
+ * (delayed by FLUSH_DELAY).
+ */
+static void schedule_flush_dirty(int immediate)
 {
   struct ProcDesc *desc;
   APIRET arc;
   pid_t pid = getpid();
 
-  TRACE("flush_request %d\n", !!gpData->mmap->flush_request);
+  TRACE("immediate %d, flush_request %d\n", immediate, !!gpData->mmap->flush_request);
 
   desc = find_proc_desc(pid);
   assert(desc);
@@ -800,13 +828,40 @@ static void schedule_flush_dirty()
     assert(desc->mmap->flush_tid != -1);
   }
 
-  if (gpData->mmap->flush_request)
-    return;
+  /*
+   * Note: we do nothing if a request is already being delivered: the flush
+   * thread will flush all new dirty pages. However, if it's an immediate
+   * request, we don't want to wait until a timer is fired and
+   * post the semaphore manually if it's not already posted.
+   */
+
+  if (immediate)
+  {
+    ULONG cnt = 0;
+
+    if (gpData->mmap->flush_request)
+    {
+      arc = DosQueryEventSem(gpData->mmap->flush_sem, &cnt);
+      TRACE_IF(arc, "DosQueryEventSem = %ld\n", arc);
+      assert(!arc);
+      TRACE("cnt %u\n", cnt);
+    }
+
+    if (cnt == 0)
+    {
+      arc = DosPostEventSem(gpData->mmap->flush_sem);
+      TRACE_IF(arc, "DosPostEventSem = %ld\n", arc);
+      assert(!arc);
+    }
+  }
+  else if (!gpData->mmap->flush_request)
+  {
+    arc = DosAsyncTimer(FLUSH_DELAY, (HSEM)gpData->mmap->flush_sem, NULL);
+    TRACE_IF(arc, "DosAsyncTimer = %ld\n", arc);
+    assert(!arc);
+  }
 
   gpData->mmap->flush_request = 1;
-
-  arc = DosAsyncTimer(FLUSH_DELAY, (HSEM)gpData->mmap->flush_sem, NULL);
-  TRACE_IF(arc, "DosAsyncTimer = %ld\n", arc);
 }
 
 /**
@@ -863,7 +918,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
                 uint32_t bit = 0x1 << (pn % DIRTYMAP_WIDTH);
                 m->sh->dirty[i] |= bit;
                 TRACE("Marked bit 0x%x at idx %u as dirty\n", bit, i);
-                schedule_flush_dirty();
+                schedule_flush_dirty(0 /* immediate */);
               }
               else
               {
@@ -931,7 +986,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
                 uint32_t bit = 0x1 << (pn % DIRTYMAP_WIDTH);
                 m->sh->dirty[i] |= bit;
                 TRACE("Marked bit 0x%x at idx %u as dirty\n", bit, i);
-                schedule_flush_dirty();
+                schedule_flush_dirty(0 /* immediate */);
 
                 retry = 1;
               }
@@ -947,6 +1002,75 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
   }
 
   return retry;
+}
+
+int msync(void *addr, size_t len, int flags)
+{
+  APIRET arc;
+  int rc = 0;
+
+  TRACE("addr %p, len %u, flags %x=%c%c\n", addr, len,
+        flags,
+        (flags & 0x1) == MS_SYNC ? 'S' : (flags & 0x1) == MS_ASYNC ? 'A' : '-',
+        flags & MS_INVALIDATE ? 'I' : '-');
+
+  /* Check if aligned to page size */
+  if (!PAGE_ALIGNED(addr))
+  {
+    errno = EINVAL;
+    return -1;
+  }
+
+  /* Check if len within bounds */
+  if (0 - ((uintptr_t)addr) < len)
+  {
+    errno = ENOMEM; /* Differs from munmap but per POSIX */
+    return -1;
+  }
+
+  ULONG addr_end = ((ULONG)addr) + len;
+
+  struct MemMap *m;
+
+  global_lock();
+
+  m = find_mmap((ULONG)addr, addr_end, NULL, NULL);
+  if (!m)
+  {
+    global_unlock();
+
+    errno = ENOMEM;
+    return -1;
+  }
+
+  /*
+   * Only do real work on shared writable file mappings and silently
+   * ignore other types (POSIX doesn't specify any particular behavior
+   * in such a case).
+   */
+  if (m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fd != -1)
+  {
+    if ((flags & 0x1) == MS_ASYNC)
+    {
+      /*
+       * We could add the requested region to some list and ask
+       * mmap_flush_thread() to flush only it, but that doesn't make too much
+       * practical sense given that the request is served asynchronously so that
+       * the caller doesn't know when it exactly happens anyway. It looks more
+       * practical to simply forse a complete flush which may take longer
+       * but will save some cycles on doing one flush loop instead of two.
+       */
+      schedule_flush_dirty(1 /* immediate */);
+    }
+    else
+    {
+      flush_dirty_pages(m, (ULONG)addr - m->start, len);
+    }
+  }
+
+  global_unlock();
+
+  return 0;
 }
 
 static int forkParent(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation)

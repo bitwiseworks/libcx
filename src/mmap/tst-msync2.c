@@ -58,7 +58,7 @@ do_test (void)
   char *fname;
   int status;
 
-  int fd = create_temp_file("tst-mmap2-1-", &fname);
+  int fd = create_temp_file("tst-msync2-1-", &fname);
   if (fd == -1)
     {
       puts("create_temp_file failed");
@@ -121,7 +121,7 @@ do_test (void)
 
       printf("Test 1.2\n");
 
-      int fd2 = create_temp_file("tst-mmap2-2-", &fname);
+      int fd2 = create_temp_file("tst-msync2-2-", &fname);
       if (fd2 == -1)
         {
           puts("create_temp_file in child failed");
@@ -177,7 +177,7 @@ do_test (void)
 
           printf("Test 1.3\n");
 
-          int fd3 = create_temp_file("tst-mmap2-3-", &fname);
+          int fd3 = create_temp_file("tst-msync2-3-", &fname);
           if (fd3 == -1)
             {
               puts("create_temp_file in child failed");

@@ -9,6 +9,7 @@ EXPORTS
   "_close"
   "_mmap"
   "_munmap"
+  "_msync"
   "___init_app"
   "__beginthread"
   ; private symbols

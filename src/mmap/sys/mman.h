@@ -183,7 +183,7 @@ __BEGIN_DECLS
 void *	mmap(void *, size_t, int, int, int, off_t);
 #endif
 int	mprotect(const void *, size_t, int);
-/** @todo int	msync(void *, size_t, int); */
+int	msync(void *, size_t, int);
 /** @todo int	munlock(const void *, size_t); */
 int	munmap(void *, size_t);
 #if __POSIX_VISIBLE >= 200112
