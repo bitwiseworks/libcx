@@ -187,7 +187,7 @@ int	msync(void *, size_t, int);
 /** @todo int	munlock(const void *, size_t); */
 int	munmap(void *, size_t);
 #if __POSIX_VISIBLE >= 200112
-/** @todo int	posix_madvise(void *, size_t, int); */
+int	posix_madvise(void *, size_t, int);
 #endif
 #if __POSIX_VISIBLE >= 199309
 /** @todo int	mlockall(int); */

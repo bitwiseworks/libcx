@@ -11,6 +11,7 @@ EXPORTS
   "_munmap"
   "_msync"
   "_madvise"
+  "_posix_madvise"
   "___init_app"
   "__beginthread"
   ; private symbols

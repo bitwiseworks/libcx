@@ -1139,6 +1139,33 @@ int madvise(void *addr, size_t len, int flags)
   return rc;
 }
 
+int posix_madvise(void *addr, size_t len, int advice)
+{
+  TRACE("addr %p, len %u, advice %x\n", addr, len, advice);
+
+  /* Check if aligned to page size */
+  if (!PAGE_ALIGNED(addr))
+  {
+    errno = EINVAL;
+    return -1;
+  }
+
+  /* Check if len within bounds */
+  if (0 - ((uintptr_t)addr) < len)
+  {
+    errno = ENOMEM; /* Differs from munmap but per POSIX */
+    return -1;
+  }
+
+  /*
+   * This is barely a no-op. Note that although it also has POSIX_MADV_DONTNEED
+   * which sounds similar to MADV_DONTNEED, these advices are very different in
+   * that the POSIX version does NOT change access semantics as opposed to
+   * madvise(). For this reason, POSIX_MADV_DONTNEED is also a no-op on OS/2.
+   */
+  return 0;
+}
+
 static int forkParent(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation)
 {
   APIRET arc;
