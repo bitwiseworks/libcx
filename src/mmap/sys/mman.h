@@ -173,7 +173,7 @@ __BEGIN_DECLS
  * posix_typed_mem_open().
  */
 #if __BSD_VISIBLE
-/** @todo int	madvise(void *, size_t, int); */
+int	madvise(void *, size_t, int);
 /** @todo int	mincore(const void *, size_t, char *); */
 /** @todo int	minherit(void *, size_t, int); */
 #endif

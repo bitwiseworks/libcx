@@ -10,6 +10,7 @@ EXPORTS
   "_mmap"
   "_munmap"
   "_msync"
+  "_madvise"
   "___init_app"
   "__beginthread"
   ; private symbols
