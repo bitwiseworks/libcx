@@ -12,6 +12,12 @@ include $(KBUILD_PATH)/subheader.kmk
 include $(PATH_SUB_CURRENT)/src/Makefile.kmk
 
 #
+# Populate tests for test target.
+#
+
+$(foreach test, $(ALL_TESTS), $(evalvalctx def_test))
+
+#
 # Special target to clean install results
 # (kbuild doesn't do that from clean).
 #

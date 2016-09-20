@@ -52,3 +52,46 @@ TEMPLATE_Test = Tests
 TEMPLATE_Test_EXTENDS = C
 TEMPLATE_Test_DEFS = _GNU_SOURCE
 TEMPLATE_Test_LIBS = $(PATH_STAGE_LIB)/libcx0$(SUFF_LIB) pthread
+
+#
+# Simple test framework
+#
+
+ALL_TESTS = $(TESTS) $(TESTS.$(KBUILD_TYPE))
+ALL_TARGETS += $(ALL_TESTS)
+
+##
+# Defines rules for one test.
+# $(test) - test source.
+# $(target) - test target name.
+#
+define def_test_rules
+
+PROGRAMS += $(target)
+$(target)_TEMPLATE = Test
+$(target)_INCS = $$(abspathex $$(dir $(test)), $$($(test)_DEFPATH))
+$(target)_SOURCES = $$(abspathex $(test), $$($(test)_DEFPATH))
+
+# Note: LIBPATHSTRICT=T doesn't work with posix shells, use cmd.exe.
+.PHONY: test-$(target)
+test-$(target):
+	%$(call MSG_L1,Running test $(target)...)
+	$(QUIET)cmd.exe /c "set BEGINLIBPATH=$(PATH_STAGE_LIB);%BEGINLIBPATH% && set LIBPATHSTRICT=T && $$($(target)_1_TARGET) --direct > test-$(target).log 2>&1"
+
+ifneq ($(ordered),)
+.NOTPARALLEL: test-$(target)
+endif
+
+TESTING += test-$(target)
+
+endef # def_test_rules
+
+##
+# Defines one test.
+# $(test) - test source.
+#
+define def_test
+local target := $(notdir $(basename $(test)))
+local ordered := $($(test)_ORDERED)
+$(eval $(def_test_rules))
+endef # def_test

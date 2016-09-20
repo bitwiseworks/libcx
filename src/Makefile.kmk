@@ -46,72 +46,28 @@ libcx-stats_SOURCES = libcx-stats.c
 # Tests
 #
 
-PROGRAMS.debug += tst-shared
-tst-shared_TEMPLATE = Test
-tst-shared_SOURCES = tst-shared.c
+TESTS.debug += tst-shared.c
+tst-shared.c_ORDERED = 1
 
-PROGRAMS += tst-flock2
-tst-flock2_TEMPLATE = Test
-tst-flock2_SOURCES = fcntl/tst-flock2.c
+TESTS += \
+  fcntl/tst-flock2.c \
+  fcntl/tst-flock-sj.c \
+  fcntl/tst-deadlk.c
 
-PROGRAMS += tst-flock-sj
-tst-flock-sj_TEMPLATE = Test
-tst-flock-sj_SOURCES = fcntl/tst-flock-sj.c
+TESTS += pwrite/tst-pwrite.c
 
-PROGRAMS += tst-deadlk
-tst-deadlk_TEMPLATE = Test
-tst-deadlk_SOURCES = fcntl/tst-deadlk.c
+TESTS += poll/tst-poll.c
 
-PROGRAMS += tst-pwrite
-tst-pwrite_TEMPLATE = Test
-tst-pwrite_SOURCES = pwrite/tst-pwrite.c
+TESTS += select/tst-select.c
 
-PROGRAMS += tst-poll
-tst-poll_TEMPLATE = Test
-tst-poll_SOURCES = poll/tst-poll.c
-
-PROGRAMS += tst-select
-tst-select_TEMPLATE = Test
-tst-select_SOURCES = select/tst-select.c
-
-PROGRAMS += tst-anon_mmap
-tst-anon_mmap_TEMPLATE = Test
-tst-anon_mmap_INCS = mmap
-tst-anon_mmap_SOURCES = mmap/tst-anon_mmap.c
-
-PROGRAMS += tst-anon_mmap2
-tst-anon_mmap2_TEMPLATE = Test
-tst-anon_mmap2_INCS = mmap
-tst-anon_mmap2_SOURCES = mmap/tst-anon_mmap2.c
-
-PROGRAMS += tst-mmap
-tst-mmap_TEMPLATE = Test
-tst-mmap_INCS = mmap
-tst-mmap_SOURCES = mmap/tst-mmap.c
-
-PROGRAMS += tst-mmap2
-tst-mmap2_TEMPLATE = Test
-tst-mmap2_INCS = mmap
-tst-mmap2_SOURCES = mmap/tst-mmap2.c
-
-PROGRAMS += tst-msync
-tst-msync_TEMPLATE = Test
-tst-msync_INCS = mmap
-tst-msync_SOURCES = mmap/tst-msync.c
-
-PROGRAMS += tst-msync2
-tst-msync2_TEMPLATE = Test
-tst-msync2_INCS = mmap
-tst-msync2_SOURCES = mmap/tst-msync2.c
-
-PROGRAMS += tst-msync3
-tst-msync3_TEMPLATE = Test
-tst-msync3_INCS = mmap
-tst-msync3_SOURCES = mmap/tst-msync3.c
-
-PROGRAMS += tst-madvise
-tst-madvise_TEMPLATE = Test
-tst-madvise_INCS = mmap
-tst-madvise_SOURCES = mmap/tst-madvise.c
+TESTS += \
+  mmap/tst-anon_mmap.c \
+  mmap/tst-anon_mmap2.c \
+  mmap/tst-mmap.c \
+  mmap/tst-mmap2.c \
+  mmap/tst-msync.c \
+  mmap/tst-msync2.c \
+  mmap/tst-msync3.c \
+  mmap/tst-madvise.c
 
 include $(FILE_KBUILD_SUB_FOOTER)
