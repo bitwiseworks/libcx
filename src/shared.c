@@ -111,10 +111,15 @@ static void *mem_alloc(Heap_t h, size_t *psize, int *pclean)
 
 /**
  * Initializes the shared structures.
- * @param bKeepLock TRUE to leave the mutex locked on success.
  */
-static void shared_init(int bKeepLock)
+static void shared_init()
 {
+  /*
+   * Note that due to LIBC bug #366 (http://trac.netlabs.org/libc/ticket/366)
+   * it is forbidden to use many common LIBC functions (like malloc/printf/etc)
+   * in this function.
+   */
+
   APIRET arc;
   int rc;
 
@@ -134,7 +139,7 @@ static void shared_init(int bKeepLock)
   {
     /* First, try to open the mutex */
     arc = DosOpenMutexSem(MUTEX_LIBCX, &gMutex);
-    TRACE("DosOpenMutexSem = %d\n", arc);
+    TRACE("DosOpenMutexSem = %lu\n", arc);
 
     if (arc == NO_ERROR)
     {
@@ -144,12 +149,13 @@ static void shared_init(int bKeepLock)
        * it and open shared heap located in that memory.
        */
       arc = DosRequestMutexSem(gMutex, SEM_INDEFINITE_WAIT);
-      TRACE("DosRequestMutexSem = %d\n", arc);
+      TRACE("DosRequestMutexSem = %lu\n", arc);
       assert(arc == NO_ERROR);
 
       if (arc == NO_ERROR)
       {
         arc = DosGetNamedSharedMem((PPVOID)&gpData, SHAREDMEM_LIBCX, PAG_READ | PAG_WRITE);
+        TRACE("DosGetNamedSharedMem = %lu\n", arc);
         assert(arc == NO_ERROR);
 
         TRACE("gpData->heap = %p\n", gpData->heap);
@@ -202,6 +208,8 @@ static void shared_init(int bKeepLock)
 
     assert(arc == NO_ERROR);
 
+    TRACE("gpData %p\n", gpData);
+
     /* Commit the initial block */
     arc = DosSetMem(gpData, HEAP_INIT_SIZE, PAG_DEFAULT | PAG_COMMIT);
     TRACE("DosSetMem = %d\n", arc);
@@ -236,8 +244,7 @@ static void shared_init(int bKeepLock)
   mmap_init();
   fcntl_locking_init();
 
-  if (!bKeepLock)
-    DosReleaseMutexSem(gMutex);
+  DosReleaseMutexSem(gMutex);
 }
 
 static void shared_term()
@@ -350,18 +357,21 @@ unsigned long _System _DLL_InitTerm(unsigned long hModule, unsigned long ulFlag)
   switch (ulFlag)
   {
     /*
-     * InitInstance. Note that this one is NOT called for DLLs in a forked
-     * child. This is why we also call shared_init() from global_lock()
-     * to lazily init forked children on demand. A proper (and single) place
-     * for initialization is a child fork callback but it's not an option for
-     * now due to kLIBC bug #366.
+     * InitInstance. Note that this one is NOT called in a forked child — it's
+     * assumed that the DLLs are already initialized in the parent and the child
+     * receives an already initialized copy of DLL data. However, in some cases
+     * this is not actually true (examples are OS/2 file handles, semaphores and
+     * other resources that require special work besides data segment duplication
+     * to be available in the child process) and LIBCx is one of these cases.
+     * A solution here is to call shared_init() from a fork completion callback
+     * (see forkCompletion() below).
      */
     case 0:
     {
       if (_CRT_init() != 0)
         return 0;
       __ctordtorInit();
-      shared_init(FALSE);
+      shared_init();
       break;
     }
 
@@ -410,16 +420,9 @@ void global_lock()
   assert(gpData);
 
   arc = DosRequestMutexSem(gMutex, SEM_INDEFINITE_WAIT);
-  TRACE_IF(arc && arc != ERROR_INVALID_HANDLE, "DosRequestMutexSem = %d\n", arc);
-  if (arc == ERROR_INVALID_HANDLE)
-  {
-    /*
-     * It must be a forked child, initialize ourselves (since
-     * _DLL_InitTerm(,0) is not called for forks). This call
-     * will leave the mutex locked.
-     */
-    shared_init(TRUE);
-  }
+  TRACE_IF(arc, "DosRequestMutexSem = %lu\n", arc);
+
+  assert(arc == NO_ERROR);
 }
 
 /**
@@ -432,16 +435,14 @@ void global_unlock()
   assert(gMutex != NULLHANDLE);
 
   arc = DosReleaseMutexSem(gMutex);
-  TRACE_IF(arc, "DosReleaseMutexSem = %ld\n", arc);
+  TRACE_IF(arc, "DosReleaseMutexSem = %lu\n", arc);
 
   assert(arc == NO_ERROR);
 }
 
 /**
  * Allocates a new block of shared LIBCX memory. Must be called under
- * global_lock() (@todo this is only true until we find a way on how to
- * initialize forked children at startup,
- * see http://trac.netlabs.org/libc/ticket/366).
+ * global_lock().
  */
 void *global_alloc(size_t size)
 {
@@ -639,6 +640,14 @@ void force_libcx_term()
 {
   shared_term();
 }
+
+/**
+ * Undoes the effect of force_libcx_init(). Used in some tests.
+ */
+void force_libcx_init()
+{
+  shared_init();
+}
 #endif
 
 #if defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG)
@@ -705,37 +714,62 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
   __libc_LogRaw(gLogInstance, traceGroup | __LIBC_LOG_MSGF_FLUSH, msg, cch);
 }
 
-/*
- * @todo We would like to reset the log instance to NULL here to have it
- * properly re-initialized in the child process but this crashes the child
- * because LIBC Heap can't be used at that point. A solution would be either:
- *
- * - Re-init the log instance w/o allocation but __libc_LogInit doesn't support
- * that.
- * - Use __LIBC_PFORKHANDLE::pfnCompletionCallback from a fork parent callback
- * to install a function called at the very end of fork() but unfortunately
- * no user functions may be scheduled past LIBC completion functions (where
- * the LIBC Heap is unlocked) and hence they are useful. This is still a way
- * to go when this is fixed in LIBC (a proposal is in
- * http://trac.netlabs.org/libc/ticket/366#comment:4).
- *
- * For now, we don't do anything and this is accidentially fine for us because
- * we force logging to the console above and the console handles in the child
- * process are identical to the parent (even the one we create with
- * DosDupHandle as it's inherited by default).
- */
-#if 0
-static int forkChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation)
-{
-  if (enmOperation != __LIBC_FORK_OP_FORK_CHILD)
-    return 0;
+#endif /* defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG) */
 
-  /* Reset the log instance in the child process */
-  gLogInstance = NULL;
-  return 0;
+static void forkCompletion(void *pvArg, int rc, __LIBC_FORKCTX enmCtx)
+{
+  /*
+   * This is the place where LIBCx is initialized in the forked child
+   * instead of DLL_InitTerm.
+   */
+  shared_init();
 }
 
-_FORK_CHILD1(0, forkChild);
-#endif
+static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation)
+{
+  int rc = 0;
 
-#endif /* defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG) */
+  switch(enmOperation)
+  {
+    case __LIBC_FORK_OP_FORK_PARENT:
+    {
+      rc = pForkHandle->pfnCompletionCallback(pForkHandle, forkCompletion, NULL, __LIBC_FORK_CTX_CHILD);
+      TRACE("forkCompletion = %p, rc = %d\n", forkCompletion, rc);
+      break;
+    }
+
+    case __LIBC_FORK_OP_FORK_CHILD:
+    {
+      /*
+       * @todo We would like to free & reset the log instance to NULL here to have it
+       * properly re-initialized in the child process but this crashes the child
+       * because LIBC Heap can't be used at that point. A solution would be either:
+       *
+       * - Re-init the log instance w/o allocation but __libc_LogInit doesn't support
+       * that.
+       * - Do it from the forkCompletion() callback which is called at the very end
+       * of fork(), right before returning to user code, but unfortunately we can't
+       * register a completion callback that would get called *after* LIBC own
+       * completion callbacks (where the LIBC Heap is unlocked) and hence we can't
+       * do it from there. There is a proposed fix for LIBC that makes it possible,
+       * see http://trac.netlabs.org/libc/ticket/366#comment:4.
+       *
+       * For now, we don't do anything and this is accidentially fine for us because
+       * we force logging to the console in trace() and the console handles in the
+       * child process are identical to the parent (even the one we create with
+       * DosDupHandle as it's inherited by default).
+       */
+#if defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG) && 0
+      /* Reset the log instance in the child process to cause a reinit */
+      free(gLogInstance);
+      gLogInstance = NULL;
+#endif
+      break;
+    }
+  }
+
+  return rc;
+}
+
+_FORK_PARENT1(0xFFFFFFFF, forkParentChild);
+_FORK_CHILD1(0xFFFFFFFF, forkParentChild);

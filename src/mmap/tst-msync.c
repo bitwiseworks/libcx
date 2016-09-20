@@ -167,13 +167,6 @@ do_test (void)
     }
   }
 
-  /*
-   * @todo Currently, terminating parent before forked child will break
-   * LIBCx functionality (a fix for kLIBC bug #366 is needed to solve that).
-   * For now just hold the parent to let the child start.
-   */
-  sleep(2);
-
 #ifdef DEBUG
   /*
    * Force this process LIBCx usage termination to simulate the parent process
@@ -193,6 +186,14 @@ do_test (void)
     printf("child crashed or returned non-zero (status %x)\n", status);
     return 1;
   }
+
+#ifdef DEBUG
+  /*
+   * Now restore the initialized state to avoid crashes due to calls to
+   * global_lock() from close() and other overrides from atexit() callbacks.
+   */
+  force_libcx_init();
+#endif
 
   return 0;
 }

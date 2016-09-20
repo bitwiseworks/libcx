@@ -22,6 +22,7 @@ EXPORTS
   ;ddd "_global_unlock"
   ;ddd "_global_alloc"
   ;ddd "_force_libcx_term"
+  ;ddd "_force_libcx_init"
 IMPORTS
   _libc___init_app=libc066.___init_app
   _libc__beginthread=libc066.__beginthread
