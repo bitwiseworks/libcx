@@ -40,9 +40,9 @@
 #define HEAP_INIT_SIZE 65536 /* Initial size of committed memory */
 #define HEAP_INC_SIZE 65536 /* Heap increment amount */
 
-#if defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG)
-
 #include <InnoTekLIBC/fork.h>
+
+#if defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG)
 
 static __LIBC_LOGGROUP  logGroup[] =
 {

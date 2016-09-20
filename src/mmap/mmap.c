@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <emx/io.h>
+#include <sys/param.h>
 
 #include <InnoTekLIBC/fork.h>
 
