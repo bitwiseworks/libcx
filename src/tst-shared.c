@@ -35,9 +35,11 @@ static void check_mem(int nr, size_t hdr_size, size_t expected)
   int rc;
   _HEAPSTATS hst;
 
+  printf("check mem %d\n", nr);
+
   if (gpData->size != expected)
   {
-    printf("check_mem %d: Committed size is %d, not %d",
+    printf("check_mem %d: Committed size is %d, not %d\n",
            nr, gpData->size, expected);
     exit(1);
   }
@@ -45,7 +47,7 @@ static void check_mem(int nr, size_t hdr_size, size_t expected)
   rc = _ustats(gpData->heap, &hst);
   if (rc)
   {
-    printf("check_mem %d: _ustats failed: %s", nr, strerror(errno));
+    printf("check_mem %d: _ustats failed: %s\n", nr, strerror(errno));
     exit(1);
   }
 
@@ -75,16 +77,18 @@ static int do_test(void)
 
   if (hst._provided > gpData->size)
   {
-    printf("Total heap size %d is greater than commiited size %d\n",
+    printf("Total heap size %d is greater than committed size %d\n",
            hst._provided, gpData->size);
     return 1;
   }
 
   hdr_size = gpData->size - hst._provided;
 
+  printf("hdr_size %u\n", hdr_size);
+
   check_mem(1, hdr_size, 65536);
 
-  void *data = global_alloc(55000);
+  void *data = global_alloc(32000);
 
   check_mem(2, hdr_size, 65536);
 
