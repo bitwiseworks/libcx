@@ -1176,24 +1176,27 @@ static int forkParent(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation
 
   global_lock();
 
-  /* Give MAP_SHARED mappings to the child process (and all grandchildren) */
+  /* Give shared mappings that we have access to to our forked child process */
   m = gpData->mmaps;
   while (m)
   {
-    assert(m->flags && MAP_SHARED);
-    ULONG dos_flags = m->dos_flags;
-    TRACE("giving mapping %p (start %p) to pid %x\n", m, m->start, pForkHandle->pidChild);
-    if (m->dos_flags & PAG_WRITE && m->fd != -1)
+    if (is_shared_accessible(m))
     {
-      /*
-       * This is a writable shared mapping, remove PAG_WRITE to get an exception
-       * on the first write in child (see mmap_exception above).
-       */
-      dos_flags &= ~PAG_WRITE;
+      ULONG dos_flags = m->dos_flags;
+      TRACE("giving mapping %p (start %p) to pid %x\n", m, m->start, pForkHandle->pidChild);
+      if (m->dos_flags & PAG_WRITE && m->fd != -1)
+      {
+        /*
+         * This is a writable shared mapping, remove PAG_WRITE to get an exception
+         * on the first write in child (see mmap_exception above).
+         */
+        dos_flags &= ~PAG_WRITE;
+      }
+      arc = DosGiveSharedMem((PVOID)m->start, pForkHandle->pidChild, dos_flags);
+      TRACE_IF(arc, "DosGiveSharedMem = %ld\n", arc);
+      assert(!arc);
+      ++(m->sh->refcnt);
     }
-    arc = DosGiveSharedMem((PVOID)m->start, pForkHandle->pidChild, dos_flags);
-    TRACE_IF(arc, "DosGiveSharedMem = %ld\n", arc);
-    ++(m->sh->refcnt);
     m = m->next;
   }
 
