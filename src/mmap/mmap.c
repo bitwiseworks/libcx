@@ -451,7 +451,7 @@ static void flush_dirty_pages(struct MemMap *m, ULONG off, ULONG len)
 }
 
 /**
- * Returns 1 if the given shared mapping is accessible in this process and 0
+ * Returns 1 if the given shared mapping is used in this process and 0
  * otherwise.
  */
 static int is_shared_accessible(struct MemMap *m)
@@ -500,6 +500,62 @@ static int flush_own_mappings()
   return seen_foreign;
 }
 
+static void release_mapping(struct MemMap *m, struct MemMap *pm, struct MemMap **head)
+{
+  APIRET arc;
+
+  assert(m);
+
+  TRACE("%s mapping %p (start %lx, end %lx, refcnt %d)\n",
+        m->flags & MAP_SHARED ? "Shared" : "Private",
+        m, m->start, m->end, m->sh->refcnt);
+
+  if (m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fd != -1)
+    flush_dirty_pages(m, 0, 0);
+  arc = DosFreeMem((PVOID)m->start);
+  TRACE("DosFreeMem = %ld\n", arc);
+  assert(!arc);
+
+  /* Dereference and free the mapping when appropriate */
+  if (m->flags & MAP_SHARED)
+  {
+    assert(m->sh->refcnt);
+    --(m->sh->refcnt);
+  }
+  if (m->flags & MAP_PRIVATE || m->sh->refcnt == 0)
+  {
+    TRACE("Removing mapping %p\n", m);
+    if (pm)
+      pm->next = m->next;
+    else
+      *head = m->next;
+    if (m->fd != -1)
+      DosClose(m->fd);
+    free(m);
+
+    if (m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fd != -1 &&
+        gpData->mmap->flush_request == 2)
+    {
+      /*
+       * Some workers are waiting for the flush request to finish,
+       * it could be the releted mapping that holding them. Make a kick
+       * (this will cause another accesibility check).
+       */
+      arc = DosPostEventSem(gpData->mmap->flush_coop_sem);
+      TRACE_IF(arc, "DosPostEventSem = %ld\n", arc);
+
+      /* Revert the request state back to the normal one (no coop wait) */
+      gpData->mmap->flush_request = 1;
+    }
+  }
+  else
+  {
+    /* Detach our pid from this mapping */
+    if (m->sh->pid == getpid())
+      m->sh->pid = -1;
+  }
+}
+
 int munmap(void *addr, size_t len)
 {
   APIRET arc;
@@ -541,34 +597,7 @@ int munmap(void *addr, size_t len)
   if (m->start == (ULONG)addr && m->end == addr_end)
   {
     /* Simplest case: the whole region is unmapped */
-    if (m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fd != -1)
-      flush_dirty_pages(m, 0, 0);
-    arc = DosFreeMem((PVOID)addr);
-    TRACE("DosFreeMem = %ld\n", arc);
-    /* Dereference and free the mapping when appropriate */
-    if (m->flags & MAP_SHARED)
-    {
-      TRACE("Releasing shared mapping %p\n", m);
-      assert(m->sh->refcnt);
-      --(m->sh->refcnt);
-    }
-    if (m->flags & MAP_PRIVATE || m->sh->refcnt == 0)
-    {
-      TRACE("Removing mapping %p\n", m);
-      if (pm)
-        pm->next = m->next;
-      else
-        *head = m->next;
-      if (m->fd != -1)
-        DosClose(m->fd);
-      free(m);
-    }
-    else
-    {
-      /* Detach our pid from this mapping */
-      if (m->sh->pid == pid)
-        m->sh->pid = -1;
-    }
+    release_mapping(m, pm, head);
   }
   else
   {
@@ -715,10 +744,9 @@ void mmap_term()
   struct ProcDesc *desc;
   struct MemMap *m, *pm;
   APIRET arc;
-  pid_t pid = getpid();
 
   /* Free all private mmap structures */
-  desc = find_proc_desc(pid);
+  desc = find_proc_desc(getpid());
   if (desc)
   {
     m = desc->mmaps;
@@ -744,33 +772,9 @@ void mmap_term()
   {
     struct MemMap *n = m->next;
     if (is_shared_accessible(m))
-    {
-      /* This mapping is used in this process, release it */
-      TRACE("Releasing shared mapping %p (start %p, refcnt %d)\n", m, m->start, m->sh->refcnt);
-      if (m->dos_flags & PAG_WRITE && m->fd != -1)
-        flush_dirty_pages(m, 0, 0);
-      arc = DosFreeMem((PVOID)m->start);
-      TRACE("DosFreeMem = %ld\n", arc);
-      assert(m->sh->refcnt);
-      --(m->sh->refcnt);
-      if (m->sh->refcnt == 0)
-      {
-        TRACE("Removing shared mapping %p\n", m);
-        if (pm)
-          pm->next = n;
-        else
-          gpData->mmaps = n;
-        if (m->fd != -1)
-          DosClose(m->fd);
-        free(m);
-      }
-      else
-      {
-        /* Detach our pid from this mapping */
-        if (m->sh->pid == pid)
-          m->sh->pid = -1;
-      }
-    }
+      release_mapping(m, pm, &gpData->mmaps);
+    else
+      pm = m;
     m = n;
   }
 
@@ -815,7 +819,7 @@ static void schedule_flush_dirty(int immediate)
   APIRET arc;
   pid_t pid = getpid();
 
-  TRACE("immediate %d, flush_request %d\n", immediate, !!gpData->mmap->flush_request);
+  TRACE("immediate %d, flush_request %d\n", immediate, gpData->mmap->flush_request);
 
   desc = find_proc_desc(pid);
   assert(desc);
@@ -831,8 +835,8 @@ static void schedule_flush_dirty(int immediate)
   /*
    * Note: we do nothing if a request is already being delivered: the flush
    * thread will flush all new dirty pages. However, if it's an immediate
-   * request, we don't want to wait until a timer is fired and
-   * post the semaphore manually if it's not already posted.
+   * request, we don't want to wait until a timer is fired and post the
+   * semaphore manually if it's not already posted.
    */
 
   if (immediate)
@@ -853,15 +857,18 @@ static void schedule_flush_dirty(int immediate)
       TRACE_IF(arc, "DosPostEventSem = %ld\n", arc);
       assert(!arc);
     }
+
+    if (!gpData->mmap->flush_request)
+      gpData->mmap->flush_request = 1;
   }
   else if (!gpData->mmap->flush_request)
   {
     arc = DosAsyncTimer(FLUSH_DELAY, (HSEM)gpData->mmap->flush_sem, NULL);
     TRACE_IF(arc, "DosAsyncTimer = %ld\n", arc);
     assert(!arc);
-  }
 
-  gpData->mmap->flush_request = 1;
+    gpData->mmap->flush_request = 1;
+  }
 }
 
 /**
