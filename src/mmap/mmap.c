@@ -31,6 +31,7 @@
 #include <string.h>
 #include <emx/io.h>
 #include <sys/param.h>
+#include <fcntl.h>
 
 #include <InnoTekLIBC/fork.h>
 
@@ -91,11 +92,6 @@ struct MemMap
   } sh[0];
 };
 
-/* Temporary import from MMAP.DLL */
-void *mmap_mmap(void *addr, size_t len, int prot, int flags,
-                int fildes, off_t off);
-int mmap_munmap(void *addr, size_t len);
-
 void *mmap(void *addr, size_t len, int prot, int flags,
            int fildes, off_t off)
 {
@@ -103,6 +99,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   struct MemMap *mmap;
   int fd = -1;
   size_t dirtymap_sz = 0;
+  ULONG dos_flags;
 
   TRACE("addr %p, len %u, prot %x=%c%c%c, flags %x=%c%c%c%c, fildes %d, off %llu\n",
         addr, len, prot,
@@ -149,37 +146,32 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       return MAP_FAILED;
     }
 
-    arc = DosQueryFHState(fildes, &mode);
-    TRACE_IF(arc, "DosQueryFHState = %lu\n", arc);
-    if (!arc)
+    /* Check flags/prot compatibility with file access */
+    TRACE("file mode %x\n", pFH->fFlags & O_ACCMODE);
+    if ((pFH->fFlags & O_ACCMODE) == O_WRONLY ||
+        (flags & MAP_SHARED && prot & PROT_WRITE &&
+         (pFH->fFlags & O_ACCMODE) != O_RDWR))
     {
-      /* Check flags/prot compatibility with file access */
-      TRACE("file mode %lx\n", mode);
-      if ((mode & 0x7) == OPEN_ACCESS_WRITEONLY ||
-          (flags & MAP_SHARED && prot & PROT_WRITE &&
-           (mode & 0x7) != OPEN_ACCESS_READWRITE))
-      {
-        errno = EACCES;
-        return MAP_FAILED;
-      }
-
-      /* Make own file handle since POSIX allows the original one to be closed */
-      arc = DosDupHandle(fildes, (PHFILE)&fd);
-      TRACE_IF(arc, "DosDupHandle = %lu\n", arc);
-      if (arc)
-      {
-        errno = EMFILE;
-        return MAP_FAILED;
-      }
-
-      /* Prevent the system critical-error handler */
-      mode = OPEN_FLAGS_FAIL_ON_ERROR;
-      /* Also disable inheritance for private mappings */
-      if (flags & MAP_PRIVATE)
-        mode |= OPEN_FLAGS_NOINHERIT;
-      arc = DosSetFHState(fd, mode);
-      TRACE_IF(arc, "DosSetFHState = %lu\n", arc);
+      errno = EACCES;
+      return MAP_FAILED;
     }
+
+    /* Make own file handle since POSIX allows the original one to be closed */
+    arc = DosDupHandle(fildes, (PHFILE)&fd);
+    TRACE_IF(arc, "DosDupHandle = %lu\n", arc);
+    if (arc)
+    {
+      errno = EMFILE;
+      return MAP_FAILED;
+    }
+
+    /* Prevent the system critical-error handler */
+    mode = OPEN_FLAGS_FAIL_ON_ERROR;
+    /* Also disable inheritance for private mappings */
+    if (flags & MAP_PRIVATE)
+      mode |= OPEN_FLAGS_NOINHERIT;
+    arc = DosSetFHState(fd, mode);
+    TRACE_IF(arc, "DosSetFHState = %lu\n", arc);
 
     if (arc)
     {
@@ -238,29 +230,41 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   if (prot & PROT_EXEC)
     mmap->dos_flags |= PAG_EXECUTE;
 
+  dos_flags = mmap->dos_flags;
+
+  /*
+   * Use PAG_READ for PROT_NONE since DosMemAlloc doesn't support no protection
+   * mode. We will handle this case in mmap_exception() by refusing to ever
+   * commit such a page and letting the process crash (as required by POSIX).
+   */
+  if (mmap->dos_flags == 0)
+    dos_flags |= PAG_READ;
+
   if (flags & MAP_SHARED)
   {
     /* Shared mmap specific data */
     mmap->sh->pid = getpid();
     mmap->sh->refcnt = 1;
 
-    arc = DosAllocSharedMem((PPVOID)&mmap->start, NULL, len, mmap->dos_flags | OBJ_ANY | OBJ_GIVEABLE);
+    dos_flags |= OBJ_GIVEABLE;
+
+    arc = DosAllocSharedMem((PPVOID)&mmap->start, NULL, len, dos_flags | OBJ_ANY);
     TRACE("DosAllocSharedMem(OBJ_ANY) = %lu\n", arc);
     if (arc)
     {
       /* High memory may be unavailable, try w/o OBJ_ANY */
-      arc = DosAllocSharedMem((PPVOID)&mmap->start, NULL, len, mmap->dos_flags | OBJ_GIVEABLE);
+      arc = DosAllocSharedMem((PPVOID)&mmap->start, NULL, len, dos_flags);
       TRACE("DosAllocSharedMem = %lu\n", arc);
     }
   }
   else
   {
-    arc = DosAllocMem((PPVOID)&mmap->start, len, mmap->dos_flags | OBJ_ANY);
+    arc = DosAllocMem((PPVOID)&mmap->start, len, dos_flags | OBJ_ANY);
     TRACE("DosAllocMem(OBJ_ANY) = %lu\n", arc);
     if (arc)
     {
       /* High memory may be unavailable, try w/o OBJ_ANY */
-      arc = DosAllocMem((PPVOID)&mmap->start, len, mmap->dos_flags);
+      arc = DosAllocMem((PPVOID)&mmap->start, len, dos_flags);
       TRACE("DosAllocMem = %lu\n", arc);
     }
   }
@@ -894,7 +898,11 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
 
     m = find_mmap(addr, addr + 1, NULL, NULL);
 
-    if (m)
+    /*
+     * Note that we only do something if the found mmap is not PROT_NONE and
+     * let the application crash otherwise (see also mmap()).
+     */
+    if (m && m->dos_flags & fPERM)
     {
       APIRET arc;
       ULONG len = 1;
@@ -1004,7 +1012,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
 
     global_unlock();
 
-    TRACE_IF(retry, "retrying\n");
+    TRACE("%sretrying\n", retry ? "" : "not ");
   }
 
   return retry;
