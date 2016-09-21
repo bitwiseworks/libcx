@@ -58,6 +58,56 @@ static inline const char *_getname (const char *path)
 #define TEMP_FAILURE_RETRY(fn) (fn)
 #endif
 
+/* Starts forked test code */
+#define TEST_FORK_BEGIN(name, need_rc, need_sig) \
+  do \
+  { \
+    const char *ForkName = name; \
+    const char *SigName = #need_sig; \
+    enum { NeedRC = (need_rc), NeedSig = (need_sig) }; \
+    int status; \
+    switch (fork()) \
+    { \
+      case -1: printf("%s: fork failed: %s\n", ForkName, strerror(errno)); return 1; \
+      case 0: \
+      { \
+        do {} while(0)
+
+/* Ends forked test code */
+#define TEST_FORK_END() \
+        assert(0); \
+      } \
+    } \
+    if (wait(&status) == -1) \
+    { \
+      printf("%s: wait failed: %s\n", ForkName, strerror(errno)); \
+      return 1; \
+    } \
+    if (NeedSig != 0) \
+    { \
+      if (WIFEXITED(status) || !WIFSIGNALED(status) || WTERMSIG(status) != SIGSEGV) \
+      { \
+        printf("%s not crashed or crashed not with %s [%x] (status %x)\n", ForkName, SigName, NeedSig, status); \
+        return 1; \
+      } \
+    } \
+    else \
+    { \
+      if (!WIFEXITED(status) || WEXITSTATUS(status) != NeedRC) \
+      { \
+        printf("%s crashed or ended not with %d (status %x)\n", ForkName, NeedRC, status); \
+        return 1; \
+      } \
+    } \
+  } \
+  while(0)
+
+/* printf to use in forked test code */
+#define TEST_FORK_PRINTF(msg, ...) printf("%s: " msg, ForkName, ## __VA_ARGS__)
+
+/* perror to use in forked test code */
+#define TEST_FORK_PERROR(msg, ...) printf("%s: " msg ": %s\n", ForkName, ## __VA_ARGS__, strerror(errno))
+
 /* The test function is normally called `do_test' and it is called
    with argc and argv as the arguments.  We nevertheless provide the
    possibility to overwrite this name.  */
