@@ -12,6 +12,7 @@ EXPORTS
   "_msync"
   "_madvise"
   "_posix_madvise"
+  "_mprotect"
   "___init_app"
   "__beginthread"
   ; private symbols

@@ -152,6 +152,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
         (flags & MAP_SHARED && prot & PROT_WRITE &&
          (pFH->fFlags & O_ACCMODE) != O_RDWR))
     {
+      TRACE("Invalid file access mode\n");
       errno = EACCES;
       return MAP_FAILED;
     }
@@ -571,6 +572,7 @@ int munmap(void *addr, size_t len)
   /* Check if aligned to page size */
   if (!PAGE_ALIGNED(addr))
   {
+    TRACE("addr not page-aligned\n");
     errno = EINVAL;
     return -1;
   }
@@ -578,6 +580,7 @@ int munmap(void *addr, size_t len)
   /* Check if len within bounds */
   if (0 - ((uintptr_t)addr) < len)
   {
+    TRACE("len out of bounds\n");
     errno = EINVAL;
     return -1;
   }
@@ -949,9 +952,8 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
             {
               /*
                * Read file contents into memory. Note that if we fail here,
-               * there is nothing we can do as POSIX doesn't imply such
-               * a case. @todo We may consider let the exception abort
-               * the application instead.
+               * we simply let the exception go further and hopefully crash
+               * and abort the application.
                */
               ULONG read;
               LONGLONG pos;
@@ -1030,6 +1032,7 @@ int msync(void *addr, size_t len, int flags)
   /* Check if aligned to page size */
   if (!PAGE_ALIGNED(addr))
   {
+    TRACE("addr not page-aligned\n");
     errno = EINVAL;
     return -1;
   }
@@ -1037,6 +1040,7 @@ int msync(void *addr, size_t len, int flags)
   /* Check if len within bounds */
   if (0 - ((uintptr_t)addr) < len)
   {
+    TRACE("len out of bounds\n");
     errno = ENOMEM; /* Differs from munmap but per POSIX */
     return -1;
   }
@@ -1088,6 +1092,8 @@ int msync(void *addr, size_t len, int flags)
 
 int madvise(void *addr, size_t len, int flags)
 {
+  struct MemMap *m;
+  ULONG addr_end;
   APIRET arc;
   int rc = 0;
 
@@ -1098,6 +1104,7 @@ int madvise(void *addr, size_t len, int flags)
   /* Check if aligned to page size */
   if (!PAGE_ALIGNED(addr))
   {
+    TRACE("addr not page-aligned\n");
     errno = EINVAL;
     return -1;
   }
@@ -1105,13 +1112,12 @@ int madvise(void *addr, size_t len, int flags)
   /* Check if len within bounds */
   if (0 - ((uintptr_t)addr) < len)
   {
+    TRACE("len out of bounds\n");
     errno = ENOMEM; /* Differs from munmap but per POSIX */
     return -1;
   }
 
-  ULONG addr_end = ((ULONG)addr) + len;
-
-  struct MemMap *m;
+  addr_end = ((ULONG)addr) + len;
 
   global_lock();
 
@@ -1162,6 +1168,7 @@ int posix_madvise(void *addr, size_t len, int advice)
   /* Check if aligned to page size */
   if (!PAGE_ALIGNED(addr))
   {
+    TRACE("addr not page-aligned\n");
     errno = EINVAL;
     return -1;
   }
@@ -1169,6 +1176,7 @@ int posix_madvise(void *addr, size_t len, int advice)
   /* Check if len within bounds */
   if (0 - ((uintptr_t)addr) < len)
   {
+    TRACE("len out of bounds\n");
     errno = ENOMEM; /* Differs from munmap but per POSIX */
     return -1;
   }
@@ -1180,6 +1188,152 @@ int posix_madvise(void *addr, size_t len, int advice)
    * madvise(). For this reason, POSIX_MADV_DONTNEED is also a no-op on OS/2.
    */
   return 0;
+}
+
+int mprotect(const void *addr, size_t len, int prot)
+{
+  struct MemMap *m;
+  ULONG addr_end, next_addr;
+  ULONG dos_flags;
+  struct MemMap **found;
+  int found_size, found_cnt = 0;
+  int rc = 0;
+
+  TRACE("addr %p, len %u, prot %x\n", addr, len, prot);
+
+  /* Check if aligned to page size */
+  if (!PAGE_ALIGNED(addr))
+  {
+    TRACE("addr not page-aligned\n");
+    errno = EINVAL;
+    return -1;
+  }
+
+  /* Check if len within bounds */
+  if (0 - ((uintptr_t)addr) < len)
+  {
+    TRACE("len out of bounds\n");
+    errno = ENOMEM; /* Differs from munmap but per POSIX */
+    return -1;
+  }
+
+  found_size = 16;
+  NEW_ARRAY(found, found_size);
+  assert(found);
+
+  addr_end = ((ULONG)addr) + len;
+
+  dos_flags = 0;
+  if (prot & PROT_READ)
+    dos_flags |= PAG_READ;
+  if (prot & PROT_WRITE)
+    dos_flags |= PAG_WRITE;
+  if (prot & PROT_EXEC)
+    dos_flags |= PAG_EXECUTE;
+
+  global_lock();
+
+  next_addr = (ULONG)addr;
+
+  while (next_addr < addr_end)
+  {
+    m = find_mmap(next_addr, next_addr + 1, NULL, NULL);
+    if (m)
+    {
+      /*
+       * We prevent changing protection for mappings backed up by files.
+       * First, because their protection is bound to the underlying file's
+       * access mode (that was checked and confirmed at creation). Second,
+       * because we already (ab)use protection flags on our own (to implement
+       * on-demand page read semantics as well as asynchronous dirty page
+       * writes) so messing up with them makes things too complex to manage.
+       * Third, _std_mprotect() is written so that it commits pages unless
+       * PAG_NONE is requested and this will also break things up (e.g.
+       * on-demand page reading). And forth, it makes little sense to change
+       * permissions of such mappings in real life (at least that's the case
+       * in the absense of real life examples).
+       *
+       * @todo We may re-consider things later given that on e.g. Linux
+       * it is possible to change protection of such mappings (though the
+       * consequences of such a change are not fully documented, testing is
+       * needed). But this will at least require to drop _std_mprotect usage
+       * to avoid unnecessary committing of pages in the given range that
+       * belong to file-bound mappings.
+       *
+       * Note also that although we let mprotect change protection of shared
+       * anonymous mappings, it's not actually possible to set PROT_NONE
+       * on them because a shared page can't be decommitted on OS/2 (and
+       * protection can't be set to "no read, no write" for any kind of pages
+       * there, both private and shared, either). We will simply return EINVAL
+       * in such a case.
+       */
+
+      if (m->fd != -1)
+      {
+        errno = EACCES;
+        rc = -1;
+        break;
+      }
+
+      if (m->dos_flags != dos_flags)
+      {
+        /* Checks passed, store it for further processing */
+        if (found_cnt == found_size)
+        {
+          found_size *= 2;
+          RENEW_ARRAY(found, found_size);
+          assert(found);
+        }
+        found[found_cnt++] = m;
+      }
+
+      next_addr = PAGE_ALIGN(m->end + PAGE_SIZE - 1);
+    }
+    else
+    {
+      next_addr += PAGE_SIZE;
+    }
+  }
+
+  TRACE("found %d affected mappings, rc %d (%s)\n",
+        found_cnt, rc, strerror(rc == -1 ? errno : 0));
+
+  if (!rc)
+  {
+    /*
+     * Now, let LIBC mprotect do the job if no affected mappings were found
+     * at all or if all affected mappings passed mode change checks.
+     */
+    rc = _std_mprotect(addr, len, prot);
+    if (rc == -1 && errno < 0)
+    {
+       /*
+        * There is a bug in _std_mprotect of LIBC <= 0.6.6: it sets a
+        * negative errno, fix it here.
+        */
+      errno = -errno;
+    }
+    TRACE("_std_mprotect = %d (%s)\n", rc, strerror(rc == -1 ? errno: 0));
+
+    if (!rc && found_cnt)
+    {
+      /* Record new mode in affected mappings on success */
+      while (found_cnt)
+      {
+        m = found[--found_cnt];
+
+        TRACE("mapping %p, changing dos_flags from %x to %x\n",
+              m, m->dos_flags, dos_flags);
+        m->dos_flags = dos_flags;
+      }
+    }
+  }
+
+  global_unlock();
+
+  free(found);
+
+  return rc;
 }
 
 static int forkParent(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation)
