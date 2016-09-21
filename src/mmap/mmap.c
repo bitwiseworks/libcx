@@ -50,7 +50,7 @@
 #define DIRTYMAP_WIDTH (sizeof(*((struct MemMap*)0)->sh->dirty) * 8)
 
 /* Flush operation start delay (ms) */
-#define FLUSH_DELAY 2000
+#define FLUSH_DELAY 1000
 
 /**
  * Per-process data for memory mappings.

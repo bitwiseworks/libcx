@@ -40,7 +40,7 @@
 #define TEST_VAL 255
 
 /* Shared mapping file flush interval in ms (must match one from mmap.c) */
-#define FLUSH_DELAY 2000
+#define FLUSH_DELAY 1000
 
 unsigned char buf[FILE_SIZE];
 unsigned char buf_chk[FILE_SIZE];
