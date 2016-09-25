@@ -13,6 +13,7 @@ DLLS += libcx
 
 libcx_TEMPLATE = Dll
 libcx_NAME = libcx0 # must match libcx.def
+libcx_INCS = poll mmap
 libcx_SOURCES = \
   fcntl/fcntl.c \
   pwrite/pwrite.c \
@@ -45,6 +46,8 @@ libcx-stats_SOURCES = libcx-stats.c
 #
 # Tests
 #
+
+TESTS_INCS += poll mmap
 
 TESTS.debug += tst-shared.c
 tst-shared.c_ORDERED = 1

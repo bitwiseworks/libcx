@@ -51,6 +51,7 @@ TEMPLATE_Util_LIBS = $(PATH_STAGE_LIB)/libcx0$(SUFF_LIB)
 TEMPLATE_Test = Tests
 TEMPLATE_Test_EXTENDS = C
 TEMPLATE_Test_DEFS = _GNU_SOURCE
+TEMPLATE_Test_INCS = src/poll src/mmap
 TEMPLATE_Test_LIBS = $(PATH_STAGE_LIB)/libcx0$(SUFF_LIB) pthread
 
 #
