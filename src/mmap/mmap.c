@@ -920,6 +920,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
         {
           /* First access to the allocated but uncommitted page */
           int revoke_write = 0;
+          dos_flags = m->dos_flags;
           if (m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fd != -1)
           {
             /*
@@ -944,7 +945,13 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
               revoke_write = 1;
             }
           }
-          arc = DosSetMem((PVOID)page_addr, len, m->dos_flags | PAG_COMMIT);
+          else if (!(m->dos_flags & PAG_WRITE))
+          {
+            /* This is a read-only mapping but DosRead needs PAG_WRITE */
+            dos_flags |= PAG_WRITE;
+            revoke_write = 1;
+          }
+          arc = DosSetMem((PVOID)page_addr, len, dos_flags | PAG_COMMIT);
           TRACE_IF(arc, "DosSetMem = %ld\n", arc);
           if (!arc)
           {
@@ -971,7 +978,6 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
             {
               if (revoke_write)
               {
-                dos_flags = m->dos_flags & ~PAG_WRITE;
                 arc = DosSetMem((PVOID)page_addr, len, m->dos_flags & ~PAG_WRITE);
                 TRACE_IF(arc, "DosSetMem = %ld\n", arc);
               }
