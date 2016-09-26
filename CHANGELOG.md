@@ -1,5 +1,9 @@
 # History of changes for LIBCx
 
+#### Version 0.3.1 (2016-09-26)
+
+* mmap: Fix crashes when reading from PROT_READ mappings bound to files.
+
 #### Version 0.3 (2016-09-22)
 
 * Automatically install EXCEPTQ trap report generator (if available) on all application threads.
