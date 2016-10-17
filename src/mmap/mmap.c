@@ -82,7 +82,8 @@ struct MemMap
   int flags; /* mmap flags */
   ULONG dos_flags; /* DosAllocMem protection flags */
   int fd; /* -1 for MAP_ANONYMOUS */
-  off_t off;
+  off_t off; /* offset into the file */
+  ULONG file_end; /* EOF address (exclusive) */
   /* Additional fields for shared mmaps */
   struct Shared
   {
@@ -99,6 +100,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   struct MemMap *mmap;
   int fd = -1;
   size_t dirtymap_sz = 0;
+  ULONG file_len;
   ULONG dos_flags;
 
   TRACE("addr %p, len %u, prot %x=%c%c%c, flags %x=%c%c%c%c, fildes %d, off %llu\n",
@@ -193,16 +195,30 @@ void *mmap(void *addr, size_t len, int prot, int flags,
 
     TRACE("dup fd %d, file size %llu\n", fd, st.cbFile);
 
-    if (off + len > st.cbFile)
+    if (off < st.cbFile)
     {
-      DosClose(fd);
-      errno = EOVERFLOW;
-      return MAP_FAILED;
+      if (off + len <= st.cbFile)
+        file_len = len;
+      else
+        file_len = st.cbFile - off;
+    }
+    else
+    {
+      /* The whole mapping is beyond EOF */
+      file_len = 0;
     }
 
-    /* Calculate the number of bytes (in 4 byte words) needed for the dirty page bitmap */
+    /*
+     * Calculate the number of bytes (in 4 byte words) needed for the dirty page
+     * bitmap (this only includes pages prior to EOF).
+     */
     if (flags & MAP_SHARED)
-      dirtymap_sz = DIVIDE_UP(NUM_PAGES(len), DIRTYMAP_WIDTH) * (DIRTYMAP_WIDTH / 8);
+      dirtymap_sz = DIVIDE_UP(NUM_PAGES(file_len), DIRTYMAP_WIDTH) * (DIRTYMAP_WIDTH / 8);
+  }
+  else
+  {
+    /* For anonymous mappings file len matches mapping len */
+    file_len = len;
   }
 
   global_lock();
@@ -280,7 +296,10 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   }
 
   mmap->end = mmap->start + len;
-  TRACE("mmap %p, mmap->start %p, mmap->end %p\n", mmap, mmap->start, mmap->end);
+  mmap->file_end = mmap->start + file_len;
+
+  TRACE("mmap %p, mmap->start %p, mmap->end %p, mmap->file_end %p\n",
+        mmap, mmap->start, mmap->end, mmap->file_end);
 
   /* Check if aligned to page size */
   assert(mmap->start && PAGE_ALIGNED(mmap->start));
@@ -377,8 +396,6 @@ static void flush_dirty_pages(struct MemMap *m, ULONG off, ULONG len)
   assert(m && m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fd != -1);
   assert(off + len <= (m->end - m->start));
 
-  /* Calculate the number of 4 byte words in the dirty page bitmap */
-  size_t dirtymap_len = DIVIDE_UP(NUM_PAGES(m->end - m->start), DIRTYMAP_WIDTH);
   ULONG page, end;
   size_t i, j;
   uint32_t bit;
@@ -392,7 +409,7 @@ static void flush_dirty_pages(struct MemMap *m, ULONG off, ULONG len)
   j = (off / PAGE_SIZE) % DIRTYMAP_WIDTH;
   bit = 0x1 << j;
 
-  for (; page < end; ++i, j = 0, bit = 0x1)
+  for (; page < end && page < m->file_end; ++i, j = 0, bit = 0x1)
   {
     /* Check a block of DIRTYMAP_WIDTH pages at once to quickly skip clean ones */
     if (!m->sh->dirty[i])
@@ -405,11 +422,15 @@ static void flush_dirty_pages(struct MemMap *m, ULONG off, ULONG len)
       {
         if (m->sh->dirty[i] & bit)
         {
-          ULONG nesting, written;
+          ULONG nesting, write;
           LONGLONG pos;
 
-          TRACE("Writing %d bytes from addr %p to fd %d at offset %llu\n",
-                PAGE_SIZE, page, m->fd, (uint64_t)m->off + (page - m->start));
+          pos = m->off + (page - m->start);
+          write = m->start + pos + PAGE_SIZE <= m->file_end ?
+                    PAGE_SIZE : m->file_end - m->start - pos;
+
+          TRACE("Writing %lu bytes from addr %lx to fd %d at offset %llu\n",
+                write, page, m->fd, pos);
 
           /*
            * Make sure we are not interrupted by process termination and other
@@ -422,11 +443,11 @@ static void flush_dirty_pages(struct MemMap *m, ULONG off, ULONG len)
            */
           DosEnterMustComplete(&nesting);
 
-          arc = DosSetFilePtrL(m->fd, m->off + (page - m->start), FILE_BEGIN, &pos);
+          arc = DosSetFilePtrL(m->fd, pos, FILE_BEGIN, &pos);
           TRACE_IF(arc, "DosSetFilePtrL = %ld\n", arc);
           if (!arc)
           {
-            arc = DosWrite(m->fd, (PVOID)page, PAGE_SIZE, &written);
+            arc = DosWrite(m->fd, (PVOID)page, write, &write);
             TRACE_IF(arc, "DosWrite = %ld\n", arc);
 
             /*
@@ -921,14 +942,16 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
           /* First access to the allocated but uncommitted page */
           int revoke_write = 0;
           dos_flags = m->dos_flags;
-          if (m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fd != -1)
+          if (m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fd != -1 &&
+              page_addr < m->file_end)
           {
             /*
              * First access to a writable shared mapping page. If it's a read
              * attempt, then we commit the page and remove PAG_WRITE so that
              * we will get an exception when the page is first written to
              * to mark it dirty. If it's a write attempt, we simply mark it
-             * as dirty right away.
+             * as dirty right away. Note that for pages beyond EOF we don't care
+             * about dirtyness as there is nowere to flush changes to.
              */
             if (report->ExceptionInfo[0] == XCPT_WRITE_ACCESS)
             {
@@ -993,7 +1016,8 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
         {
           if (report->ExceptionInfo[0] == XCPT_WRITE_ACCESS &&
               !(dos_flags & PAG_WRITE) &&
-              m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fd != -1)
+              m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fd != -1 &&
+              page_addr < m->file_end)
           {
             /*
              * First write access to a writable shared mapping page. Mark the
