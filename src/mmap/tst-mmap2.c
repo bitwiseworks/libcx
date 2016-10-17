@@ -147,6 +147,10 @@ do_test (void)
     return 1;
   }
 
+#ifdef __OS2__
+  setmode (fd, O_BINARY);
+#endif
+
   if (lseek(fd, Offset + PAGE_SIZE - TEST_SIZE, SEEK_CUR) == -1)
   {
     perror("lseek failed");
