@@ -25,6 +25,7 @@
 
 #include <errno.h>
 #include <unistd.h>
+#include <string.h>
 #include <assert.h>
 #include <emx/io.h>
 
@@ -138,7 +139,7 @@ static ssize_t pread_pwrite(int bWrite, int fildes, void *buf,
   else
     rc = _std_pread(fildes, buf, nbyte, offset);
 
-  TRACE("rc = %d\n", rc);
+  TRACE("rc = %d (%s)\n", rc, strerror(rc == -1 ? errno: 0));
 
   DosReleaseMutexSem(mutex);
 
