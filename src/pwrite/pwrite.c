@@ -135,23 +135,87 @@ static ssize_t pread_pwrite(int bWrite, int fildes, void *buf,
   TRACE("Will call %s\n", bWrite ? "_std_pwrite" : "_std_pread");
 
   if (bWrite)
+  {
     rc = _std_pwrite(fildes, buf, nbyte, offset);
+  }
   else
+  {
+    /* Fix DosRead bug, see touch_pages docs. */
+    touch_pages(buf, nbyte);
     rc = _std_pread(fildes, buf, nbyte, offset);
+  }
 
-  TRACE("rc = %d (%s)\n", rc, strerror(rc == -1 ? errno: 0));
+  TRACE("rc = %d (%s)\n", rc, strerror(rc == -1 ? errno : 0));
 
   DosReleaseMutexSem(mutex);
 
   return rc;
 }
 
+/**
+ * LIBC pread replacement.
+ * Makes pread thread safe with a per-file guarding mutex.
+ */
 ssize_t pread(int fildes, void *buf, size_t nbyte, off_t offset)
 {
   return pread_pwrite(FALSE, fildes, buf, nbyte, offset);
 }
 
+/**
+ * LIBC pwrite replacement.
+ * Makes pwrite thread safe with a per-file guarding mutex.
+ */
 ssize_t pwrite(int fildes, const void *buf, size_t nbyte, off_t offset)
 {
   return pread_pwrite(TRUE, fildes, (void *)buf, nbyte, offset);
+}
+
+/**
+ * LIBC read replacement.
+ * Override to fix DosRead bug, see touch_pages docs.
+ */
+ssize_t read(int fd, void *buf, size_t nbyte)
+{
+  TRACE("fd %d, buf %p, nbyte %u\n", fd, buf, nbyte);
+
+  touch_pages(buf, nbyte);
+  return _std_read(fd, buf, nbyte);
+}
+
+/**
+ * LIBC __read replacement.
+ * Override to fix DosRead bug, see touch_pages docs.
+ */
+int __read(int handle, void *buf, size_t nbyte)
+{
+  TRACE("handle %d, buf %p, nbyte %u\n", handle, buf, nbyte);
+
+  touch_pages(buf, nbyte);
+  return _libc__read(handle, buf, nbyte);
+}
+
+/**
+ * LIBC _stream_read replacement.
+ * Override to fix DosRead bug, see touch_pages docs.
+ */
+int _stream_read(int fd, void *buf, size_t nbyte)
+{
+  TRACE("fd %d, buf %p, nbyte %u\n", fd, buf, nbyte);
+
+  touch_pages(buf, nbyte);
+  return _libc_stream_read(fd, buf, nbyte);
+}
+
+/**
+ * DOSCALLS DosRead replacement.
+ * Override to fix DosRead bug, see touch_pages docs.
+ */
+ULONG APIENTRY DosRead(HFILE hFile, PVOID pBuffer, ULONG ulLength,
+                       PULONG pulBytesRead)
+{
+  TRACE("hFile %d, pBuffer %p, ulLength %lu, pulBytesRead %p\n",
+        hFile, pBuffer, ulLength, pulBytesRead);
+
+  touch_pages(pBuffer, ulLength);
+  return _doscalls_DosRead(hFile, pBuffer, ulLength, pulBytesRead);
 }

@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <process.h>
 #include <umalloc.h>
+#include <sys/param.h> /* PAGE_SIZE */
 
 #ifdef TRACE_ENABLED
 
@@ -73,6 +74,16 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
 #define TRACE_BEGIN_IF(cond, msg, ...) if (0) { do {} while(0)
 
 #endif /* TRACE_ENABLED */
+
+/** Divides count by bucket_sz and rounds the result up. */
+#define DIVIDE_UP(count, bucket_sz) (((count) + (bucket_sz - 1)) / (bucket_sz))
+
+/** Returns 1 if addr is page-aligned and 0 otherwise. */
+#define PAGE_ALIGNED(addr) (!(((ULONG)addr) & (PAGE_SIZE - 1)))
+/** Returns addr aligned to page boundary. */
+#define PAGE_ALIGN(addr) (((ULONG)addr) & ~(PAGE_SIZE - 1))
+/** Returns the number of pages needed for count bytes. */
+#define NUM_PAGES(count) DIVIDE_UP((count), PAGE_SIZE)
 
 #define FILE_DESC_HASH_SIZE 127 /* Prime */
 
@@ -175,3 +186,12 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
                    struct _CONTEXT *ctx);
 
 void print_stats();
+
+void touch_pages(void *buf, size_t len);
+
+#ifdef APIENTRY /* <os2.h> included? */
+
+ULONG APIENTRY _doscalls_DosRead(HFILE hFile, PVOID pBuffer, ULONG ulLength,
+                                 PULONG pulBytesRead);
+
+#endif

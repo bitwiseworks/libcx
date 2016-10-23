@@ -716,6 +716,33 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
 
 #endif /* defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG) */
 
+/*
+ * Touches the first word in every page of memory pointed to by buf of size
+ * len bytes. If buf is not on the page boundary, the word at buf is touched
+ * instead.
+ *
+ * This function is used to work around a bug in DosRead that causes it to fail
+ * when interrupted by the exception handler, see
+ * https://github.com/bitwiseworks/libcx/issues/21.
+ */
+void touch_pages(void *buf, size_t len)
+{
+  ULONG buf_addr = (ULONG)buf;
+  ULONG buf_end = buf_addr + len;
+
+  if (!PAGE_ALIGNED(buf_addr))
+  {
+    *(int *)buf_addr = 0;
+    buf_addr = PAGE_ALIGN(buf_addr) + PAGE_SIZE;
+  }
+
+  while (buf_addr < buf_end)
+  {
+    *(int *)buf_addr = 0;
+    buf_addr += PAGE_SIZE;
+  }
+}
+
 static void forkCompletion(void *pvArg, int rc, __LIBC_FORKCTX enmCtx)
 {
   /*

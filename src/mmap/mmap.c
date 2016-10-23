@@ -40,12 +40,6 @@
 #define TRACE_GROUP TRACE_GROUP_MMAP
 #include "../shared.h"
 
-#define DIVIDE_UP(count, bucket_sz) (((count) + (bucket_sz - 1)) / (bucket_sz))
-
-#define PAGE_ALIGNED(addr) (!(((ULONG)addr) & (PAGE_SIZE - 1)))
-#define PAGE_ALIGN(addr) (((ULONG)addr) & ~(PAGE_SIZE - 1))
-#define NUM_PAGES(count) DIVIDE_UP((count), PAGE_SIZE)
-
 /* Width of a dirty map entry in bits */
 #define DIRTYMAP_WIDTH (sizeof(*((struct MemMap*)0)->sh->dirty) * 8)
 
@@ -993,7 +987,8 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
               TRACE_IF(arc, "DosSetFilePtrL = %ld\n", arc);
               if (!arc)
               {
-                arc = DosRead(m->fd, (PVOID)page_addr, PAGE_SIZE, &read);
+                /* Page is committed, so calling original DosRead is safe. */
+                arc = _doscalls_DosRead(m->fd, (PVOID)page_addr, PAGE_SIZE, &read);
                 TRACE_IF(arc, "DosRead = %ld\n", arc);
               }
             }

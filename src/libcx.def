@@ -15,6 +15,10 @@ EXPORTS
   "_mprotect"
   "___init_app"
   "__beginthread"
+  "_read"
+  "___read"
+  "__stream_read"
+  "DosRead"
   ; private symbols
   _print_stats @60000 NONAME
   ; debug symbols (absent from release builds)
@@ -25,5 +29,8 @@ EXPORTS
   ;ddd "_force_libcx_term"
   ;ddd "_force_libcx_init"
 IMPORTS
-  _libc___init_app=libc066.___init_app
-  _libc__beginthread=libc066.__beginthread
+  __libc__init_app=libc066.___init_app
+  __libc_beginthread=libc066.__beginthread
+  __libc__read=libc066.___read
+  __libc_stream_read=libc066.__stream_read
+  _doscalls_DosRead=doscalls.281

@@ -12,6 +12,7 @@ Currently, LIBCx provides the following extensions:
  - Implementation of `poll()` using `select()`. kLIBC does not provide the `poll()` call at all.
  - Implementation of POSIX memory mapped files via the `mmap()` API (declared in `sys/mman.h`).
  - Automatic installation of the EXCEPTQ exception handler on the main thread of the executable (prior to calling `main()`) as well as on any additional thread created with `_beginthread()` (prior to calling the thread function). EXCEPTQ is a nice piece of software that creates .TRP files containing a lot of useful technical information whenever an application crashes which helps developers to effectively find and fix various kinds of bugs related to unexpected program termination.
+ - Fixed `read()`, `__read()`, `_stream_read()` and `DosRead()` calls free of the OS/2 `DosRead` bug that can cause it to return a weird error code resulting in EINVAL (22) in applications (see https://github.com/bitwiseworks/libcx/issues/21 for more information).
 
 ## Notes on `mmap()` usage
 

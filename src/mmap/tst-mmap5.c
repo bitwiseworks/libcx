@@ -106,10 +106,14 @@ do_test (void)
     return 1;
   }
 
-  rc = pread(fd, addr, TEST_SIZE, 0);
-  if (rc == -1)
+  n = pread(fd, addr, TEST_SIZE, 0);
+
+  if (n != TEST_SIZE)
   {
-    perror("pread failed");
+    if (n != -1)
+      printf ("pread failed (read %d bytes instead of %d)\n", n, TEST_SIZE);
+    else
+      perror("pread failed");
     return 1;
   }
 

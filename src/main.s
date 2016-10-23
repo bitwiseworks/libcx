@@ -37,7 +37,7 @@ L_ret: .long 0
 ___init_app:
   popl L_ret
   /* do original kLIBC work */
-  call _libc___init_app
+  call __libc__init_app
   /* esp points to main() call frame. */
   push %esp
   call ___main_hook

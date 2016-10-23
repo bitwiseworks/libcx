@@ -47,7 +47,7 @@ struct threaddata
 };
 
 /* Defined in libcx.def */
-extern int libc__beginthread(void (*start)(void *arg), void *stack,
+extern int _libc_beginthread(void (*start)(void *arg), void *stack,
                              unsigned stack_size, void *arg_list);
 
 /**
@@ -106,7 +106,7 @@ int _beginthread(void (*start)(void *arg), void *stack, unsigned stack_size,
   d->start = start;
   d->arg = arg_list;
 
-  int rc = libc__beginthread(threadWrapper, stack, stack_size, d);
+  int rc = _libc_beginthread(threadWrapper, stack, stack_size, d);
   if (rc == -1)
     free(d);
 
