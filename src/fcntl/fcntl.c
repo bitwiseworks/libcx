@@ -360,7 +360,7 @@ static void optimize_locks(struct FileDesc *desc, struct FcntlLock *lpb,
 {
   /* Optimize regions by joining matching ones */
   assert(desc);
-  assert((!lpb && lb == desc->fcntl_locks) || lpb->next == lb);
+  assert((!lpb && lb == desc->g->fcntl_locks) || lpb->next == lb);
   struct FcntlLock *l = lpb ? lpb : lb;
   while (l->next && (!le || l != le->next))
   {
@@ -382,45 +382,53 @@ static void optimize_locks(struct FileDesc *desc, struct FcntlLock *lpb,
 
 /**
  * Initializes the fcntl portion of FileDesc.
+ * If proc is not NULL, desc a per-process entry, otherwise a global one.
  * Called right after the FileDesc pointer is allocated.
  * Returns 0 on success or -1 on failure.
  */
-int fcntl_locking_filedesc_init(struct FileDesc *desc)
+int fcntl_locking_filedesc_init(struct ProcDesc *proc, struct FileDesc *desc)
 {
-  /* Add one free region that covers the entire file */
-  GLOBAL_NEW(desc->fcntl_locks);
-  if (!desc->fcntl_locks)
-    return -1;
+  if (!proc)
+  {
+    /* Add one free region that covers the entire file */
+    GLOBAL_NEW(desc->g->fcntl_locks);
+    if (!desc->g->fcntl_locks)
+      return -1;
+  }
   return 0;
 }
 
 /**
  * Uninitializes the fcntl portion of FileDesc.
+ * If proc is not NULL, desc a per-process entry, otherwise a global one.
  * Called right before the FileDesc pointer is freed.
  */
-void fcntl_locking_filedesc_term(struct FileDesc *desc)
+void fcntl_locking_filedesc_term(struct ProcDesc *proc, struct FileDesc *desc)
 {
-  struct FcntlLock *l = desc->fcntl_locks;
-  while (l)
+  if (!proc)
   {
-    TRACE_BEGIN_IF(l->type, "WARNING! Forgotten lock: type '%c' start %lld, len %lld, ",
-                   l->type ? l->type : ' ', (uint64_t)l->start,
-                   (uint64_t)lock_len(l), l->pid);
-    if (l->type == 'r')
+    struct FcntlLock *l = desc->g->fcntl_locks;
+    while (l)
     {
-      int i;
-      TRACE_CONT("pids ");
-      for (i = 0; i < l->pids->size; ++i)
-        if (l->pids->list[i])
-          TRACE_CONT("%d ", l->pids->list[i]);
-      TRACE_CONT("\n");
+      TRACE_BEGIN_IF(l->type, "WARNING! Forgotten lock: type '%c' start %lld, len %lld, ",
+                     l->type ? l->type : ' ', (uint64_t)l->start,
+                     (uint64_t)lock_len(l), l->pid);
+      if (l->type == 'r')
+      {
+        int i;
+        TRACE_CONT("pids ");
+        for (i = 0; i < l->pids->size; ++i)
+          if (l->pids->list[i])
+            TRACE_CONT("%d ", l->pids->list[i]);
+        TRACE_CONT("\n");
+      }
+      else
+        TRACE_CONT("pid %d\n", l->pid);
+      TRACE_END();
+      struct FcntlLock *n = l->next;
+      free(l);
+      l = n;
     }
-    else
-      TRACE_CONT("pid %d\n", l->pid);
-    TRACE_END();
-    struct FcntlLock *n = l->next;
-    free(l);
-    l = n;
   }
 }
 
@@ -477,7 +485,7 @@ void fcntl_locking_term()
       struct FileDesc *desc = gpData->files[i];
       while (desc)
       {
-        struct FcntlLock *l = desc->fcntl_locks;
+        struct FcntlLock *l = desc->g->fcntl_locks;
         while (l)
         {
           if (lock_needs_mark(l, F_UNLCK, pid))
@@ -492,7 +500,7 @@ void fcntl_locking_term()
         }
 
         if (bNeededMark)
-          optimize_locks(desc, NULL, desc->fcntl_locks, NULL);
+          optimize_locks(desc, NULL, desc->g->fcntl_locks, NULL);
 
         desc = desc->next;
       }
@@ -672,7 +680,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
 
   while (1)
   {
-    desc = get_file_desc(pFH->pszNativePath, cmd != F_GETLK);
+    desc = cmd == F_GETLK ? find_file_desc(pFH->pszNativePath) : get_file_desc(pFH->pszNativePath);
     if (!desc)
     {
       if (cmd == F_GETLK)
@@ -700,7 +708,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
                    "Locks before:\n");
     {
       struct FcntlLock *l;
-      for (l = desc->fcntl_locks; l; l = l->next)
+      for (l = desc->g->fcntl_locks; l; l = l->next)
       {
         TRACE_CONT("- type '%c', start %lld, ", l->type ? l->type : ' ', (uint64_t)l->start);
         if (l->type == 'r')
@@ -719,10 +727,10 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
     TRACE_END();
 
     /* Search for the first overlapping region */
-    assert(desc->fcntl_locks);
-    assert(desc->fcntl_locks->start == 0);
+    assert(desc->g->fcntl_locks);
+    assert(desc->g->fcntl_locks->start == 0);
     lpb = NULL; /* prev to lb or NULL */
-    lb = desc->fcntl_locks;
+    lb = desc->g->fcntl_locks;
     while (lb->next && lb->next->start <= start)
     {
       lpb = lb;
@@ -1117,7 +1125,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
   TRACE_BEGIN_IF(TRACE_MORE && cmd != F_GETLK, "Locks after:\n");
   {
     struct FcntlLock *l;
-    for (l = desc->fcntl_locks; l; l = l->next)
+    for (l = desc->g->fcntl_locks; l; l = l->next)
     {
       TRACE_CONT("- type '%c', start %lld, ", l->type ? l->type : ' ', (uint64_t)l->start);
       if (l->type == 'r')
@@ -1189,7 +1197,7 @@ int fcntl_locking_close(int fildes)
 
   assert(gpData->files);
 
-  desc = get_file_desc(pFH->pszNativePath, FALSE);
+  desc = find_file_desc(pFH->pszNativePath);
   if (desc)
   {
     pid_t pid = getpid();
@@ -1197,7 +1205,7 @@ int fcntl_locking_close(int fildes)
 
     /* Go through all locks to unlock any regions this process owns */
     /* Note: this code is similar to one in fcntl_locking_term */
-    struct FcntlLock *l = desc->fcntl_locks;
+    struct FcntlLock *l = desc->g->fcntl_locks;
     while (l)
     {
       if (lock_needs_mark(l, F_UNLCK, pid))
@@ -1213,7 +1221,7 @@ int fcntl_locking_close(int fildes)
 
     if (bNeededMark)
     {
-      optimize_locks(desc, NULL, desc->fcntl_locks, NULL);
+      optimize_locks(desc, NULL, desc->g->fcntl_locks, NULL);
 
       if (gpData->fcntl_locking->blocked)
       {

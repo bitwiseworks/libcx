@@ -268,7 +268,7 @@ static void shared_term()
       _HEAPSTATS hst;
 #endif
       int i;
-      struct ProcDesc *desc;
+      struct ProcDesc *proc;
 
       assert(gpData->refcnt);
       gpData->refcnt--;
@@ -282,9 +282,30 @@ static void shared_term()
        * all individual components of the desc should be already uninitialized
        * above)
        */
-      desc = take_proc_desc(getpid());
-      if (desc)
-        free(desc);
+      proc = take_proc_desc(getpid());
+      if (proc)
+      {
+        /* Free common per-process structures */
+        TRACE("proc->files %p\n", proc->files);
+        if (proc->files)
+        {
+          for (i = 0; i < FILE_DESC_HASH_SIZE; ++i)
+          {
+            struct FileDesc *desc = proc->files[i];
+            while (desc)
+            {
+              struct FileDesc *next = desc->next;
+              /* Call component-specific uninitialization */
+              pwrite_filedesc_term(proc, desc);
+              fcntl_locking_filedesc_term(proc, desc);
+              free(desc);
+              desc = next;
+            }
+          }
+          free(proc->files);
+        }
+        free(proc);
+      }
 
       if (gpData->refcnt == 0)
       {
@@ -299,8 +320,8 @@ static void shared_term()
             {
               struct FileDesc *next = desc->next;
               /* Call component-specific uninitialization */
-              pwrite_filedesc_term(desc);
-              fcntl_locking_filedesc_term(desc);
+              pwrite_filedesc_term(NULL, desc);
+              fcntl_locking_filedesc_term(NULL, desc);
               free(desc);
               desc = next;
             }
@@ -541,45 +562,75 @@ struct ProcDesc *get_proc_desc_ex(pid_t pid, enum HashMapOpt opt)
 
 /**
  * Returns a file descriptor sturcture for the given path.
+ * The pid argument specifies the scope of the search: 0 will look up in the
+ * global system-wide table, any other value - in a process-specific table.
  * Must be called under global_lock().
- * Returns NULL when @a bNew is true and there is not enough memory
- * to allocate a new sctructure, or when @a bNew is FALSE and there
- * is no descriptor for the given file.
+ * Returns NULL when opt is HashMapOpt_New and there is not enough memory
+ * to allocate a new sctructure, or when opt is not HashMapOpt_New and there
+ * is no descriptor for the given file. When opt is HashMapOpt_Take and
+ * the descriptor is found, it will be removed from the hash map (it's then
+ * the responsibility of the caller to free the returned pointer).
  */
-struct FileDesc *get_file_desc(const char *path, int bNew)
+struct FileDesc *get_proc_file_desc_ex(pid_t pid, const char *path, enum HashMapOpt opt)
 {
   size_t h;
-  struct FileDesc *desc;
+  struct FileDesc *desc, *prev;
+  struct ProcDesc *proc;
+  struct FileDesc **map;
   int rc;
 
   assert(gpData);
   assert(path);
   assert(strlen(path) < PATH_MAX);
 
+  if (pid)
+  {
+    proc = get_proc_desc_ex(pid, opt == HashMapOpt_New ? opt : HashMapOpt_None);
+    if (!proc)
+      return NULL;
+    if (!proc->files)
+    {
+      /* Lazily create process-specific file desc hash map */
+      GLOBAL_NEW_ARRAY(proc->files, FILE_DESC_HASH_SIZE);
+      if (!proc->files)
+        return NULL;
+    }
+    map = proc->files;
+  }
+  else
+  {
+    proc = NULL;
+    map = gpData->files;
+  }
+
   h = hash_string(path) % FILE_DESC_HASH_SIZE;
-  desc = gpData->files[h];
+  desc = map[h];
+  prev = NULL;
 
   while (desc)
   {
     if (strcmp(desc->path, path) == 0)
       break;
     desc = desc->next;
+    prev = desc;
   }
 
-  if (!desc && bNew)
+  if (!desc && opt == HashMapOpt_New)
   {
-    GLOBAL_NEW_PLUS(desc, strlen(path) + 1);
+    size_t extra_sz = proc ? sizeof(*desc->p) : sizeof(*desc->g);
+    GLOBAL_NEW_PLUS(desc, extra_sz + strlen(path) + 1);
     if (desc)
     {
       /* Initialize the new desc */
+      desc->path = ((char *)(desc + 1)) + extra_sz;
       strcpy(desc->path, path);
       /* Call component-specific initialization */
-      rc = fcntl_locking_filedesc_init(desc);
+      rc = fcntl_locking_filedesc_init(proc, desc);
       if (rc == 0)
       {
-        rc = pwrite_filedesc_init(desc);
+        rc = pwrite_filedesc_init(proc, desc);
         if (rc == -1)
-          fcntl_locking_filedesc_term(desc);
+          fcntl_locking_filedesc_term(proc, desc);
       }
       if (rc == -1)
       {
@@ -587,9 +638,16 @@ struct FileDesc *get_file_desc(const char *path, int bNew)
         return NULL;
       }
       /* Put to the head of the bucket */
-      desc->next = gpData->files[h];
-      gpData->files[h] = desc;
+      desc->next = map[h];
+      map[h] = desc;
     }
+  }
+  else if (desc && opt == HashMapOpt_Take)
+  {
+    if (prev)
+      prev->next = desc->next;
+    else
+      map[h] = desc->next;
   }
 
   return desc;

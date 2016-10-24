@@ -34,33 +34,41 @@
 
 /**
  * Initializes the pwrite portion of FileDesc.
+ * If proc is not NULL, desc a per-process entry, otherwise a global one.
  * Called right after the FileDesc pointer is allocated.
  * Returns 0 on success or -1 on failure.
  */
-int pwrite_filedesc_init(struct FileDesc *desc)
+int pwrite_filedesc_init(struct ProcDesc *proc, struct FileDesc *desc)
 {
-  /* Mutex is lazily created in pread_pwrite */
-  assert(!desc->pwrite_lock);
+  if (!proc)
+  {
+    /* Mutex is lazily created in pread_pwrite */
+    assert(!desc->g->pwrite_lock);
+  }
   return 0;
 }
 
 /**
  * Uninitializes the pwrite portion of FileDesc.
+ * If proc is not NULL, desc a per-process entry, otherwise a global one.
  * Called right before the FileDesc pointer is freed.
  */
-void pwrite_filedesc_term(struct FileDesc *desc)
+void pwrite_filedesc_term(struct ProcDesc *proc, struct FileDesc *desc)
 {
-  APIRET arc;
-
-  arc = DosCloseMutexSem(desc->pwrite_lock);
-  if (arc == ERROR_SEM_BUSY)
+  if (!proc)
   {
-    /* The semaphore may be owned by us, try to release it */
-    arc = DosReleaseMutexSem(desc->pwrite_lock);
-    TRACE("DosReleaseMutexSem = %d\n", arc);
-    arc = DosCloseMutexSem(desc->pwrite_lock);
+    APIRET arc;
+
+    arc = DosCloseMutexSem(desc->g->pwrite_lock);
+    if (arc == ERROR_SEM_BUSY)
+    {
+      /* The semaphore may be owned by us, try to release it */
+      arc = DosReleaseMutexSem(desc->g->pwrite_lock);
+      TRACE("DosReleaseMutexSem = %ld\n", arc);
+      arc = DosCloseMutexSem(desc->g->pwrite_lock);
+    }
+    TRACE("DosCloseMutexSem = %ld\n", arc);
   }
-  TRACE("DosCloseMutexSem = %d\n", arc);
 }
 
 static ssize_t pread_pwrite(int bWrite, int fildes, void *buf,
@@ -86,9 +94,9 @@ static ssize_t pread_pwrite(int bWrite, int fildes, void *buf,
   global_lock();
 
   {
-    struct FileDesc *desc = get_file_desc(pFH->pszNativePath, TRUE);
+    struct FileDesc *desc = get_file_desc(pFH->pszNativePath);
     if (desc)
-      mutex = desc->pwrite_lock;
+      mutex = desc->g->pwrite_lock;
 
     global_unlock();
 
@@ -112,13 +120,13 @@ static ssize_t pread_pwrite(int bWrite, int fildes, void *buf,
       /* The mutex is no longer valid, create a new one */
       /* @todo this is a temporary hack, see https://github.com/bitwiseworks/libcx/issues/7 */
       global_lock();
-      struct FileDesc *desc = get_file_desc(pFH->pszNativePath, TRUE);
+      struct FileDesc *desc = get_file_desc(pFH->pszNativePath);
       if (desc)
       {
-        arc = DosCreateMutexSem(NULL, &desc->pwrite_lock, DC_SEM_SHARED, FALSE);
+        arc = DosCreateMutexSem(NULL, &desc->g->pwrite_lock, DC_SEM_SHARED, FALSE);
         TRACE("DosCreateMutexSem = %d\n", arc);
         if (arc == NO_ERROR)
-          mutex = desc->pwrite_lock;
+          mutex = desc->g->pwrite_lock;
       }
       global_unlock();
       if (!desc || arc != NO_ERROR)

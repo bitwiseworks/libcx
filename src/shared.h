@@ -97,6 +97,7 @@ struct ProcDesc
   struct ProcDesc *next;
 
   pid_t pid;
+  struct FileDesc **files; /* process-specific file descriptor hash map of FILE_DESC_HASH_SIZE */
   struct ProcMemMap *mmap; /* process-specific data for mmap */
   struct MemMap *mmaps; /* private mmap mappings */
 };
@@ -108,9 +109,19 @@ struct FileDesc
 {
   struct FileDesc *next;
 
-  struct FcntlLock *fcntl_locks; /* Active fcntl file locks */
-  unsigned long pwrite_lock; /* Mutex used in pwrite/pread */
-  char path[0]; /* File name with full path (must be last!) */
+  char *path; /* File name with full path */
+
+  /* Process-specific file descripion data */
+  struct Proc
+  {
+  } p[0];
+
+  /* Global file descripor data */
+  struct Global
+  {
+    struct FcntlLock *fcntl_locks; /* Active fcntl file locks */
+    unsigned long pwrite_lock; /* Mutex used in pwrite/pread */
+  } g[0];
 };
 
 /**
@@ -122,9 +133,9 @@ struct SharedData
   Heap_t heap; /* shared heap */
   int refcnt; /* number of processes using us */
   size_t maxHeapUsed; /* max size of used heap space */
-  struct ProcDesc **procs; /* Process descriptor hash map of PROC_INFO_HASH_SIZE */
-  struct FileDesc **files; /* File descriptor hash map of FILE_DESC_HASH_SIZE */
-  struct GlobalMemMap *mmap; /* Global data for mmap */
+  struct ProcDesc **procs; /* process descriptor hash map of PROC_INFO_HASH_SIZE */
+  struct FileDesc **files; /* file descriptor hash map of FILE_DESC_HASH_SIZE */
+  struct GlobalMemMap *mmap; /* global data for mmap */
   struct MemMap *mmaps; /* shared mmap mappings */
   struct FcntlLocking *fcntl_locking; /* Shared data for fcntl locking */
   /* heap memory follows here */
@@ -167,17 +178,23 @@ static inline struct ProcDesc *get_proc_desc(pid_t pid) { return get_proc_desc_e
 static inline struct ProcDesc *find_proc_desc(pid_t pid) { return get_proc_desc_ex(pid, HashMapOpt_None); }
 static inline struct ProcDesc *take_proc_desc(pid_t pid) { return get_proc_desc_ex(pid, HashMapOpt_Take); }
 
-struct FileDesc *get_file_desc(const char *path, int bNew);
+struct FileDesc *get_proc_file_desc_ex(pid_t pid, const char *path, enum HashMapOpt opt);
+static inline struct FileDesc *get_proc_file_desc(pid_t pid, const char *path) { return get_proc_file_desc_ex(pid, path, HashMapOpt_New); }
+static inline struct FileDesc *find_proc_file_desc(pid_t pid, const char *path) { return get_proc_file_desc_ex(pid, path, HashMapOpt_None); }
+static inline struct FileDesc *take_proc_file_desc(pid_t pid, const char *path) { return get_proc_file_desc_ex(pid, path, HashMapOpt_Take); }
+static inline struct FileDesc *get_file_desc(const char *path) { return get_proc_file_desc_ex(0, path, HashMapOpt_New); }
+static inline struct FileDesc *find_file_desc(const char *path) { return get_proc_file_desc_ex(0, path, HashMapOpt_None); }
+static inline struct FileDesc *take_file_desc(const char *path) { return get_proc_file_desc_ex(0, path, HashMapOpt_Take); }
 
 void fcntl_locking_init();
 void fcntl_locking_term();
-int fcntl_locking_filedesc_init(struct FileDesc *desc);
-void fcntl_locking_filedesc_term(struct FileDesc *desc);
+int fcntl_locking_filedesc_init(struct ProcDesc *proc, struct FileDesc *desc);
+void fcntl_locking_filedesc_term(struct ProcDesc *proc, struct FileDesc *desc);
 
 int fcntl_locking_close(int fildes);
 
-int pwrite_filedesc_init(struct FileDesc *desc);
-void pwrite_filedesc_term(struct FileDesc *desc);
+int pwrite_filedesc_init(struct ProcDesc *proc, struct FileDesc *desc);
+void pwrite_filedesc_term(struct ProcDesc *proc, struct FileDesc *desc);
 
 void mmap_init();
 void mmap_term();
