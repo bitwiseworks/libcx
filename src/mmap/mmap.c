@@ -49,25 +49,25 @@
 /**
  * Per-process data for memory mappings.
  */
-struct ProcMemMap
+typedef struct ProcMemMap
 {
   int flush_tid; /* Flush thread */
-};
+} ProcMemMap;
 
 /**
  * Global data for memory mappings.
  */
-struct GlobalMemMap
+typedef struct GlobalMemMap
 {
   HEV flush_sem; /* Semaphore for flush thread */
   HEV flush_coop_sem; /* Semaphore for flush thread cooperation */
   int flush_request; /* 1 - semaphore is posted, 2 - waiting for final worker */
-};
+} GlobalMemMap;
 
 /**
  * Memory mapping (linked list entry).
  */
-struct MemMap
+typedef struct MemMap
 {
   struct MemMap *next;
 
@@ -85,13 +85,13 @@ struct MemMap
     int refcnt; /* Number of PIDs using it */
     uint32_t dirty[0]; /* Bit array of dirty pages */
   } sh[0];
-};
+} MemMap;
 
 void *mmap(void *addr, size_t len, int prot, int flags,
            int fildes, off_t off)
 {
   APIRET arc;
-  struct MemMap *mmap;
+  MemMap *mmap;
   int fd = -1;
   size_t dirtymap_sz = 0;
   ULONG file_len;
@@ -305,7 +305,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   }
   else
   {
-    struct ProcDesc *desc = find_proc_desc(getpid());
+    ProcDesc *desc = find_proc_desc(getpid());
     assert(desc);
 
     mmap->next = desc->mmaps;
@@ -323,11 +323,11 @@ void *mmap(void *addr, size_t len, int prot, int flags,
  * is not NULL and the head of the list (private or shared) if head_out is
  * not NULL. Must be called from under global_lock().
  */
-static struct MemMap *find_mmap(ULONG addr, ULONG addr_end, struct MemMap **pm_out, struct MemMap ***head_out)
+static MemMap *find_mmap(ULONG addr, ULONG addr_end, MemMap **pm_out, MemMap ***head_out)
 {
-  struct ProcDesc *desc;
-  struct MemMap *m = NULL, *pm = NULL;
-  struct MemMap **head = NULL;
+  ProcDesc *desc;
+  MemMap *m = NULL, *pm = NULL;
+  MemMap **head = NULL;
 
   /* First, search for the address in our private mmaps */
   desc = find_proc_desc(getpid());
@@ -384,7 +384,7 @@ static struct MemMap *find_mmap(ULONG addr, ULONG addr_end, struct MemMap **pm_o
  * of the region to flush. If it is 0, all pages up to the end of the mapping
  * are flushed.
  */
-static void flush_dirty_pages(struct MemMap *m, ULONG off, ULONG len)
+static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
 {
   TRACE("m %p, off %lu, len %lu\n", m, off, len);
   assert(m && m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fd != -1);
@@ -475,7 +475,7 @@ static void flush_dirty_pages(struct MemMap *m, ULONG off, ULONG len)
  * Returns 1 if the given shared mapping is used in this process and 0
  * otherwise.
  */
-static int is_shared_accessible(struct MemMap *m)
+static int is_shared_accessible(MemMap *m)
 {
   assert(m && m->flags & MAP_SHARED);
 
@@ -498,13 +498,13 @@ static int is_shared_accessible(struct MemMap *m)
  */
 static int flush_own_mappings()
 {
-  struct MemMap *m;
+  MemMap *m;
   int seen_foreign = 0;
 
   m = gpData->mmaps;
   while (m)
   {
-    struct MemMap *n = m->next;
+    MemMap *n = m->next;
     if (m->dos_flags & PAG_WRITE && m->fd != -1)
     {
       /* It's a writable shared mapping, flush if it's used in this process */
@@ -521,7 +521,7 @@ static int flush_own_mappings()
   return seen_foreign;
 }
 
-static void release_mapping(struct MemMap *m, struct MemMap *pm, struct MemMap **head)
+static void release_mapping(MemMap *m, MemMap *pm, MemMap **head)
 {
   APIRET arc;
 
@@ -602,8 +602,8 @@ int munmap(void *addr, size_t len)
 
   ULONG addr_end = ((ULONG)addr) + len;
 
-  struct MemMap *m = NULL, *pm = NULL;
-  struct MemMap **head;
+  MemMap *m = NULL, *pm = NULL;
+  MemMap **head;
   pid_t pid = getpid();
 
   global_lock();
@@ -715,7 +715,7 @@ static void mmap_flush_thread(void *arg)
  */
 void mmap_init()
 {
-  struct ProcDesc *desc;
+  ProcDesc *desc;
   APIRET arc;
 
   if (gpData->refcnt == 1)
@@ -764,8 +764,8 @@ void mmap_init()
  */
 void mmap_term()
 {
-  struct ProcDesc *desc;
-  struct MemMap *m, *pm;
+  ProcDesc *desc;
+  MemMap *m, *pm;
   APIRET arc;
 
   /* Free all private mmap structures */
@@ -775,7 +775,7 @@ void mmap_term()
     m = desc->mmaps;
     while (m)
     {
-      struct MemMap *n = m->next;
+      MemMap *n = m->next;
       TRACE("Removing private mapping %p (start %p)\n", m, m->start);
       arc = DosFreeMem((PVOID)m->start);
       TRACE("DosFreeMem = %ld\n", arc);
@@ -793,7 +793,7 @@ void mmap_term()
   m = gpData->mmaps;
   while (m)
   {
-    struct MemMap *n = m->next;
+    MemMap *n = m->next;
     if (is_shared_accessible(m))
       release_mapping(m, pm, &gpData->mmaps);
     else
@@ -838,7 +838,7 @@ void mmap_term()
  */
 static void schedule_flush_dirty(int immediate)
 {
-  struct ProcDesc *desc;
+  ProcDesc *desc;
   APIRET arc;
   pid_t pid = getpid();
 
@@ -906,7 +906,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
 
   if (report->ExceptionNum == XCPT_ACCESS_VIOLATION)
   {
-    struct MemMap *m;
+    MemMap *m;
 
     ULONG addr = report->ExceptionInfo[1];
 
@@ -1072,7 +1072,7 @@ int msync(void *addr, size_t len, int flags)
 
   ULONG addr_end = ((ULONG)addr) + len;
 
-  struct MemMap *m;
+  MemMap *m;
 
   global_lock();
 
@@ -1117,7 +1117,7 @@ int msync(void *addr, size_t len, int flags)
 
 int madvise(void *addr, size_t len, int flags)
 {
-  struct MemMap *m;
+  MemMap *m;
   ULONG addr_end;
   APIRET arc;
   int rc = 0;
@@ -1217,10 +1217,10 @@ int posix_madvise(void *addr, size_t len, int advice)
 
 int mprotect(const void *addr, size_t len, int prot)
 {
-  struct MemMap *m;
+  MemMap *m;
   ULONG addr_end, next_addr;
   ULONG dos_flags;
-  struct MemMap **found;
+  MemMap **found;
   int found_size, found_cnt = 0;
   int rc = 0;
 
@@ -1364,7 +1364,7 @@ int mprotect(const void *addr, size_t len, int prot)
 static int forkParent(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation)
 {
   APIRET arc;
-  struct MemMap *m;
+  MemMap *m;
 
   if (enmOperation != __LIBC_FORK_OP_FORK_PARENT)
     return 0;

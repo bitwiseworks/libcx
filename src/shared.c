@@ -62,7 +62,7 @@ void *gLogInstance = NULL;
 
 #endif
 
-struct SharedData *gpData = NULL;
+SharedData *gpData = NULL;
 
 static HMTX gMutex = NULLHANDLE;
 
@@ -268,7 +268,7 @@ static void shared_term()
       _HEAPSTATS hst;
 #endif
       int i;
-      struct ProcDesc *proc;
+      ProcDesc *proc;
 
       assert(gpData->refcnt);
       gpData->refcnt--;
@@ -291,10 +291,10 @@ static void shared_term()
         {
           for (i = 0; i < FILE_DESC_HASH_SIZE; ++i)
           {
-            struct FileDesc *desc = proc->files[i];
+            FileDesc *desc = proc->files[i];
             while (desc)
             {
-              struct FileDesc *next = desc->next;
+              FileDesc *next = desc->next;
               /* Call component-specific uninitialization */
               pwrite_filedesc_term(proc, desc);
               fcntl_locking_filedesc_term(proc, desc);
@@ -315,10 +315,10 @@ static void shared_term()
         {
           for (i = 0; i < FILE_DESC_HASH_SIZE; ++i)
           {
-            struct FileDesc *desc = gpData->files[i];
+            FileDesc *desc = gpData->files[i];
             while (desc)
             {
-              struct FileDesc *next = desc->next;
+              FileDesc *next = desc->next;
               /* Call component-specific uninitialization */
               pwrite_filedesc_term(NULL, desc);
               fcntl_locking_filedesc_term(NULL, desc);
@@ -511,10 +511,10 @@ static size_t hash_string(const char *str)
  * the descriptor is found, it will be removed from the hash map (it's then
  * the responsibility of the caller to free the returned pointer).
  */
-struct ProcDesc *get_proc_desc_ex(pid_t pid, enum HashMapOpt opt)
+ProcDesc *get_proc_desc_ex(pid_t pid, enum HashMapOpt opt)
 {
   size_t h;
-  struct ProcDesc *desc, *prev;
+  ProcDesc *desc, *prev;
   int rc;
 
   assert(gpData);
@@ -571,12 +571,12 @@ struct ProcDesc *get_proc_desc_ex(pid_t pid, enum HashMapOpt opt)
  * the descriptor is found, it will be removed from the hash map (it's then
  * the responsibility of the caller to free the returned pointer).
  */
-struct FileDesc *get_proc_file_desc_ex(pid_t pid, const char *path, enum HashMapOpt opt)
+FileDesc *get_proc_file_desc_ex(pid_t pid, const char *path, enum HashMapOpt opt)
 {
   size_t h;
-  struct FileDesc *desc, *prev;
-  struct ProcDesc *proc;
-  struct FileDesc **map;
+  FileDesc *desc, *prev;
+  ProcDesc *proc;
+  FileDesc **map;
   int rc;
 
   assert(gpData);

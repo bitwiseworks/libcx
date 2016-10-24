@@ -44,17 +44,17 @@
 
 #define PID_LIST_MIN_SIZE 8
 
-struct PidList
+typedef struct PidList
 {
   size_t size;
   size_t used;
   pid_t list[0]; /* PID or 0 for empty cell */
-};
+} PidList;
 
 /**
  * Fcntl file lock (linked list entry).
  */
-struct FcntlLock
+typedef struct FcntlLock
 {
   struct FcntlLock *next;
 
@@ -63,14 +63,14 @@ struct FcntlLock
   union
   {
     pid_t pid; /* owner of the R or W lock */
-    struct PidList *pids; /* owners of the r locks */
+    PidList *pids; /* owners of the r locks */
   };
-};
+} FcntlLock;
 
 /**
  * Blocked process (linked list entry).
  */
-struct ProcBlock
+typedef struct ProcBlock
 {
   struct ProcBlock *next;
   pid_t pid; /* pid of the blocked process */
@@ -81,24 +81,24 @@ struct ProcBlock
   char path[PATH_MAX]; /* File hame with full path */
 
   pid_t blocker; /* pid of the blocking process */
-};
+} ProcBlock;
 
 /**
  * Global fcntl locking data structure.
  */
-struct FcntlLocking
+typedef struct FcntlLocking
 {
   HEV hEvSem; /* Semaphore for blocked processes to wait on */
-  struct ProcBlock *blocked; /* Processes blocked in F_SETLKW */
-};
+  ProcBlock *blocked; /* Processes blocked in F_SETLKW */
+} FcntlLocking;
 
 static int gbTerminate = 0; /* 1 after fcntl_locking_term is called */
 
-static struct PidList *copy_pids(const struct PidList *list)
+static PidList *copy_pids(const PidList *list)
 {
   assert(list);
   size_t size = sizeof(*list) + sizeof(list->list[0]) * list->size;
-  struct PidList *nlist = global_alloc(size);
+  PidList *nlist = global_alloc(size);
   if (nlist)
     memcpy(nlist, list, size);
   return nlist;
@@ -120,7 +120,7 @@ static pid_t first_pid(struct FcntlLock *l)
   return l->pid;
 }
 
-static int equal_pids(struct PidList *l1, struct PidList *l2)
+static int equal_pids(PidList *l1, PidList *l2)
 {
   int i1, i2;
 
@@ -257,7 +257,7 @@ static int lock_mark(struct FcntlLock *l, short type, pid_t pid)
           /* Need more space */
           assert(l->pids->used == l->pids->size);
           size_t nsize = l->pids->size += PID_LIST_MIN_SIZE;
-          struct PidList *nlist =
+          PidList *nlist =
               realloc(l->pids, sizeof(*l->pids) + sizeof(l->pids->list[0]) * nsize);
           if (!nlist)
             return -1;
@@ -270,7 +270,7 @@ static int lock_mark(struct FcntlLock *l, short type, pid_t pid)
       {
         assert(l->pid && l->pid != pid);
         size_t nsize = PID_LIST_MIN_SIZE;
-        struct PidList *nlist =
+        PidList *nlist =
             global_alloc(sizeof(*l->pids) + sizeof(l->pids->list[0]) * nsize);
         if (!nlist)
           return -1;
@@ -355,7 +355,7 @@ static struct FcntlLock *lock_split(struct FcntlLock *l, off_t split)
  * a need for optmimizaiton and @a le is the last changed region
  * (may be NULL to scan till the end).
  */
-static void optimize_locks(struct FileDesc *desc, struct FcntlLock *lpb,
+static void optimize_locks(FileDesc *desc, struct FcntlLock *lpb,
                            struct FcntlLock *lb, struct FcntlLock *le)
 {
   /* Optimize regions by joining matching ones */
@@ -386,7 +386,7 @@ static void optimize_locks(struct FileDesc *desc, struct FcntlLock *lpb,
  * Called right after the FileDesc pointer is allocated.
  * Returns 0 on success or -1 on failure.
  */
-int fcntl_locking_filedesc_init(struct ProcDesc *proc, struct FileDesc *desc)
+int fcntl_locking_filedesc_init(ProcDesc *proc, FileDesc *desc)
 {
   if (!proc)
   {
@@ -403,7 +403,7 @@ int fcntl_locking_filedesc_init(struct ProcDesc *proc, struct FileDesc *desc)
  * If proc is not NULL, desc a per-process entry, otherwise a global one.
  * Called right before the FileDesc pointer is freed.
  */
-void fcntl_locking_filedesc_term(struct ProcDesc *proc, struct FileDesc *desc)
+void fcntl_locking_filedesc_term(ProcDesc *proc, FileDesc *desc)
 {
   if (!proc)
   {
@@ -482,7 +482,7 @@ void fcntl_locking_term()
     /* Note: this code is similar to one in fcntl_locking_close */
     for (i = 0; i < FILE_DESC_HASH_SIZE; ++i)
     {
-      struct FileDesc *desc = gpData->files[i];
+      FileDesc *desc = gpData->files[i];
       while (desc)
       {
         struct FcntlLock *l = desc->g->fcntl_locks;
@@ -509,7 +509,7 @@ void fcntl_locking_term()
     /* Go through all blocked processes and remove ourselves */
     if (gpData->fcntl_locking->blocked)
     {
-      struct ProcBlock *bp = NULL, *b = gpData->fcntl_locking->blocked;
+      ProcBlock *bp = NULL, *b = gpData->fcntl_locking->blocked;
       while (b)
       {
         if (b->pid == pid)
@@ -517,7 +517,7 @@ void fcntl_locking_term()
           TRACE("Will unblock [%s], type '%c', start %lld, len %lld\n",
                 b->path, b->type, (uint64_t)b->start,
                 (uint64_t)(b->end == OFF_MAX ? 0 : b->end - b->start + 1));
-          struct ProcBlock *bn = b->next;
+          ProcBlock *bn = b->next;
           if (bp)
             bp->next = bn;
           else
@@ -549,13 +549,13 @@ void fcntl_locking_term()
     TRACE("gpData->fcntl_locking->blocked %p\n", gpData->fcntl_locking->blocked);
     if (gpData->fcntl_locking->blocked)
     {
-      struct ProcBlock *b = gpData->fcntl_locking->blocked;
+      ProcBlock *b = gpData->fcntl_locking->blocked;
       while (b)
       {
         TRACE("WARNING! Blocked proc: pid %d, path [%s], type='%c', start %lld, len %lld\n",
               b->pid, b->path, b->type, (uint64_t)b->start,
               (uint64_t)(b->end == OFF_MAX ? 0 : b->end - b->start + 1));
-        struct ProcBlock *n = b->next;
+        ProcBlock *n = b->next;
         free(b);
         b = n;
       }
@@ -580,10 +580,10 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
   APIRET arc;
   int rc, bSeenOtherPid, bNoMem = 0, bNeededMark = 0;
   off_t start, end;
-  struct FileDesc *desc = NULL;
+  FileDesc *desc = NULL;
   struct FcntlLock *lpb = NULL, *lb = NULL, *le = NULL;
   struct FcntlLock *blocker = NULL;
-  struct ProcBlock *blocked = NULL;
+  ProcBlock *blocked = NULL;
   struct stat st;
   __LIBC_PFH pFH;
 
@@ -835,7 +835,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
         else
         {
           /* Block this thread due to F_SETLKW */
-          struct ProcBlock *bp, *b;
+          ProcBlock *bp, *b;
 
           assert(fl->l_type != F_UNLCK);
 
@@ -1181,7 +1181,7 @@ int fcntl(int fildes, int cmd, intptr_t *arg)
  */
 int fcntl_locking_close(int fildes)
 {
-  struct FileDesc *desc = NULL;
+  FileDesc *desc = NULL;
   __LIBC_PFH pFH;
 
   pFH = __libc_FH(fildes);

@@ -38,7 +38,7 @@
  * Called right after the FileDesc pointer is allocated.
  * Returns 0 on success or -1 on failure.
  */
-int pwrite_filedesc_init(struct ProcDesc *proc, struct FileDesc *desc)
+int pwrite_filedesc_init(ProcDesc *proc, FileDesc *desc)
 {
   if (!proc)
   {
@@ -53,7 +53,7 @@ int pwrite_filedesc_init(struct ProcDesc *proc, struct FileDesc *desc)
  * If proc is not NULL, desc a per-process entry, otherwise a global one.
  * Called right before the FileDesc pointer is freed.
  */
-void pwrite_filedesc_term(struct ProcDesc *proc, struct FileDesc *desc)
+void pwrite_filedesc_term(ProcDesc *proc, FileDesc *desc)
 {
   if (!proc)
   {
@@ -94,7 +94,7 @@ static ssize_t pread_pwrite(int bWrite, int fildes, void *buf,
   global_lock();
 
   {
-    struct FileDesc *desc = get_file_desc(pFH->pszNativePath);
+    FileDesc *desc = get_file_desc(pFH->pszNativePath);
     if (desc)
       mutex = desc->g->pwrite_lock;
 
@@ -120,7 +120,7 @@ static ssize_t pread_pwrite(int bWrite, int fildes, void *buf,
       /* The mutex is no longer valid, create a new one */
       /* @todo this is a temporary hack, see https://github.com/bitwiseworks/libcx/issues/7 */
       global_lock();
-      struct FileDesc *desc = get_file_desc(pFH->pszNativePath);
+      FileDesc *desc = get_file_desc(pFH->pszNativePath);
       if (desc)
       {
         arc = DosCreateMutexSem(NULL, &desc->g->pwrite_lock, DC_SEM_SHARED, FALSE);
