@@ -801,30 +801,16 @@ void touch_pages(void *buf, size_t len)
   }
 }
 
-static void forkCompletion(void *pvArg, int rc, __LIBC_FORKCTX enmCtx)
-{
-  /*
-   * This is the place where LIBCx is initialized in the forked child
-   * instead of DLL_InitTerm.
-   */
-  shared_init();
-}
-
 static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation)
 {
   int rc = 0;
 
   switch(enmOperation)
   {
-    case __LIBC_FORK_OP_FORK_PARENT:
-    {
-      rc = pForkHandle->pfnCompletionCallback(pForkHandle, forkCompletion, NULL, __LIBC_FORK_CTX_CHILD);
-      TRACE("forkCompletion = %p, rc = %d\n", forkCompletion, rc);
-      break;
-    }
-
     case __LIBC_FORK_OP_FORK_CHILD:
     {
+      shared_init();
+
       /*
        * @todo We would like to free & reset the log instance to NULL here to have it
        * properly re-initialized in the child process but this crashes the child
@@ -856,5 +842,4 @@ static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOper
   return rc;
 }
 
-_FORK_PARENT1(0xFFFFFFFF, forkParentChild);
 _FORK_CHILD1(0xFFFFFFFF, forkParentChild);
