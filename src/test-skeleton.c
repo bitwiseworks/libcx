@@ -85,7 +85,7 @@ static inline const char *_getname (const char *path)
     } \
     if (NeedSig != 0) \
     { \
-      if (WIFEXITED(status) || !WIFSIGNALED(status) || WTERMSIG(status) != SIGSEGV) \
+      if (WIFEXITED(status) || !WIFSIGNALED(status) || WTERMSIG(status) != NeedSig) \
       { \
         printf("%s not crashed or crashed not with %s [%x] (status %x)\n", ForkName, SigName, NeedSig, status); \
         return 1; \
@@ -171,6 +171,26 @@ add_temp_file (const char *name, int fd)
     }
   else
     free (newp);
+}
+
+static void
+__attribute__ ((unused))
+forget_temp_file (const char *name, int fd)
+{
+  struct temp_name_list *cur = temp_name_list;
+  while (cur != NULL)
+    {
+      struct temp_name_list *next
+        = (struct temp_name_list *) cur->q.q_forw;
+      if (cur->fd == fd &&
+          strcmp (cur->name, name) == 0)
+        {
+          remque (cur);
+        }
+      if (cur == temp_name_list)
+        temp_name_list = next;
+      cur = next;
+    }
 }
 
 /* Delete all temporary files.  */
