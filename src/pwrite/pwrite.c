@@ -59,15 +59,18 @@ void pwrite_filedesc_term(ProcDesc *proc, FileDesc *desc)
   {
     APIRET arc;
 
-    arc = DosCloseMutexSem(desc->g->pwrite_lock);
-    if (arc == ERROR_SEM_BUSY)
+    if (desc->g->pwrite_lock != NULLHANDLE)
     {
-      /* The semaphore may be owned by us, try to release it */
-      arc = DosReleaseMutexSem(desc->g->pwrite_lock);
-      TRACE("DosReleaseMutexSem = %ld\n", arc);
       arc = DosCloseMutexSem(desc->g->pwrite_lock);
+      if (arc == ERROR_SEM_BUSY)
+      {
+        /* The semaphore may be owned by us, try to release it */
+        arc = DosReleaseMutexSem(desc->g->pwrite_lock);
+        TRACE("DosReleaseMutexSem = %ld\n", arc);
+        arc = DosCloseMutexSem(desc->g->pwrite_lock);
+      }
+      TRACE("DosCloseMutexSem = %ld\n", arc);
     }
-    TRACE("DosCloseMutexSem = %ld\n", arc);
   }
 }
 
