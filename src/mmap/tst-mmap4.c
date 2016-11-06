@@ -28,7 +28,12 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 
-#define MAP_SIZE (4096 * 33) // kinda 8 bytes of dirty map
+/*
+ * @todo For now we can't access beyond EOF for more than within
+ * the last page. See https://github.com/bitwiseworks/libcx/issues/20
+ * for details.
+ */
+#define MAP_SIZE 4096
 
 static int do_test(void);
 #define TEST_FUNCTION do_test ()
