@@ -24,11 +24,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <io.h>
 #include <sys/param.h>
 #include <sys/mman.h>
 
-#define FILE_SIZE (PAGE_SIZE * 2)
+#ifndef PAGE_SIZE
+#define PAGE_SIZE 4096
+#endif
+
+#define FILE_SIZE (PAGE_SIZE * 4)
 #define TEST_SIZE 10
 #define TEST_VAL 255
 
@@ -107,7 +110,7 @@ do_test (void)
 
   printf("Test 2\n");
 
-  enum { Offset = 11 };
+  enum { Offset = PAGE_SIZE };
 
   addr = mmap(NULL, FILE_SIZE - Offset, PROT_READ | PROT_WRITE, MAP_SHARED, fd, Offset);
   if (addr == MAP_FAILED)
@@ -157,6 +160,8 @@ do_test (void)
         perror("child: munmap failed");
         return 1;
       }
+
+      forget_temp_file (fname, fd);
 
       return 0;
   }
