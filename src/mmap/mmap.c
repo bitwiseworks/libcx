@@ -622,6 +622,7 @@ static void release_mapping(MemMap *m, MemMap *pm, MemMap **head)
     --(m->fmap->refcnt);
     if (!m->fmap->refcnt)
       free_file_map(m->fmap);
+    DosClose(m->fd);
   }
   else
   {
