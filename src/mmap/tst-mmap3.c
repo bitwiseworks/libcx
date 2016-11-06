@@ -27,6 +27,10 @@
 #include <sys/param.h>
 #include <sys/mman.h>
 
+#ifndef PAGE_SIZE
+#define PAGE_SIZE 4096
+#endif
+
 #define FILE_SIZE (PAGE_SIZE * 2)
 #define TEST_SIZE 10
 #define TEST_VAL 255
@@ -131,7 +135,11 @@ do_test (void)
 
   printf("Test 3\n");
 
+#ifdef __OS2__
   TEST_FORK_BEGIN("child 2", 0, SIGSEGV);
+#else
+  TEST_FORK_BEGIN("child 2", 0, SIGBUS);
+#endif
   {
     /* Should crash here */
     *addr = 1;

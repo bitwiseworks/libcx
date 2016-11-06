@@ -32,11 +32,8 @@
 #endif
 
 #define FILE_SIZE (PAGE_SIZE * 2)
-#define TEST_SIZE 10
-#define TEST_VAL 255
 
 unsigned char buf[FILE_SIZE];
-unsigned char buf2[TEST_SIZE * 2];
 
 static int do_test(void);
 #define TEST_FUNCTION do_test ()
@@ -86,7 +83,7 @@ do_test (void)
   setmode (fd2, O_BINARY);
 #endif
 
-  rc = ftruncate(fd2, TEST_SIZE);
+  rc = ftruncate(fd2, FILE_SIZE);
   if (rc == -1)
   {
     perror("ftruncate failed");
@@ -99,25 +96,25 @@ do_test (void)
 
   printf("Test 1\n");
 
-  addr = mmap(NULL, TEST_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd2, 0);
+  addr = mmap(NULL, FILE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd2, 0);
   if (addr == MAP_FAILED)
   {
     perror("mmap failed");
     return 1;
   }
 
-  n = pread(fd, addr, TEST_SIZE, 0);
+  n = pread(fd, addr, FILE_SIZE, 0);
 
-  if (n != TEST_SIZE)
+  if (n != FILE_SIZE)
   {
     if (n != -1)
-      printf ("pread failed (read %d bytes instead of %d)\n", n, TEST_SIZE);
+      printf ("pread failed (read %d bytes instead of %d)\n", n, FILE_SIZE);
     else
       perror("pread failed");
     return 1;
   }
 
-  for (i = 0; i < TEST_SIZE; ++i)
+  for (i = 0; i < FILE_SIZE; ++i)
   {
     if (addr[i] != buf[i])
     {
