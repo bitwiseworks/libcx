@@ -97,13 +97,15 @@ typedef struct FileDesc
   struct FileDesc *next;
 
   char *path; /* File name with full path */
+  struct FileMap *map; /* Per-file mmap data */
 
-  /* Process-specific file descripion data */
+  /* Process-specific file descripion data (must be last!) */
   struct Proc
   {
+    /* Currently no such data */
   } p[0];
 
-  /* Global file descripor data */
+  /* Global file descripor data (must be last!) */
   struct Global
   {
     struct FcntlLock *fcntl_locks; /* Active fcntl file locks */
@@ -121,7 +123,7 @@ typedef struct ProcDesc
   pid_t pid;
   FileDesc **files; /* process-specific file descriptor hash map of FILE_DESC_HASH_SIZE */
   struct ProcMemMap *mmap; /* process-specific data for mmap */
-  struct MemMap *mmaps; /* private mmap mappings */
+  struct MemMap *mmaps; /* process-visible memory mapings */
 } ProcDesc;
 
 /**
@@ -135,8 +137,6 @@ typedef struct SharedData
   size_t maxHeapUsed; /* max size of used heap space */
   ProcDesc **procs; /* process descriptor hash map of PROC_INFO_HASH_SIZE */
   FileDesc **files; /* file descriptor hash map of FILE_DESC_HASH_SIZE */
-  struct GlobalMemMap *mmap; /* global data for mmap */
-  struct MemMap *mmaps; /* shared mmap mappings */
   struct FcntlLocking *fcntl_locking; /* Shared data for fcntl locking */
   /* heap memory follows here */
 } SharedData;
@@ -165,6 +165,8 @@ void *global_alloc(size_t size);
 #define NEW_ARRAY(ptr, sz) (ptr) = (__typeof(ptr))malloc(sizeof(*ptr) * (sz))
 
 #define RENEW_ARRAY(ptr, sz) (ptr) = (__typeof(ptr))realloc(ptr, sizeof(*ptr) * (sz))
+
+#define COPY_STRUCT(to, from) memcpy((to), (from), sizeof(*from))
 
 enum HashMapOpt
 {
