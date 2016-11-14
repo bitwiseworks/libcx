@@ -78,6 +78,7 @@
 #include <sys/time.h>                        /* time definitions */
 #include <assert.h>                          /* assertion macros */
 #include <string.h>                          /* string functions */
+#include <errno.h>                           /* time definitions */
 #include "poll.h"                            /* this package */
 
 /*---------------------------------------------------------------------------*\
@@ -298,7 +299,12 @@ int poll
     FD_ZERO (&write_descs);
     FD_ZERO (&except_descs);
 
-    assert (pArray != (struct pollfd *) NULL);
+    if (pArray == (struct pollfd *) NULL)
+    {
+        /* Not required by POSIX but BSD/Linux implementations do that */
+        errno = EFAULT;
+        return -1;
+    }
 
     /* Map the poll() file descriptor list in the select() data structures. */
 
