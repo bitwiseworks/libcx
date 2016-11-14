@@ -167,6 +167,7 @@ void *global_alloc(size_t size);
 #define RENEW_ARRAY(ptr, sz) (ptr) = (__typeof(ptr))realloc(ptr, sizeof(*ptr) * (sz))
 
 #define COPY_STRUCT(to, from) memcpy((to), (from), sizeof(*from))
+#define COPY_STRUCT_PLUS(to, from, more) memcpy((to), (from), sizeof(*from) + (more))
 
 enum HashMapOpt
 {
