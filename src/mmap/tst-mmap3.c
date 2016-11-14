@@ -99,7 +99,7 @@ do_test (void)
 
   close(fd2);
 
-  for (i = PAGE_SIZE - TEST_SIZE; i < PAGE_SIZE + TEST_SIZE; ++i)
+  for (i = PAGE_SIZE - TEST_SIZE; i < PAGE_SIZE; ++i)
   {
     if (addr[i] != buf[i])
     {
@@ -116,7 +116,7 @@ do_test (void)
 
   TEST_FORK_BEGIN("child 1", 0, 0);
   {
-    for (i = PAGE_SIZE - TEST_SIZE; i < PAGE_SIZE + TEST_SIZE; ++i)
+    for (i = PAGE_SIZE; i < PAGE_SIZE + TEST_SIZE; ++i)
     {
       if (addr[i] != buf[i])
       {
@@ -128,6 +128,15 @@ do_test (void)
     return 0;
   }
   TEST_FORK_END();
+
+  for (i = 0; i < FILE_SIZE; ++i)
+  {
+    if (addr[i] != buf[i])
+    {
+      printf("addr[%d] is %u, must be %u\n", i, addr[i], buf[i]);
+      return 1;
+    }
+  }
 
   /*
    * Test 3: write to r/o mapping from child (should fail)
