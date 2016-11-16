@@ -136,12 +136,11 @@ do_test (void)
 #endif
 
   /*
-   * Make sure child goes first (this is to test DosAliasMem + DosSetMem
-   * in the parent.
+   * Make sure child goes first (this is to have predictable tracing).
    */
   sleep(1);
 
-  addr = mmap(NULL, FILE_SIZE, PROT_READ | PROT_WRITE, MAP_FILE | MAP_SHARED, fd, 0);
+  addr = mmap(NULL, FILE_SIZE * 2, PROT_READ | PROT_WRITE, MAP_FILE | MAP_SHARED, fd, 0);
   if (addr == MAP_FAILED)
   {
     perror("mmap failed");
@@ -157,7 +156,7 @@ do_test (void)
 
   if (count <= 0)
   {
-    printf("child: failed, count = %d\n", count);
+    printf("parent: failed, count = %d\n", count);
     return 1;
   }
 
