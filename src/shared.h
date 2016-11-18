@@ -106,7 +106,7 @@ typedef struct FileDesc
   /* Process-specific file descripion data (must be last!) */
   struct Proc
   {
-    /* Currently no such data */
+    struct FileHandle *fh; /* File handle for mmap */
   } p[0];
 
   /* Global file descripor data (must be last!) */
