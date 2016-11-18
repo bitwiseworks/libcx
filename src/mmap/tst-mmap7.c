@@ -72,21 +72,21 @@ do_test (void)
     return 1;
   }
 
-  for (n = 1; n <= 2; ++n)
+  for (n = 1; n <= 4; ++n)
   {
-    TEST_FORK_BEGIN("child", 0, SIGSEGV);
+    TEST_FORK_BEGIN("child", 0, n < 3 ? 0 : SIGSEGV);
     {
       TEST_FORK_PRINTF("Test loop %d\n", n);
-      int flags = n == 1 ? MAP_SHARED : MAP_PRIVATE;
+      int flags = (n == 1 || n == 3) ? MAP_SHARED : MAP_PRIVATE;
 
       /*
        * Test 1: create several file mappings
        */
 
-      TEST_FORK_PRINTF("Test 1\n");
+      TEST_FORK_PRINTF("Test 1.1\n");
 
       off = 0;
-      addr1 = mmap(NULL, 10, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, off);
+      addr1 = mmap(NULL, 10, PROT_READ | PROT_WRITE, flags, fd, off);
       if (addr1 == MAP_FAILED)
       {
         TEST_FORK_PERROR("mmap failed");
@@ -102,8 +102,10 @@ do_test (void)
         }
       }
 
+      TEST_FORK_PRINTF("Test 1.2\n");
+
       off = PAGE_SIZE * 2;
-      addr2 = mmap(NULL, 20, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, off);
+      addr2 = mmap(NULL, 20, PROT_READ | PROT_WRITE, flags, fd, off);
       if (addr2 == MAP_FAILED)
       {
         TEST_FORK_PERROR("mmap failed");
@@ -119,8 +121,10 @@ do_test (void)
         }
       }
 
+      TEST_FORK_PRINTF("Test 1.3\n");
+
       off = PAGE_SIZE;
-      addr3 = mmap(NULL, PAGE_SIZE * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, off);
+      addr3 = mmap(NULL, PAGE_SIZE * 2, PROT_READ | PROT_WRITE, flags, fd, off);
       if (addr3 == MAP_FAILED)
       {
         TEST_FORK_PERROR("mmap failed");
@@ -153,6 +157,9 @@ do_test (void)
         TEST_FORK_PERROR("munmap failed");
         return 1;
       }
+
+      if (n < 3)
+        return 0;
 
       /* Test 3: write somewhere (should crash) */
 

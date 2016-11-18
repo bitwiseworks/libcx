@@ -64,7 +64,7 @@ static inline const char *_getname (const char *path)
   { \
     const char *ForkName = name; \
     const char *SigName = #need_sig; \
-    enum { NeedRC = (need_rc), NeedSig = (need_sig) }; \
+    const int NeedRC = (need_rc), NeedSig = (need_sig); \
     int status; \
     switch (fork()) \
     { \
