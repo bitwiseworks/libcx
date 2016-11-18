@@ -62,7 +62,9 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
 #define TRACE_END() TRACE_FLUSH(); } do {} while(0)
 #define TRACE_IF(cond, msg, ...) if (cond) TRACE(msg, ## __VA_ARGS__)
 #define TRACE_BEGIN_IF(cond, msg, ...) if (cond) TRACE_BEGIN(msg, ## __VA_ARGS__)
+
 #else
+
 #define TRACE_MORE 0
 #define TRACE_FLUSH() do {} while (0)
 #define TRACE_RAW(msg, ...) do {} while (0)
@@ -74,6 +76,8 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
 #define TRACE_BEGIN_IF(cond, msg, ...) if (0) { do {} while(0)
 
 #endif /* TRACE_ENABLED */
+
+#define ASSERT_MSG(cond, msg, ...) do { if (!cond) { fprintf(stderr, "Assertion info: " msg, ## __VA_ARGS__); fflush(stderr); _assert(#cond, __FILE__, __LINE__); } } while(0)
 
 /** Divides count by bucket_sz and rounds the result up. */
 #define DIVIDE_UP(count, bucket_sz) (((count) + (bucket_sz - 1)) / (bucket_sz))

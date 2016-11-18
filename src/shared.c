@@ -95,7 +95,7 @@ static void *mem_alloc(Heap_t h, size_t *psize, int *pclean)
 
   /* Commit the new block */
   arc = DosSetMem(mem, size, PAG_DEFAULT | PAG_COMMIT);
-  TRACE("DosSetMem(%p, %d) = %d\n", mem, size, arc);
+  TRACE("DosSetMem(%p, %d) = %ld\n", mem, size, arc);
 
   if (arc)
     return NULL;
@@ -176,7 +176,7 @@ static void shared_init()
     {
       /* We are the first process, create the mutex */
       arc = DosCreateMutexSem(MUTEX_LIBCX, &gMutex, 0, TRUE);
-      TRACE("DosCreateMutexSem = %d\n", arc);
+      TRACE("DosCreateMutexSem = %ld\n", arc);
 
       if (arc == ERROR_DUPLICATE_NAME)
       {
@@ -196,14 +196,14 @@ static void shared_init()
     /* Allocate shared memory */
     arc = DosAllocSharedMem((PPVOID)&gpData, SHAREDMEM_LIBCX, HEAP_SIZE,
                             PAG_READ | PAG_WRITE | OBJ_ANY);
-    TRACE("DosAllocSharedMem(OBJ_ANY) = %d\n", arc);
+    TRACE("DosAllocSharedMem(OBJ_ANY) = %ld\n", arc);
 
     if (arc && arc != ERROR_ALREADY_EXISTS)
     {
       /* High memory may be unavailable, try w/o OBJ_ANY */
       arc = DosAllocSharedMem((PPVOID)&gpData, SHAREDMEM_LIBCX, HEAP_SIZE,
                               PAG_READ | PAG_WRITE);
-      TRACE("DosAllocSharedMem = %d\n", arc);
+      TRACE("DosAllocSharedMem = %ld\n", arc);
     }
 
     assert(arc == NO_ERROR);
@@ -212,7 +212,7 @@ static void shared_init()
 
     /* Commit the initial block */
     arc = DosSetMem(gpData, HEAP_INIT_SIZE, PAG_DEFAULT | PAG_COMMIT);
-    TRACE("DosSetMem = %d\n", arc);
+    TRACE("DosSetMem = %ld\n", arc);
     assert(arc == NO_ERROR);
 
     gpData->size = HEAP_INIT_SIZE;
@@ -252,7 +252,7 @@ static void shared_term()
   APIRET arc;
   int rc;
 
-  TRACE("gMutex %p, gpData %p (heap %p, refcnt %d)\n",
+  TRACE("gMutex %lx, gpData %p (heap %p, refcnt %d)\n",
         gMutex, gpData, gpData ? gpData->heap : 0,
         gpData ? gpData->refcnt : 0);
 
@@ -344,13 +344,16 @@ static void shared_term()
 
       if (gpData->refcnt == 0)
       {
+#ifdef STATS_ENABLED
+        ASSERT_MSG(!hst._used, "%d\n", hst._used);
+#endif
         rc = _udestroy(gpData->heap, !_FORCE);
         TRACE("_udestroy = %d (%d)\n", rc, errno);
       }
     }
 
     arc = DosFreeMem(gpData);
-    TRACE("DosFreeMem = %d\n", arc);
+    TRACE("DosFreeMem = %ld\n", arc);
   }
 
   DosReleaseMutexSem(gMutex);
@@ -360,10 +363,10 @@ static void shared_term()
   {
     /* The semaphore may be owned by us, try to release it */
     arc = DosReleaseMutexSem(gMutex);
-    TRACE("DosReleaseMutexSem = %d\n", arc);
+    TRACE("DosReleaseMutexSem = %ld\n", arc);
     arc = DosCloseMutexSem(gMutex);
   }
-  TRACE("DosCloseMutexSem = %d\n", arc);
+  TRACE("DosCloseMutexSem = %ld\n", arc);
 
   DosExitList(EXLST_REMOVE, ProcessExit);
 }
@@ -373,7 +376,7 @@ static void shared_term()
  */
 unsigned long _System _DLL_InitTerm(unsigned long hModule, unsigned long ulFlag)
 {
-  TRACE("ulFlag %d\n", ulFlag);
+  TRACE("ulFlag %lu\n", ulFlag);
 
   switch (ulFlag)
   {
@@ -422,7 +425,7 @@ unsigned long _System _DLL_InitTerm(unsigned long hModule, unsigned long ulFlag)
  */
 static void APIENTRY ProcessExit(ULONG reason)
 {
-  TRACE("reason %d\n", reason);
+  TRACE("reason %lu\n", reason);
 
   shared_term();
 
