@@ -102,9 +102,11 @@ typedef struct MemMap
   ULONG end; /* end address (exclusive) */
   int flags; /* mmap flags */
   ULONG dos_flags; /* DosAllocMem protection flags */
-  FileMapMem *fmem; /* file map's memory or NULL for MAP_ANONYMOUS */
-  FileHandle *fh; /* File handle or NULL for MAP_ANONYMOUS */
-  off_t off; /* offset into the file or 0 for MAP_ANONYMOUS */
+  struct File /* Only present for non MAP_ANONYMOUS mmaps (must be last) */
+  {
+    FileMapMem *fmem; /* file map's memory */
+    FileHandle *fh; /* File handle */
+  } f[0];
 } MemMap;
 
 #define OBJ_MY_SHARED 0x80000000
@@ -447,7 +449,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       if (off == 0 && first->end <= e &&
           (!first->next || first->next->start >= e))
       {
-        assert(first->fh);
+        assert(first->f->fh);
         mmap = first;
       }
     }
@@ -455,11 +457,11 @@ void *mmap(void *addr, size_t len, int prot, int flags,
     {
       ULONG e = fmem->start + off + len;
       MemMap *m = prev ? prev->next : pdesc->mmaps;
-      if (m && m->fmem == fmem &&
+      if (m && m->f->fmem == fmem &&
           m->start < e && m->end <= e &&
           (!m->next || m->next->start >= e))
       {
-        assert(m->fh);
+        assert(m->f->fh);
         mmap = m;
       }
     }
@@ -472,7 +474,6 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       /* Fix start/end/off */
       mmap->start = fmem->start + off;
       mmap->end = mmap->start + len;
-      mmap->off = off;
       goto success;
     }
 
@@ -562,7 +563,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   }
 
   /* Allocate a new MemMap entry */
-  GLOBAL_NEW(mmap);
+  GLOBAL_NEW_PLUS(mmap, flags & MAP_ANON ? 0 : sizeof(*mmap->f));
   if (!mmap)
   {
     /* Free fh if it's not used */
@@ -577,10 +578,6 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   }
 
   mmap->flags = flags;
-  mmap->fmem = fmem;
-  mmap->fh = fh;
-  mmap->off = off;
-
   mmap->dos_flags = dos_flags;
 
   /*
@@ -591,9 +588,12 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   if (dos_flags == 0)
     dos_flags |= PAG_READ;
 
-  if (fmap)
+  if (!(flags & MAP_ANON))
   {
     /* Use the file map */
+    assert(fmem && fh);
+    mmap->f->fmem = fmem;
+    mmap->f->fh = fh;
     mmap->start = fmem->start + off;
     mmap->end = mmap->start + len;
     if (flags & MAP_SHARED && fdesc->map)
@@ -666,7 +666,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
 
       MemMap *last;
 
-      GLOBAL_NEW(last);
+      GLOBAL_NEW_PLUS(last, sizeof(*last->f));
       if (!last)
       {
         free(mmap);
@@ -678,12 +678,12 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       COPY_STRUCT(last, first);
 
       /* Reference file maps' memory object */
-      assert(last->fmem->refcnt);
-      ++last->fmem->refcnt;
+      assert(last->f->fmem->refcnt);
+      ++last->f->fmem->refcnt;
 
       /* Reference file handle */
-      assert(last->fh->refcnt);
-      ++last->fh->refcnt;
+      assert(last->f->fh->refcnt);
+      ++last->f->fh->refcnt;
 
       /* Fix list */
       mmap->next = last;
@@ -692,8 +692,6 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       /* Fix start/end/off */
       first->end = mmap->start;
       last->start = mmap->end;
-      last->off += last->start - first->start;
-      assert(last->off == last->start - fmem->start);
     }
     else
     {
@@ -723,16 +721,16 @@ void *mmap(void *addr, size_t len, int prot, int flags,
            * as the new mmap is using them. So no need to call to free_mmap().
            */
           TRACE("eating mmap %p (start %lx, end %lx)\n", last, last->start, last->end);
-          assert(last->fmem == fmem);
-          assert(last->fh == fh);
+          assert(last->f->fmem == fmem);
+          assert(last->f->fh == fh);
 
           /* Dereference file handle */
-          assert(last->fh->refcnt);
-          --(last->fh->refcnt);
+          assert(last->f->fh->refcnt);
+          --(last->f->fh->refcnt);
 
           /* Dereference file map's memory object */
-          assert(last->fmem->refcnt);
-          --(last->fmem->refcnt);
+          assert(last->f->fmem->refcnt);
+          --(last->f->fmem->refcnt);
 
           free(last);
         }
@@ -831,10 +829,11 @@ void *mmap(void *addr, size_t len, int prot, int flags,
 
 success:
 
-  TRACE("mmap %p (%lx..%lx (%lu), fmem %p (%lx), fmap %p\n",
-        mmap, mmap->start, mmap->end, mmap->end - mmap->start, mmap->fmem,
-        mmap->fmem ? mmap->fmem->start : 0,
-        mmap->fmem ? mmap->fmem->map : 0);
+  TRACE_IF(mmap->flags & MAP_ANON, "mmap %p (%lx..%lx (%lu)\n",
+           mmap, mmap->start, mmap->end, mmap->end - mmap->start);
+  TRACE_IF(!(mmap->flags & MAP_ANON), "mmap %p (%lx..%lx (%lu), fmem %p (%lx), fmap %p\n",
+           mmap, mmap->start, mmap->end, mmap->end - mmap->start, mmap->f->fmem,
+           mmap->f->fmem->start, mmap->f->fmem->map);
 
   global_unlock();
 
@@ -873,7 +872,9 @@ static MemMap *find_mmap(MemMap *head, ULONG addr, MemMap **prev_out)
            m->flags & MAP_PRIVATE ? 'P' : '-',
            m->flags & MAP_FIXED ? 'F' : '-',
            m->flags & MAP_ANON ? 'A' : '-',
-           m->dos_flags, m->fmem, m->fmem ? m->fmem->start : 0);
+           m->dos_flags,
+           m->flags & MAP_ANON ? 0 : m->f->fmem,
+           m->flags & MAP_ANON ? 0 : m->f->fmem->start);
 
   if (prev_out)
     *prev_out = pm;
@@ -893,9 +894,9 @@ static MemMap *find_mmap(MemMap *head, ULONG addr, MemMap **prev_out)
  */
 static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
 {
-  TRACE("m %p (fmem %p), off %lu, len %lu\n", m, m->fmem, off, len);
-  assert(m && m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fmem);
+  assert(m && !(m->flags & MAP_ANON) && m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE);
   assert(off + len <= (m->end - m->start));
+  TRACE("m %p (fmem %p), off %lu, len %lu\n", m, m->f->fmem, off, len);
 
   ULONG page, end;
   size_t i, j;
@@ -906,26 +907,29 @@ static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
   if (!len)
     len = m->end - m->start - off;
 
+  /* Add the offset of this mapping from the base address */
+  off += m->start - m->f->fmem->start;
+
   /* Return early if offset is completely beyond EOF */
-  if (off + m->off >= m->fmem->map->size)
+  if (off >= m->f->fmem->map->size)
     return;
 
   /* Make sure we don't sync beyond EOF */
-  if (off + m->off + len > m->fmem->map->size)
-    len = m->fmem->map->size - off - m->off;
+  if (off + len > m->f->fmem->map->size)
+    len = m->f->fmem->map->size - off;
 
-  page = m->start + off;
+  page = m->f->fmem->start + off;
   end = page + len;
 
-  /* Note: dirty map is file map object-based, hence + m->off) */
-  i = ((off + m->off) / PAGE_SIZE) / DIRTYMAP_WIDTH;
-  j = ((off + m->off) / PAGE_SIZE) % DIRTYMAP_WIDTH;
+  /* Note: dirty map is file map object-based */
+  i = (off / PAGE_SIZE) / DIRTYMAP_WIDTH;
+  j = (off / PAGE_SIZE) % DIRTYMAP_WIDTH;
   bit = 0x1 << j;
 
   for (; page < end; ++i, j = 0, bit = 0x1)
   {
     /* Check a block of DIRTYMAP_WIDTH pages at once to quickly skip clean ones */
-    if (!m->fh->dirtymap[i])
+    if (!m->f->fh->dirtymap[i])
     {
       page += PAGE_SIZE * (DIRTYMAP_WIDTH - j);
     }
@@ -933,16 +937,16 @@ static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
     {
       for (; page < end && bit; page += PAGE_SIZE, bit <<= 1)
       {
-        if (m->fh->dirtymap[i] & bit)
+        if (m->f->fh->dirtymap[i] & bit)
         {
           ULONG nesting, write, written;
           LONGLONG pos;
 
-          pos = page - m->start + m->off;
+          pos = page - m->f->fmem->start;
           write = page + PAGE_SIZE <= end ? PAGE_SIZE : end - page;
 
           TRACE("writing %lu bytes from addr %lx to fd %ld at offset %llu\n",
-                write, page, m->fh->fd, pos);
+                write, page, m->f->fh->fd, pos);
 
           /*
            * Make sure we are not interrupted by process termination and other
@@ -955,10 +959,10 @@ static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
            */
           DosEnterMustComplete(&nesting);
 
-          arc = DosSetFilePtrL(m->fh->fd, pos, FILE_BEGIN, &pos);
+          arc = DosSetFilePtrL(m->f->fh->fd, pos, FILE_BEGIN, &pos);
           ASSERT_MSG(!arc, "%ld\n", arc);
 
-          arc = DosWrite(m->fh->fd, (PVOID)page, write, &written);
+          arc = DosWrite(m->f->fh->fd, (PVOID)page, write, &written);
           ASSERT_MSG(!arc && write == written, "%ld (%lu != %lu)\n", arc, write, written);
 
           /*
@@ -968,10 +972,10 @@ static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
            * only copy to committed memory, uncommitted will be fetched directly
            * from the file upon the first access attempt.
            */
-          FileMapMem *fm = m->fmem->map->mems;
+          FileMapMem *fm = m->f->fmem->map->mems;
           while (fm && fm->len > pos)
           {
-            if (fm != m->fmem)
+            if (fm != m->f->fmem)
             {
               ULONG p = fm->start + pos;
               ULONG l = PAGE_SIZE, f;
@@ -1023,7 +1027,7 @@ static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
           arc = DosSetMem((PVOID)page, PAGE_SIZE, m->dos_flags & ~PAG_WRITE);
           ASSERT_MSG(!arc, "%ld\n", arc);
 
-          m->fh->dirtymap[i] &= ~bit;
+          m->f->fh->dirtymap[i] &= ~bit;
 
           DosExitMustComplete(&nesting);
         }
@@ -1042,26 +1046,29 @@ static void free_mmap(ProcDesc *desc, MemMap *m, MemMap *prev)
 
   assert(m);
 
-  TRACE("%s mapping %p (start %lx, end %lx, fmem %p (start %lx, refcnt %d)\n",
-        m->flags & MAP_SHARED ? "Shared" : "Private",
-        m, m->start, m->end, m->fmem, m->fmem ? m->fmem->start : 0, m->fmem ? m->fmem->refcnt : 0);
+  TRACE("%s mapping %p (%lx..%lx, fmem %p (%lx, refcnt %d)\n",
+        m->flags & MAP_SHARED ? "shared" : "private",
+        m, m->start, m->end,
+        m->flags & MAP_ANON ? 0 : m->f->fmem,
+        m->flags & MAP_ANON ? 0 : m->f->fmem->start,
+        m->flags & MAP_ANON ? 0 : m->f->fmem->refcnt);
 
-  if (m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fmem)
+  if (!(m->flags & MAP_ANON) && m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE)
     flush_dirty_pages(m, 0, 0);
 
-  if (m->fmem)
+  if (!(m->flags & MAP_ANON))
   {
     /* Free the file handle if we are the last user */
-    assert(m->fh->refcnt);
-    --(m->fh->refcnt);
-    if (!m->fh->refcnt)
-      free_file_handle(m->fh);
+    assert(m->f->fh->refcnt);
+    --(m->f->fh->refcnt);
+    if (!m->f->fh->refcnt)
+      free_file_handle(m->f->fh);
 
     /* Free the file map's memory object if we are the last user */
-    assert(m->fmem->refcnt);
-    --(m->fmem->refcnt);
-    if (!m->fmem->refcnt)
-      free_file_map_mem(m->fmem);
+    assert(m->f->fmem->refcnt);
+    --(m->f->fmem->refcnt);
+    if (!m->f->fmem->refcnt)
+      free_file_map_mem(m->f->fmem);
   }
   else
   {
@@ -1123,19 +1130,19 @@ int munmap(void *addr, size_t len)
     /* Special case: cut from the middle */
     MemMap *nm;
 
-    GLOBAL_NEW(nm);
+    GLOBAL_NEW_PLUS(nm, m->flags & MAP_ANON ? 0 : sizeof(*nm->f));
     if (nm)
     {
-      COPY_STRUCT(nm, m);
-      if (nm->fmem)
+      COPY_STRUCT_PLUS(nm, m, m->flags & MAP_ANON ? 0 : sizeof(*nm->f));
+      if (!(nm->flags & MAP_ANON))
       {
         /* Rreference file map's memory object */
-        assert(nm->fmem->refcnt);
-        ++nm->fmem->refcnt;
+        assert(nm->f->fmem->refcnt);
+        ++nm->f->fmem->refcnt;
 
         /* Rreference file handle */
-        assert(nm->fh->refcnt);
-        ++nm->fh->refcnt;
+        assert(nm->f->fh->refcnt);
+        ++nm->f->fh->refcnt;
       }
 
       /* Fix pointers */
@@ -1218,7 +1225,7 @@ static void mmap_flush_thread(void *arg)
       m = desc->mmaps;
       while (m)
       {
-        if (m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fmem)
+        if (!(m->flags & MAP_ANON) && m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE)
           flush_dirty_pages(m, 0, 0);
         m = m->next;
       }
@@ -1386,7 +1393,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
      * file's last page.
      */
     if (m && m->dos_flags & fPERM &&
-        (!m->fmem || m->fmem->map->size > PAGE_ALIGN(addr - m->fmem->start)))
+        (m->flags & MAP_ANON || m->f->fmem->map->size > PAGE_ALIGN(addr - m->f->fmem->start)))
     {
       APIRET arc;
       ULONG len = PAGE_SIZE;
@@ -1404,7 +1411,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
           int revoke_write = 0;
 
           dos_flags = m->dos_flags;
-          if (m->fmem)
+          if (!(m->flags & MAP_ANON))
           {
             if (m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE)
             {
@@ -1417,11 +1424,11 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
                */
               if (report->ExceptionInfo[0] == XCPT_WRITE_ACCESS)
               {
-                /* Note: dirty map is file map object-based, hence + m->off) */
-                ULONG pn = (page_addr - m->start + m->off) / PAGE_SIZE;
+                /* Note: dirty map is file map object-based */
+                ULONG pn = (page_addr - m->f->fmem->start) / PAGE_SIZE;
                 size_t i = pn / DIRTYMAP_WIDTH;
                 uint32_t bit = 0x1 << (pn % DIRTYMAP_WIDTH);
-                m->fh->dirtymap[i] |= bit;
+                m->f->fh->dirtymap[i] |= bit;
                 TRACE("Marked bit 0x%x at idx %u as dirty\n", bit, i);
                 schedule_flush_dirty(desc, 0 /* immediate */);
               }
@@ -1443,7 +1450,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
           TRACE_IF(arc, "DosSetMem = %ld\n", arc);
           if (!arc)
           {
-            if (m->fmem)
+            if (!(m->flags & MAP_ANON))
             {
               /*
                * Read file contents into memory. Note that if we fail here,
@@ -1451,15 +1458,15 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
                * and abort the application.
                */
               ULONG read = PAGE_SIZE;
-              LONGLONG pos = page_addr - m->start + m->off;
+              LONGLONG pos = page_addr - m->f->fmem->start;
               TRACE("Reading %lu bytes to addr %lx from fd %ld at offset %llu\n",
-                    read, page_addr, m->fh->fd, pos);
-              arc = DosSetFilePtrL(m->fh->fd, pos, FILE_BEGIN, &pos);
+                    read, page_addr, m->f->fh->fd, pos);
+              arc = DosSetFilePtrL(m->f->fh->fd, pos, FILE_BEGIN, &pos);
               TRACE_IF(arc, "DosSetFilePtrL = %ld\n", arc);
               if (!arc)
               {
                 /* Page is committed, so calling original DosRead is safe. */
-                arc = _doscalls_DosRead(m->fh->fd, (PVOID)page_addr, read, &read);
+                arc = _doscalls_DosRead(m->f->fh->fd, (PVOID)page_addr, read, &read);
                 TRACE_IF(arc, "DosRead = %ld\n", arc);
               }
             }
@@ -1489,7 +1496,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
           }
           if (report->ExceptionInfo[0] == XCPT_WRITE_ACCESS &&
               !(dos_flags & PAG_WRITE) &&
-              m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fmem)
+              !(m->flags & MAP_ANON) && m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE)
           {
             /*
              * First write access to a writable shared mapping page. Mark the
@@ -1500,11 +1507,11 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
             TRACE_IF(arc, "DosSetMem = %ld\n", arc);
             if (!arc)
             {
-              /* Note: dirty map is file map object-based, hence + m->off) */
-              ULONG pn = (page_addr - m->start + m->off) / PAGE_SIZE;
+              /* Note: dirty map is file map object-based */
+              ULONG pn = (page_addr - m->f->fmem->start) / PAGE_SIZE;
               size_t i = pn / DIRTYMAP_WIDTH;
               uint32_t bit = 0x1 << (pn % DIRTYMAP_WIDTH);
-              m->fh->dirtymap[i] |= bit;
+              m->f->fh->dirtymap[i] |= bit;
               TRACE("Marked bit 0x%x at idx %u as dirty\n", bit, i);
               schedule_flush_dirty(desc, 0 /* immediate */);
 
@@ -1576,7 +1583,7 @@ int msync(void *addr, size_t len, int flags)
    * ignore other types (POSIX doesn't specify any particular behavior
    * in such a case).
    */
-  if (m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fmem)
+  if (!(m->flags & MAP_ANON) && m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE)
   {
     if ((flags & 0x1) == MS_ASYNC)
     {
@@ -1795,7 +1802,7 @@ int mprotect(const void *addr, size_t len, int prot)
        * in such a case.
        */
 
-      if (m->fmem)
+      if (!(m->flags & MAP_ANON))
       {
         errno = EACCES;
         rc = -1;
@@ -1941,11 +1948,13 @@ static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOper
         ULONG start = m->start;
         ULONG dos_flags = m->dos_flags;
 
-        TRACE("giving mapping %p (start %lx, fmap %p, fmap->start %lx) to pid %x\n",
-              m, m->start, m->fmem, m->fmem ? m->fmem->start : 0, pForkHandle->pidChild);
-        if (m->fmem)
+        TRACE_IF(!(m->flags & MAP_ANON), "giving mapping %p (start %lx) to pid %x\n",
+                 m, m->start, pForkHandle->pidChild);
+        TRACE_IF(!(m->flags & MAP_ANON), "giving mapping %p (start %lx, fmem %p, fmem->start %lx) to pid %x\n",
+                 m, m->start, m->f->fmem, m->f->fmem->start, pForkHandle->pidChild);
+        if (!(m->flags & MAP_ANON))
         {
-          start = m->fmem->start;
+          start = m->f->fmem->start;
           /*
            * Don't set PAG_WRITE to cause an exception upon the first
            * write to a page (see mmap_exception()).
@@ -1985,9 +1994,10 @@ static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOper
     {
       if (m->flags & MAP_SHARED)
       {
-        TRACE("restoring mapping %p (start %lx, fmem %p, fmem->start %lx)\n",
-              m, m->start, m->fmem, m->fmem ? m->fmem->start : 0);
-        GLOBAL_NEW(newm);
+        TRACE_IF(m->flags & MAP_ANON, "restoring mapping %p (start %lx)\n", m, m->start);
+        TRACE_IF(!(m->flags & MAP_ANON), "restoring mapping %p (start %lx, fmem %p, fmem->start %lx)\n",
+                 m, m->start, m->f->fmem, m->f->fmem->start);
+        GLOBAL_NEW_PLUS(newm, m->flags & MAP_ANON ? 0 : sizeof(*newm->f));
         if (!newm)
         {
           ok = FALSE;
@@ -2000,17 +2010,17 @@ static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOper
          * are per process (as well as memory protection flags).
          */
         TRACE("new mmap %p\n", newm);
-        COPY_STRUCT(newm, m);
+        COPY_STRUCT_PLUS(newm, m, m->flags & MAP_ANON ? 0 : sizeof(*newm->f));
 
-        if (newm->fmem)
+        if (!(newm->flags & MAP_ANON))
         {
-          FileDesc *fdesc = newm->fmem->map->desc;
+          FileDesc *fdesc = newm->f->fmem->map->desc;
           int dirtymap_sz = 0;
           FileHandle *fh;
           FileDesc *proc_fdesc;
 
           if (m->dos_flags & PAG_WRITE)
-            dirtymap_sz = DIVIDE_UP(NUM_PAGES(newm->fmem->map->size), DIRTYMAP_WIDTH) * (DIRTYMAP_WIDTH / 8);
+            dirtymap_sz = DIVIDE_UP(NUM_PAGES(newm->f->fmem->map->size), DIRTYMAP_WIDTH) * (DIRTYMAP_WIDTH / 8);
 
           assert(fdesc);
           proc_fdesc = get_proc_file_desc(getpid(), fdesc->path);
@@ -2024,7 +2034,7 @@ static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOper
           if (!fh)
           {
             /* Create a new file handle for this process */
-            TRACE("new file handle (fd %ld, dirty map size %u bytes)\n", newm->fh->fd, dirtymap_sz);
+            TRACE("new file handle (fd %ld, dirty map size %u bytes)\n", newm->f->fh->fd, dirtymap_sz);
             GLOBAL_NEW(fh);
             if (fh && dirtymap_sz)
             {
@@ -2037,18 +2047,18 @@ static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOper
               break;
             }
 
-            fh->fd = newm->fh->fd;
+            fh->fd = newm->f->fh->fd;
           }
 
-          newm->fh = fh;
+          newm->f->fh = fh;
 
           /* Reference file handle */
-          ++(newm->fh->refcnt);
-          assert(newm->fh->refcnt);
+          ++(newm->f->fh->refcnt);
+          assert(newm->f->fh->refcnt);
 
           /* Reference file map */
-          ++(newm->fmem->refcnt);
-          assert(newm->fmem->refcnt);
+          ++(newm->f->fmem->refcnt);
+          assert(newm->f->fmem->refcnt);
         }
 
         /* Add the new entry the list */
