@@ -935,7 +935,7 @@ static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
       {
         if (m->fh->dirtymap[i] & bit)
         {
-          ULONG nesting, write;
+          ULONG nesting, write, written;
           LONGLONG pos;
 
           pos = page - m->start + m->off;
@@ -958,8 +958,8 @@ static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
           arc = DosSetFilePtrL(m->fh->fd, pos, FILE_BEGIN, &pos);
           ASSERT_MSG(!arc, "%ld\n", arc);
 
-          arc = DosWrite(m->fh->fd, (PVOID)page, write, &write);
-          ASSERT_MSG(!arc, "%ld\n", arc);
+          arc = DosWrite(m->fh->fd, (PVOID)page, write, &written);
+          ASSERT_MSG(!arc && write == written, "%ld (%lu != %lu)\n", arc, write, written);
 
           /*
            * Now propagate changes to all related mem objects. Note that since
@@ -1480,6 +1480,13 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
         }
         else if (dos_flags & PAG_COMMIT)
         {
+          if ((report->ExceptionInfo[0] == XCPT_WRITE_ACCESS && dos_flags & PAG_WRITE) ||
+              (report->ExceptionInfo[0] == XCPT_READ_ACCESS && dos_flags & PAG_READ))
+          {
+            /* Some other thread/process was faster and did what's necessary */
+            TRACE("already have necessary permissions\n");
+            retry = 1;
+          }
           if (report->ExceptionInfo[0] == XCPT_WRITE_ACCESS &&
               !(dos_flags & PAG_WRITE) &&
               m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE && m->fmem)
