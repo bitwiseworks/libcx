@@ -1863,6 +1863,62 @@ int mprotect(const void *addr, size_t len, int prot)
   return rc;
 }
 
+/**
+ * LIBC fcntl replacement. Changes the recorded file size in mmap structures
+ * to avoid writing beyond EOF and enable writing within the new file size.
+ *
+ * Note that for now this belongs to mmap as only mmap needs  this override.
+ * Once it's needed for something else, it should be moved to shared.c with
+ * adding necessary callbacks (similar to close()).
+ */
+int ftruncate(int fildes, __off_t length)
+{
+  __LIBC_PFH pFH;
+  int rc;
+
+  TRACE("fd %d, length %lld\n", fildes, length);
+
+  pFH = __libc_FH(fildes);
+  if (!pFH || !pFH->pszNativePath)
+  {
+    errno = !pFH ? EBADF : EINVAL;
+    return -1;
+  }
+
+  global_lock();
+
+  rc = _std_ftruncate(fildes, length);
+  if (rc == 0)
+  {
+    /* Update file size in FileMap structs */
+    FileDesc *fdesc;
+
+    /* Update the shared mapping */
+    fdesc = find_file_desc(pFH->pszNativePath);
+    if (fdesc && fdesc->map)
+    {
+      TRACE("updating size for '%s' in shared fmap %p from %llu to %llu\n",
+            pFH->pszNativePath, fdesc->map, fdesc->map->size, length);
+      fdesc->map->size = length;
+    }
+
+    /* Update the private mapping */
+    fdesc = find_proc_file_desc(getpid(), pFH->pszNativePath);
+    if (fdesc && fdesc->map)
+    {
+      TRACE("updating size for '%s' in private fmap %p from %llu to %llu\n",
+            pFH->pszNativePath, fdesc->map, fdesc->map->size, length);
+      fdesc->map->size = length;
+    }
+  }
+
+  TRACE("returning %d\n", rc);
+
+  global_unlock();
+
+  return rc;
+}
+
 static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation)
 {
   ProcDesc *desc;

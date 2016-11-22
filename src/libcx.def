@@ -19,6 +19,7 @@ EXPORTS
   "___read"
   "__stream_read"
   "DosRead"
+  "_ftruncate"
   ; private symbols
   _print_stats @60000 NONAME
   ; debug symbols (absent from release builds)
