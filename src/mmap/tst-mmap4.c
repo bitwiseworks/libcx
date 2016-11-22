@@ -162,6 +162,29 @@ do_test (void)
     return 1;
   }
 
+  /*
+   * Test 3: shared mmap read far beyond EOF (should crash)
+   */
+
+  printf("Test 3\n");
+
+#ifdef __OS2__
+  TEST_FORK_BEGIN("child", 0, SIGSEGV);
+#else
+  TEST_FORK_BEGIN("child", 0, SIGBUS);
+#endif
+  {
+    addr = mmap(NULL, MAP_SIZE * 2, PROT_READ, MAP_SHARED, fd, 0);
+    if (addr == MAP_FAILED)
+    {
+      perror("mmap failed");
+      return 1;
+    }
+
+    TEST_FORK_PRINTF("%d\n", addr[MAP_SIZE]);
+  }
+  TEST_FORK_END();
+
   close(fd);
 
   free(fname);

@@ -1392,6 +1392,9 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
      * ignore excpetions for file-bound mappings that address memory beyond the
      * file's last page.
      */
+
+    TRACE_IF(m && !(m->flags & MAP_ANON), "file size %llu\n", m->f->fmem->map->size);
+
     if (m && m->dos_flags & fPERM &&
         (m->flags & MAP_ANON || m->f->fmem->map->size > PAGE_ALIGN(addr - m->f->fmem->start)))
     {
