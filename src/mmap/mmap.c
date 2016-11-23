@@ -903,6 +903,8 @@ static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
   uint32_t bit;
   APIRET arc;
 
+  if (len)
+    len += off - PAGE_ALIGN(off);
   off = PAGE_ALIGN(off);
   if (!len)
     len = m->end - m->start - off;
@@ -1125,6 +1127,7 @@ int munmap(void *addr, size_t len)
   assert(desc);
 
   m = find_mmap(desc->mmaps, (ULONG)addr, &pm);
+
   if (m && m->start < (ULONG)addr && m->end > addr_end)
   {
     /* Special case: cut from the middle */
@@ -1534,10 +1537,45 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
   return retry;
 }
 
+static void sync_map(ProcDesc *desc, MemMap *m, ULONG addr, size_t len, int flags)
+{
+  /*
+   * Only do real work on shared writable file mappings and silently
+   * ignore other types (POSIX doesn't specify any particular behavior
+   * in such a case).
+   */
+  if (!(m->flags & MAP_ANON) && m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE)
+  {
+    if ((flags & 0x1) == MS_ASYNC)
+    {
+      /*
+       * We could add the requested region to some list and ask
+       * mmap_flush_thread() to flush only it, but that doesn't make too much
+       * practical sense given that the request is served asynchronously so that
+       * the caller doesn't know when it exactly happens anyway. It looks more
+       * practical to simply forse a complete flush which may take longer
+       * but will save some cycles on doing one flush loop instead of two.
+       */
+      schedule_flush_dirty(desc, 1 /* immediate */);
+    }
+    else
+    {
+      ULONG off = 0;
+      if (addr > m->start)
+        off = addr - m->start;
+      else
+        len -= m->start - addr;
+      if (off + len > (m->end - m->start))
+        len = m->end - m->start - off;
+      flush_dirty_pages(m, off, len);
+    }
+  }
+}
+
 int msync(void *addr, size_t len, int flags)
 {
   ProcDesc *desc;
-  MemMap *m;
+  MemMap *m, *pm;
   ULONG addr_end;
   APIRET arc;
 
@@ -1572,37 +1610,29 @@ int msync(void *addr, size_t len, int flags)
   desc = find_proc_desc(getpid());
   assert(desc);
 
-  m = find_mmap(desc->mmaps, (ULONG)addr, NULL);
+  m = find_mmap(desc->mmaps, (ULONG)addr, &pm);
+
+  /* Start with the next region if no match */
   if (!m)
+    m = pm ? pm->next : desc->mmaps;
+  if (m)
   {
-    global_unlock();
-
-    errno = ENOMEM;
-    return -1;
-  }
-
-  /*
-   * Only do real work on shared writable file mappings and silently
-   * ignore other types (POSIX doesn't specify any particular behavior
-   * in such a case).
-   */
-  if (!(m->flags & MAP_ANON) && m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE)
-  {
-    if ((flags & 0x1) == MS_ASYNC)
+    /* Proces first intersection */
+    if (m->start < (ULONG)addr)
     {
-      /*
-       * We could add the requested region to some list and ask
-       * mmap_flush_thread() to flush only it, but that doesn't make too much
-       * practical sense given that the request is served asynchronously so that
-       * the caller doesn't know when it exactly happens anyway. It looks more
-       * practical to simply forse a complete flush which may take longer
-       * but will save some cycles on doing one flush loop instead of two.
-       */
-      schedule_flush_dirty(desc, 1 /* immediate */);
+      sync_map(desc, m, (ULONG)addr, len, flags);
+      m = m->next;
     }
-    else
+    /* Process middle */
+    while (m && m->start < addr_end && m->end <= addr_end)
     {
-      flush_dirty_pages(m, (ULONG)addr - m->start, len);
+      sync_map(desc, m, (ULONG)addr, len, flags);
+      m = m->next;
+    }
+    /* Proces last intersection */
+    if (m && m->start < (ULONG)addr_end && m->end > addr_end)
+    {
+      sync_map(desc, m, (ULONG)addr, len, flags);
     }
   }
 
@@ -1611,12 +1641,55 @@ int msync(void *addr, size_t len, int flags)
   return 0;
 }
 
+static int advise_map(ProcDesc *desc, MemMap *m, ULONG addr, size_t len, int flags)
+{
+  APIRET arc;
+  int rc = 0;
+
+  if (addr < m->start)
+  {
+    addr = m->start;
+    len -= m->start - addr;
+  }
+  if (addr + len > m->end)
+    len = m->end - addr;
+
+  TRACE("m %p, adjusted addr %lx, len %u\n", m, addr, len);
+
+  if (flags & MADV_DONTNEED)
+  {
+    ULONG query_len = len;
+    ULONG dos_flags;
+    arc = DosQueryMem((PVOID)addr, &query_len, &dos_flags);
+    TRACE_IF(arc, "DosQueryMem = %lu\n", arc);
+    if (!arc)
+    {
+      TRACE("dos_flags %lx\n", dos_flags);
+      if (dos_flags & PAG_COMMIT)
+      {
+        /*
+         * @todo On OS/2 you can't uncommit shared memory (or remove PAG_READ
+         * from it) so this will always fail on shared mappings.
+         */
+        arc = DosSetMem((PVOID)addr, len, PAG_DECOMMIT);
+        TRACE_IF(arc, "DosSetMem = %ld\n", arc);
+        if (arc)
+        {
+          errno = EINVAL;
+          rc = -1;
+        }
+      }
+    }
+  }
+
+  return rc;
+}
+
 int madvise(void *addr, size_t len, int flags)
 {
   ProcDesc *desc;
-  MemMap *m;
+  MemMap *m, *pm;
   ULONG addr_end;
-  APIRET arc;
   int rc = 0;
 
   TRACE("addr %p, len %u, flags %x=%c\n", addr, len,
@@ -1649,38 +1722,29 @@ int madvise(void *addr, size_t len, int flags)
   desc = find_proc_desc(getpid());
   assert(desc);
 
-  m = find_mmap(desc->mmaps, (ULONG)addr, NULL);
+  m = find_mmap(desc->mmaps, (ULONG)addr, &pm);
+
+  /* Start with the next region if no match */
   if (!m)
+    m = pm ? pm->next : desc->mmaps;
+  if (m)
   {
-    global_unlock();
-
-    errno = ENOMEM;
-    return -1;
-  }
-
-  if (flags & MADV_DONTNEED)
-  {
-    ULONG query_len = len;
-    ULONG dos_flags;
-    arc = DosQueryMem(addr, &query_len, &dos_flags);
-    TRACE_IF(arc, "DosQueryMem = %lu\n", arc);
-    if (!arc)
+    /* Proces first intersection */
+    if (m->start < (ULONG)addr)
     {
-      TRACE("dos_flags %lx\n", dos_flags);
-      if (dos_flags & PAG_COMMIT)
-      {
-        /*
-         * @todo On OS/2 you can't uncommit shared memory (or remove PAG_READ
-         * from it) so this will always fail on shared mappings.
-         */
-        arc = DosSetMem(addr, len, PAG_DECOMMIT);
-        TRACE_IF(arc, "DosSetMem = %ld\n", arc);
-        if (arc)
-        {
-          errno = EINVAL;
-          rc = -1;
-        }
-      }
+      rc = advise_map(desc, m, (ULONG)addr, len, flags);
+      m = m->next;
+    }
+    /* Process middle */
+    while (rc == 0 && m && m->start < addr_end && m->end <= addr_end)
+    {
+      rc = advise_map(desc, m, (ULONG)addr, len, flags);
+      m = m->next;
+    }
+    /* Proces last intersection */
+    if (rc == 0 && m && m->start < (ULONG)addr_end && m->end > addr_end)
+    {
+      rc = advise_map(desc, m, (ULONG)addr, len, flags);
     }
   }
 
@@ -1721,14 +1785,47 @@ int posix_madvise(void *addr, size_t len, int advice)
   return 0;
 }
 
+static int protect_map(ProcDesc *desc, MemMap *m, ULONG addr, size_t len, ULONG dos_flags)
+{
+  int rc = 0;
+
+  if (addr < m->start)
+  {
+    addr = m->start;
+    len -= m->start - addr;
+  }
+  if (addr + len > m->end)
+    len = m->end - addr;
+
+  TRACE("m %p, adjusted addr %lx, len %u, dos_flags %lx\n", m, addr, len, dos_flags);
+
+  if (dos_flags == -1)
+  {
+    /*
+     * This is check mode. We will return 0 if the check is passed for the
+     * given region and -1 otherwise.
+     */
+    if (!(m->flags & MAP_ANON))
+      return -1;
+
+    return 0;
+  }
+
+  if (m->dos_flags != dos_flags)
+  {
+    TRACE("changing dos_flags from %lx to %lx\n", m->dos_flags, dos_flags);
+    m->dos_flags = dos_flags;
+  }
+
+  return 0;
+}
+
 int mprotect(const void *addr, size_t len, int prot)
 {
   ProcDesc *desc;
-  MemMap *m;
-  ULONG addr_end, next_addr;
+  MemMap *m, *pm, *mmap;
+  ULONG addr_end;
   ULONG dos_flags;
-  MemMap **found;
-  int found_size, found_cnt = 0;
   int rc = 0;
 
   TRACE("addr %p, len %u, prot %x\n", addr, len, prot);
@@ -1752,10 +1849,6 @@ int mprotect(const void *addr, size_t len, int prot)
     return -1;
   }
 
-  found_size = 16;
-  NEW_ARRAY(found, found_size);
-  assert(found);
-
   addr_end = ((ULONG)addr) + len;
 
   dos_flags = 0;
@@ -1769,71 +1862,62 @@ int mprotect(const void *addr, size_t len, int prot)
   global_lock();
 
   desc = find_proc_desc(getpid());
+  assert(desc);
 
-  next_addr = (ULONG)addr;
+  mmap = find_mmap(desc->mmaps, (ULONG)addr, &pm);
 
-  while (next_addr < addr_end)
+  /* Start with the next region if no match */
+  if (!mmap)
+    mmap = pm ? pm->next : desc->mmaps;
+
+  /*
+   * We prevent changing protection for mappings backed up by files.
+   * First, because their protection is bound to the underlying file's
+   * access mode (that was checked and confirmed at creation). Second,
+   * because we already (ab)use protection flags on our own (to implement
+   * on-demand page read semantics as well as asynchronous dirty page
+   * writes) so messing up with them makes things too complex to manage.
+   * Third, _std_mprotect() is written so that it commits pages unless
+   * PAG_NONE is requested and this will also break things up (e.g.
+   * on-demand page reading). And forth, it makes little sense to change
+   * permissions of such mappings in real life (at least that's the case
+   * in the absense of real life examples).
+   *
+   * @todo We may re-consider things later given that on e.g. Linux
+   * it is possible to change protection of such mappings (though the
+   * consequences of such a change are not fully documented, testing is
+   * needed). But this will at least require to drop _std_mprotect usage
+   * to avoid unnecessary committing of pages in the given range that
+   * belong to file-bound mappings.
+   *
+   * Note also that although we let mprotect change protection of shared
+   * anonymous mappings, it's not actually possible to set PROT_NONE
+   * on them because a shared page can't be decommitted on OS/2 (and
+   * protection can't be set to "no read, no write" for any kind of pages
+   * there, both private and shared, either). We will simply return EINVAL
+   * in such a case.
+   */
+  m = mmap;
+  if (m)
   {
-    m = find_mmap(desc->mmaps, next_addr, NULL);
-    if (m)
+    /* Proces first intersection */
+    if (m->start < (ULONG)addr)
     {
-      /*
-       * We prevent changing protection for mappings backed up by files.
-       * First, because their protection is bound to the underlying file's
-       * access mode (that was checked and confirmed at creation). Second,
-       * because we already (ab)use protection flags on our own (to implement
-       * on-demand page read semantics as well as asynchronous dirty page
-       * writes) so messing up with them makes things too complex to manage.
-       * Third, _std_mprotect() is written so that it commits pages unless
-       * PAG_NONE is requested and this will also break things up (e.g.
-       * on-demand page reading). And forth, it makes little sense to change
-       * permissions of such mappings in real life (at least that's the case
-       * in the absense of real life examples).
-       *
-       * @todo We may re-consider things later given that on e.g. Linux
-       * it is possible to change protection of such mappings (though the
-       * consequences of such a change are not fully documented, testing is
-       * needed). But this will at least require to drop _std_mprotect usage
-       * to avoid unnecessary committing of pages in the given range that
-       * belong to file-bound mappings.
-       *
-       * Note also that although we let mprotect change protection of shared
-       * anonymous mappings, it's not actually possible to set PROT_NONE
-       * on them because a shared page can't be decommitted on OS/2 (and
-       * protection can't be set to "no read, no write" for any kind of pages
-       * there, both private and shared, either). We will simply return EINVAL
-       * in such a case.
-       */
-
-      if (!(m->flags & MAP_ANON))
-      {
-        errno = EACCES;
-        rc = -1;
-        break;
-      }
-
-      if (m->dos_flags != dos_flags)
-      {
-        /* Checks passed, store it for further processing */
-        if (found_cnt == found_size)
-        {
-          found_size *= 2;
-          RENEW_ARRAY(found, found_size);
-          assert(found);
-        }
-        found[found_cnt++] = m;
-      }
-
-      next_addr = PAGE_ALIGN(m->end + PAGE_SIZE - 1);
+      rc = protect_map(desc, m, (ULONG)addr, len, -1);
+      m = m->next;
     }
-    else
+    /* Process middle */
+    while (rc == 0 && m && m->start < addr_end && m->end <= addr_end)
     {
-      next_addr += PAGE_SIZE;
+      rc = protect_map(desc, m, (ULONG)addr, len, -1);
+      m = m->next;
+    }
+    /* Proces last intersection */
+    if (rc == 0 && m && m->start < (ULONG)addr_end && m->end > addr_end)
+    {
+      rc = protect_map(desc, m, (ULONG)addr, len, -1);
     }
   }
-
-  TRACE("found %d affected mappings, rc %d (%s)\n",
-        found_cnt, rc, strerror(rc == -1 ? errno : 0));
 
   if (!rc)
   {
@@ -1852,23 +1936,39 @@ int mprotect(const void *addr, size_t len, int prot)
     }
     TRACE("_std_mprotect = %d (%s)\n", rc, strerror(rc == -1 ? errno: 0));
 
-    if (!rc && found_cnt)
+    if (!rc)
     {
       /* Record new mode in affected mappings on success */
-      while (found_cnt)
+      m = mmap;
+      if (m)
       {
-        m = found[--found_cnt];
-
-        TRACE("mapping %p, changing dos_flags from %lx to %lx\n",
-              m, m->dos_flags, dos_flags);
-        m->dos_flags = dos_flags;
+        /* Proces first intersection */
+        if (m->start < (ULONG)addr)
+        {
+          protect_map(desc, m, (ULONG)addr, len, dos_flags);
+          m = m->next;
+        }
+        /* Process middle */
+        while (rc == 0 && m && m->start < addr_end && m->end <= addr_end)
+        {
+          protect_map(desc, m, (ULONG)addr, len, dos_flags);
+          m = m->next;
+        }
+        /* Proces last intersection */
+        if (rc == 0 && m && m->start < (ULONG)addr_end && m->end > addr_end)
+        {
+          protect_map(desc, m, (ULONG)addr, len, dos_flags);
+        }
       }
     }
   }
+  else
+  {
+    /* Some region is incompatible, fail */
+    errno = EACCES;
+  }
 
   global_unlock();
-
-  free(found);
 
   return rc;
 }

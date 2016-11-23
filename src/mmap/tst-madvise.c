@@ -34,7 +34,7 @@
 #define PAGE_SIZE 4096
 #endif
 
-#define FILE_SIZE (PAGE_SIZE * 2)
+#define FILE_SIZE (PAGE_SIZE * 3)
 #define FILE_VAL 1
 #define TEST_SIZE 10
 #define TEST_VAL 255
@@ -213,7 +213,8 @@ do_test (void)
   }
 
   /*
-   * Test 3: create private anonymous mapping, should read 0
+   * Test 3: create private anonymous mapping, change somebytes, then DONTNEED
+   * it, should read 0
    */
 
   printf("Test 3\n");
@@ -225,14 +226,26 @@ do_test (void)
     exit(-1);
   }
 
-  rc = madvise(addr + PAGE_SIZE, PAGE_SIZE, MADV_DONTNEED);
+  for (i = 0; i < FILE_SIZE; ++i)
+    addr[i] = buf[i];
+
+  rc = madvise(addr + PAGE_SIZE, PAGE_SIZE * 10, MADV_DONTNEED);
   if (rc == -1)
   {
     perror("madvise failed");
     return 1;
   }
 
-  for (i = PAGE_SIZE; i < PAGE_SIZE * 2; ++i)
+  for (i = 0; i < PAGE_SIZE; ++i)
+  {
+    if (addr[i] != buf[i])
+    {
+      printf("addr[%d] is %u, must be %u\n", i, addr[i], buf[i]);
+      return 1;
+    }
+  }
+
+  for (i = PAGE_SIZE; i < FILE_SIZE; ++i)
   {
     if (addr[i] != 0)
     {
