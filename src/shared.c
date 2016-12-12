@@ -746,7 +746,7 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
     /* Sanity check */
     assert(((__LIBC_PLOGINST)gLogInstance)->pGroups == &logGroups);
 
-    DosDupHandle(1, &((__LIBC_PLOGINST)gLogInstance)->hFile);
+    DosDupHandle(2, &((__LIBC_PLOGINST)gLogInstance)->hFile);
   }
 
   msg = (char *)alloca(MaxBuf);
