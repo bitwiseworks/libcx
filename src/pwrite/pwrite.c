@@ -181,6 +181,10 @@ ssize_t pwrite(int fildes, const void *buf, size_t nbyte, off_t offset)
   return pread_pwrite(TRUE, fildes, (void *)buf, nbyte, offset);
 }
 
+/* Our DosRead bug fix spams a lot, move it to a different group */
+#undef TRACE_GROUP
+#define TRACE_GROUP TRACE_GROUP_DOSREADBUGFIX
+
 /**
  * LIBC read replacement.
  * Override to fix DosRead bug, see touch_pages docs.

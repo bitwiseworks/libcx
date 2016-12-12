@@ -51,6 +51,7 @@ static __LIBC_LOGGROUP  logGroup[] =
   { 1, "pwrite" },            /*  2 */
   { 1, "select" },            /*  3 */
   { 1, "mmap" },              /*  4 */
+  { 1, "dosreadbugfix" },     /*  5 */
 };
 
 static __LIBC_LOGGROUPS logGroups =
@@ -446,7 +447,7 @@ void global_lock()
   arc = DosRequestMutexSem(gMutex, SEM_INDEFINITE_WAIT);
   TRACE_IF(arc, "DosRequestMutexSem = %lu\n", arc);
 
-  assert(arc == NO_ERROR);
+  ASSERT_MSG(arc == NO_ERROR, "%ld\n", arc);
 }
 
 /**
@@ -461,7 +462,7 @@ void global_unlock()
   arc = DosReleaseMutexSem(gMutex);
   TRACE_IF(arc, "DosReleaseMutexSem = %lu\n", arc);
 
-  assert(arc == NO_ERROR);
+  ASSERT_MSG(arc == NO_ERROR, "%ld\n", arc);
 }
 
 /**
