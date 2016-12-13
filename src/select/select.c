@@ -33,7 +33,7 @@
 int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
            struct timeval *timeout)
 {
-  TRACE("nfds %d, readfds %x, writefds %x, exceptfds %x timeout %x (%ld.%ld)\n",
+  TRACE("nfds %d, readfds %p, writefds %p, exceptfds %p timeout %p (%ld.%ld)\n",
         nfds, readfds, writefds, exceptfds, timeout,
         timeout ? timeout->tv_sec : 0, timeout ? timeout->tv_usec : 0);
 
@@ -42,10 +42,14 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
   int nfds_ret;
   struct stat st;
 
+  fd_set regular_fds;
+
   fd_set r_new;
   fd_set w_new;
   fd_set e_new;
   int max_fd;
+
+  FD_ZERO (&regular_fds);
 
   FD_ZERO (&r_new);
   FD_ZERO (&w_new);
@@ -80,30 +84,38 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
          * Regular filres should be always immediately ready for I/O,
          * remove this fd from the new set, no need to select.
          */
+        TRACE("fd %d is regular file\n", fd);
         FD_CLR(fd, &r_new);
         FD_CLR(fd, &w_new);
         FD_CLR(fd, &e_new);
         n_ready_fds += n_fd_set;
+        /* Remember regular fd for later */
+        FD_SET(fd, &regular_fds);
       }
       else
       {
-        /* We copied requests to the new array, clear the old one */
-        if (readfds)
-          FD_CLR(fd, readfds);
-        if (writefds)
-          FD_CLR(fd, writefds);
-        if (exceptfds)
-          FD_CLR(fd, exceptfds);
-
+        /*
+         * Note that while it seems that we could reset this non-regular fd in
+         * the original sets since we copied it to the new sets (in order to
+         * simply set it back if it's ready after the actual select), this can't
+         * be done — _std_select may fail and many apps expect that the sets
+         * remain unchanged in such a case (e.g. in case of EINTR many apps will
+         * simply call select again with the same arguments and if we reset some
+         * fds here these apps may not get needed notifications). Instead, we
+         * remember regular fds in regular_fds above and then reset not ready
+         * non-regular ones after _std_select returns success.
+         */
         max_fd = MAX(max_fd, fd);
       }
     }
   }
 
+  TRACE("n_ready_fds %d, max_fd %d\n", n_ready_fds, max_fd);
+
   if (max_fd == -1 && n_ready_fds)
   {
     /* There are only regular files, no need to call select. */
-    nfds_ret = 0;
+    nfds_ret = n_ready_fds;
   }
   else
   {
@@ -120,30 +132,60 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
       timeout = &t_new;
     }
 
+    TRACE("calling LIBC select: nfds %d, readfds %p, writefds %p, exceptfds %p timeout %p (%ld.%ld)\n",
+          max_fd + 1,
+          readfds ? &r_new : NULL, writefds ? &w_new : NULL, exceptfds ? &e_new : NULL,
+          timeout, timeout ? timeout->tv_sec : 0, timeout ? timeout->tv_usec : 0);
+
     nfds_ret = _std_select(max_fd + 1,
                            readfds ? &r_new : NULL,
                            writefds ? &w_new : NULL,
                            exceptfds ? &e_new : NULL, timeout);
 
-    if (nfds_ret > 0)
-    {
-      for (fd = 0; fd < max_fd + 1; ++fd)
-      {
-        /* Move actual results from select() back to the caller */
-        if (readfds && FD_ISSET(fd, &r_new))
-          FD_SET(fd, readfds);
-        if (writefds && FD_ISSET(fd, &w_new))
-          FD_SET(fd, writefds);
-        if (exceptfds && FD_ISSET(fd, &e_new))
-          FD_SET(fd, exceptfds);
+    TRACE("nfds_ret %d (%s)\n", nfds_ret, strerror(nfds_ret == -1 ? errno : 0));
 
-        nfds_ret += n_ready_fds;
+    if (nfds_ret >= 0)
+    {
+      /*
+       * Copy actual results from select() back to the caller. Note that we
+       * can't use a bulk copy op as this will overwrite the ready state of
+       * regular fds if there are any. Instead, we set/clear individual bits
+       * for all non-regular ones.
+       */
+      for (fd = 0; fd <= max_fd; ++fd)
+      {
+        if (!FD_ISSET(fd, &regular_fds))
+        {
+          if (readfds)
+          {
+            if (FD_ISSET(fd, &r_new))
+              FD_SET(fd, readfds);
+            else
+              FD_CLR(fd, readfds);
+          }
+          if (writefds)
+          {
+            if (FD_ISSET(fd, &w_new))
+              FD_SET(fd, writefds);
+            else
+              FD_CLR(fd, writefds);
+          }
+          if (exceptfds)
+          {
+            if (FD_ISSET(fd, &e_new))
+              FD_SET(fd, exceptfds);
+            else
+              FD_CLR(fd, exceptfds);
+          }
+        }
       }
+
+      /* Account for regular file fds we set ready before */
+      nfds_ret += n_ready_fds;
     }
   }
 
-  /* Account for regular file fds we set ready before */
-  nfds_ret += n_ready_fds;
+  TRACE("nfds_ret %d (%s)\n", nfds_ret, strerror(nfds_ret == -1 ? errno : 0));
 
   return nfds_ret;
 }
