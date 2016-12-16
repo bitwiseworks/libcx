@@ -33,8 +33,17 @@
 
 #include "shared.h"
 
+/*
+ * Debug builds are hardly compatible with release builds so
+ * use a separat mutex and LIBCx shared memory block.
+ */
+#ifdef DEBUG
+#define MUTEX_LIBCX "\\SEM32\\LIBCX_MUTEX_V4_debug"
+#define SHAREDMEM_LIBCX "\\SHAREMEM\\LIBCX_DATA_V4_debug"
+#else
 #define MUTEX_LIBCX "\\SEM32\\LIBCX_MUTEX_V4"
 #define SHAREDMEM_LIBCX "\\SHAREMEM\\LIBCX_DATA_V4"
+#endif
 
 #define HEAP_SIZE (1024 * 1024 * 2) /* 2MB - total shared data area size */
 #define HEAP_INIT_SIZE 65536 /* Initial size of committed memory */
