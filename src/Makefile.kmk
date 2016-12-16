@@ -31,7 +31,7 @@ libcx_SOURCES.release += libcx.def
 libcx_DEFS.debug = TRACE_ENABLED STATS_ENABLED DEBUG
 libcx_SOURCES.debug += $(PATH_OBJ)/libcx-debug.def
 
-$(PATH_OBJ)/libcx-debug.def: $(PATH_SUB_CURRENT)/libcx.def
+$(PATH_OBJ)/libcx-debug.def: $(PATH_SUB_CURRENT)/libcx.def | $(call DIRDEP,$(PATH_OBJ))
 	$(call MSG_L1,Generating $@)
 	$(QUIET)sed -e 's/  ;ddd /  /' < $< > $@
 
