@@ -788,9 +788,10 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
 #endif /* defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG) */
 
 /*
- * Touches the first word in every page of memory pointed to by buf of size
+ * Touches (reads) the first word in every page of memory pointed to by buf of
  * len bytes. If buf is not on the page boundary, the word at buf is touched
- * instead.
+ * instead. Note that the page is only touched if it's reserved (i.e. neither
+ * committed, nor free).
  *
  * This function is used to work around a bug in DosRead that causes it to fail
  * when interrupted by the exception handler, see
@@ -798,18 +799,30 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
  */
 void touch_pages(void *buf, size_t len)
 {
-  ULONG buf_addr = (ULONG)buf;
+  APIRET arc;
+  ULONG dos_len;
+  ULONG dos_flags;
+
+  volatile ULONG buf_addr = (ULONG)buf;
   ULONG buf_end = buf_addr + len;
 
   if (!PAGE_ALIGNED(buf_addr))
   {
-    *(int *)buf_addr = 0;
+    dos_len = PAGE_SIZE;
+    arc = DosQueryMem((PVOID)PAGE_ALIGN(buf_addr), &dos_len, &dos_flags);
+    TRACE_IF(arc, "DosQueryMem = %lu\n", arc);
+    if (!arc && !(dos_flags & (PAG_FREE | PAG_COMMIT)))
+      *(int *)buf_addr = *(int *)buf_addr;
     buf_addr = PAGE_ALIGN(buf_addr) + PAGE_SIZE;
   }
 
+  dos_len = PAGE_SIZE;
   while (buf_addr < buf_end)
   {
-    *(int *)buf_addr = 0;
+    arc = DosQueryMem((PVOID)PAGE_ALIGN(buf_addr), &dos_len, &dos_flags);
+    TRACE_IF(arc, "DosQueryMem = %lu\n", arc);
+    if (!arc && !(dos_flags & (PAG_FREE | PAG_COMMIT)))
+      *(int *)buf_addr = *(int *)buf_addr;
     buf_addr += PAGE_SIZE;
   }
 }
