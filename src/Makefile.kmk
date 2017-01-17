@@ -73,11 +73,13 @@ TESTS += \
   mmap/tst-mmap5.c \
   mmap/tst-mmap6.c \
   mmap/tst-mmap7.c \
-  mmap/tst-mmap8.c \
   mmap/tst-msync.c \
   mmap/tst-msync2.c \
   mmap/tst-msync3.c \
   mmap/tst-madvise.c \
   mmap/tst-mprotect.c
+
+# This test is disabled so far, see #29.
+# mmap/tst-mmap8.c \
 
 include $(FILE_KBUILD_SUB_FOOTER)
