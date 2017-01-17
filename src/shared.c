@@ -788,10 +788,10 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
 #endif /* defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG) */
 
 /*
- * Touches (reads) the first word in every page of memory pointed to by buf of
- * len bytes. If buf is not on the page boundary, the word at buf is touched
- * instead. Note that the page is only touched if it's reserved (i.e. neither
- * committed, nor free).
+ * Touches (reads/writes) the first word in every page of memory pointed to by
+ * buf of len bytes. If buf is not on the page boundary, the word at buf is
+ * touched instead. Note that the page is only touched if it's reserved (i.e.
+ * neither committed, nor free).
  *
  * This function is used to work around a bug in DosRead that causes it to fail
  * when interrupted by the exception handler, see
@@ -805,6 +805,15 @@ void touch_pages(void *buf, size_t len)
 
   volatile ULONG buf_addr = (ULONG)buf;
   ULONG buf_end = buf_addr + len;
+
+  /*
+   * Note: we need to at least perform the write operation when toucing so that
+   * in case if it's our memory mapped region then it's marked dirty and with
+   * PAG_WRITE is set (on read PAG_WRITE would have been removed whcih would
+   * cause DosRead to fail too). And, to make sure that the touched region is
+   * not corrupted by touching, we first read the target word and then simply
+   * write it back.
+   */
 
   if (!PAGE_ALIGNED(buf_addr))
   {
