@@ -1,5 +1,10 @@
 # History of changes for LIBCx
 
+#### Version 0.4.1 (2017-01-18)
+
+* select: Don't reset fd sets on failure (this fixes odd behavior of cmake).
+* Improve the workaround for the `DosRead` bug (see version 0.4 changelog) to only touch uncommitted pages and to not modify their contents (this fixes crashes in cmake).
+
 #### Version 0.4 (2016-11-24)
 
 * mmap: Add support for mapping beyond EOF for non-anonymous mappings.
