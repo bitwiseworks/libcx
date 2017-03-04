@@ -106,6 +106,7 @@ typedef struct MemMap
   {
     FileMapMem *fmem; /* file map's memory */
     FileHandle *fh; /* File handle */
+    int refcnt; /* number of times this MemMap was returned by mmap */
   } f[0];
 } MemMap;
 
@@ -220,6 +221,34 @@ static void free_file_map_mem(FileMapMem *mem)
 
 static MemMap *find_mmap(MemMap *head, ULONG addr, MemMap **prev_out);
 
+/*
+ * Clones the given mapping. Used in region splitting. Note that this clone is
+ * never to be used directly: its next and start/end fields must be fixed
+ * accordingly. Returns NULL if no memory left to create a clone.
+ */
+static MemMap *clone_file_mmap(MemMap *m)
+{
+  assert(m->f->fmem);
+  assert(m->f->fh);
+
+  MemMap *nm;
+  GLOBAL_NEW_PLUS(nm, sizeof(*nm->f));
+  if (!nm)
+    return NULL;
+
+  COPY_STRUCT_PLUS(nm, m, sizeof(*nm->f));
+
+  /* Reference file maps' memory object */
+  assert(nm->f->fmem->refcnt);
+  ++nm->f->fmem->refcnt;
+
+  /* Reference file handle */
+  assert(nm->f->fh->refcnt);
+  ++nm->f->fh->refcnt;
+
+  return nm;
+}
+
 void *mmap(void *addr, size_t len, int prot, int flags,
            int fildes, off_t off)
 {
@@ -233,6 +262,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   FileDesc *proc_fdesc = NULL;
   ProcDesc *pdesc;
   ULONG dos_flags;
+  int maybe_overlaps = 0;
 
   TRACE("addr %p, len %u, prot %x=%c%c%c, flags %x=%c%c%c%c, fildes %d, off %lld\n",
         addr, len, prot,
@@ -424,8 +454,12 @@ void *mmap(void *addr, size_t len, int prot, int flags,
         fmem->next = fmap->mems;
         fmap->mems = fmem;
       }
-
-      fmem = fmap->mems;
+      else
+      {
+        /* We're reusing the same memory object, overlaps are possible */
+        maybe_overlaps = 1;
+        fmem = fmap->mems;
+      }
     }
 
     /* Update fmap with the latest file size */
@@ -434,46 +468,32 @@ void *mmap(void *addr, size_t len, int prot, int flags,
     assert(fmap->mems == fmem);
     TRACE("fmap %p (top mem %p (start %lx, len %lx))\n", fmap, fmem, fmem->start, fmem->len);
 
-    /* Find the first mapping for this file map in this process */
-    first = find_mmap(pdesc->mmaps, fmem->start, &prev);
-    assert(!first || first->start == fmem->start);
-
     /*
-     * Now check if there is a very fast route: the new mappping completely
-     * replaces a single exising one.
+     * Search for a mapping containing the requested offset in this process to
+     * find where to insert it in the sorted list and to check for region
+     * overlaps.
      */
-    mmap = NULL;
-    if (first)
+    first = find_mmap(pdesc->mmaps, fmem->start + off, &prev);
+
+    if (first && first->start == fmem->start + off &&
+        first->end == fmem->start + off + len)
     {
-      ULONG e = fmem->start + off + len;
-      if (off == 0 && first->end <= e &&
-          (!first->next || first->next->start >= e))
-      {
-        assert(first->f->fh);
-        mmap = first;
-      }
-    }
-    else
-    {
-      ULONG e = fmem->start + off + len;
-      MemMap *m = prev ? prev->next : pdesc->mmaps;
-      if (m && m->f->fmem == fmem &&
-          m->start < e && m->end <= e &&
-          (!m->next || m->next->start >= e))
-      {
-        assert(m->f->fh);
-        mmap = m;
-      }
-    }
-    if (mmap)
-    {
-      TRACE("fully replacing mmap %p (start %lx, end %lx)\n", mmap, mmap->start, mmap->end);
+      /* Very fast route: the new mappping fully matches the existing one. */
+      TRACE("fully replacing mmap %p (start %lx, end %lx)\n", first, first->start, first->end);
+      assert(first->f->fmem == fmem);
+      assert(first->f->fh);
+
+      mmap = first;
+
       /* Copy the new flags over */
       mmap->flags = flags;
       mmap->dos_flags = dos_flags;
       /* Fix start/end/off */
       mmap->start = fmem->start + off;
       mmap->end = mmap->start + len;
+      /* Increase the usage count of the existing MemMap */
+      assert(mmap->f->refcnt);
+      ++mmap->f->refcnt;
       goto success;
     }
 
@@ -594,6 +614,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
     assert(fmem && fh);
     mmap->f->fmem = fmem;
     mmap->f->fh = fh;
+    mmap->f->refcnt = 1;
     mmap->start = fmem->start + off;
     mmap->end = mmap->start + len;
     if (flags & MAP_SHARED && fdesc->map)
@@ -635,13 +656,17 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   if (arc)
   {
     free(mmap);
+
     /* Free fh if it's not used */
     if (fh && !proc_fdesc->p->fh)
       free_file_handle(fh);
     /* Free fmap if it's not used */
     if (fmap && !fdesc->map)
       free_file_map_mem(fmem);
+
     global_unlock();
+
+    TRACE("No memory\n");
     errno = ENOMEM;
     return MAP_FAILED;
   }
@@ -650,130 +675,228 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   assert(mmap->start && PAGE_ALIGNED(mmap->start));
 
   /* Now insert the new mapping into the sorted list */
-  if (fmap && fdesc->map)
+  if (fmap && maybe_overlaps)
   {
     /*
-     * The same file map's memory object is used by more than one mapping
-     * so overlaps are possible. Split and join regions to avoid them. Note
-     * that the simplest case when the new mapping fully replaces a single
-     * existing one is handled much earlier and does not appear here.
+     * The same memory object is used by more than one mapping so overlaps are
+     * possible. We deal with overlaps by splitting the mmap regions and
+     * increasing their usage counters accordingly. Note that the simplest case
+     * when the new mapping fully replaces a single existing one is handled
+     * earlier in the code and does not appear here.
      */
-    if (first && first->start < mmap->start && first->end > mmap->end)
+    MemMap *last = prev ? prev->next : pdesc->mmaps;
+
+    if (!first && (!last || last->start >= mmap->end))
+    {
+      /* No overlaps at all, we are done */
+      TRACE("no overlaps\n");
+      if (prev)
+      {
+        /* Insert in the middle/end */
+        mmap->next = prev->next;
+        prev->next = mmap;
+      }
+      else
+      {
+        /* Insert at the head */
+        mmap->next = pdesc->mmaps;
+        pdesc->mmaps = mmap;
+      }
+    }
+    else if (first && first->start < mmap->start && first->end > mmap->end)
     {
       /* Special: split in 3 pieces */
-      TRACE("splitting mmap %p (start %lx, end %lx) in 3 pieces\n",
-            first, first->start, first->end);
+      TRACE("splitting mmap %p (start %lx, end %lx) at %lx and %lx\n",
+            first, first->start, first->end, mmap->start, mmap->end);
 
-      MemMap *last;
-
-      GLOBAL_NEW_PLUS(last, sizeof(*last->f));
+      MemMap *last = clone_file_mmap(first);
       if (!last)
-      {
-        free(mmap);
-        global_unlock();
-        errno = ENOMEM;
-        return MAP_FAILED;
-      }
-
-      COPY_STRUCT(last, first);
-
-      /* Reference file maps' memory object */
-      assert(last->f->fmem->refcnt);
-      ++last->f->fmem->refcnt;
-
-      /* Reference file handle */
-      assert(last->f->fh->refcnt);
-      ++last->f->fh->refcnt;
+        goto failure;
 
       /* Fix list */
       mmap->next = last;
-      first->next = first;
+      first->next = mmap;
 
-      /* Fix start/end/off */
+      /* Fix start/end */
       first->end = mmap->start;
       last->start = mmap->end;
+
+      /* Increase the usage count of the middle MemMap */
+      assert(mmap->f->refcnt);
+      ++mmap->f->refcnt;
     }
     else
     {
       /*
-       * Rest of the cases (including splits in two pieces and multiple joins).
-       * Find the start and the end mmaps of the span (both either excluding the
-       * new mmap completely or intersecting with it in the middle, matching
-       * ends don't require a split so such mmaps will be treated as
-       * intermediate and freed).
+       * Rest of the cases (including splits in two pieces and multiple
+       * overlaps). Find the start and the end mmaps of the span (both either
+       * excluding the new mmap completely or intersecting with it in the
+       * middle, matching ends don't require a split so they will be treated as
+       * completely overlapped). All overallped mappings in betweeen will get
+       * their usage count increased and all gaps between them (if any) will be
+       * filled by newly created mmaps.
        */
-      MemMap *last;
+      MemMap *p_last, *m;
 
-      /* Set first to the element we should insert mmap after (or NULL) */
-      first = first && first->start < mmap->start ? first : prev;
-
-      /* Find the element that will follow mmap afer all joins (or NULL) */
-      last = first ? first : pdesc->mmaps;
-      while (last && last->start < mmap->end && last->end <= mmap->end)
+      /*
+       * Find a region containing the end of the new mmap (or NULL). Also fill
+       * all the gaps between regions fully overlapped by the new mmap.
+       */
+      last = first ? first : prev ? prev : pdesc->mmaps;
+      assert(last);
+      p_last = NULL;
+      while (1)
       {
-        MemMap *n = last->next;
-        if (last != first)
+        /* Fill the gap if any */
+        ULONG gap_start = 0, gap_end = 0;
+
+        if (!p_last && last->start > mmap->start)
         {
-          /*
-           * Free the intermediate mapping. Note that we don't flush dirty pages
-           * since the dirty map will remain intact and will be flushed
-           * asynchronously anyway. Also no need to free FileHandle or FileMap
-           * as the new mmap is using them. So no need to call to free_mmap().
-           */
-          TRACE("eating mmap %p (start %lx, end %lx)\n", last, last->start, last->end);
+          /* Special case: no region in front of mmap */
+          gap_start = mmap->start;
+          gap_end = last->start;
+          assert(gap_end < mmap->end);
+        }
+        else if (!last)
+        {
+          /* Special case: no region after mmap */
+          assert(p_last);
+          gap_start = p_last->end;
+          gap_end = mmap->end;
+          assert(gap_start > mmap->start);
+        }
+        else if (p_last && p_last->end < last->start)
+        {
+          /* Normal case: gap between prev and current region */
+          gap_start = MAX(p_last->end, mmap->start);
+          gap_end = MIN(last->start, mmap->end);
+        }
+
+        if (gap_end)
+        {
+          TRACE("filling gap (start %lx, end %lx)\n", gap_start, gap_end);
+          assert(gap_start != gap_end);
+
+          m = clone_file_mmap(mmap);
+          if (!m)
+            goto failure;
+
+          /* Fix list */
+          m->next = last;
+          if (p_last)
+            p_last->next = m;
+          else
+            pdesc->mmaps = m;
+
+          /* Fix start/end */
+          m->start = gap_start;
+          m->end = gap_end;
+
+          /* Fix p_last in case if we break below before updating it with last */
+          p_last = m;
+        }
+
+        /* Note that overlapping is only done for full overlaps */
+        if (last && last->start >= mmap->start && last->end <= mmap->end)
+        {
+          TRACE("overlapping mmap %p (start %lx, end %lx)\n", last, last->start, last->end);
           assert(last->f->fmem == fmem);
           assert(last->f->fh == fh);
 
-          /* Dereference file handle */
-          assert(last->f->fh->refcnt);
-          --(last->f->fh->refcnt);
-
-          /* Dereference file map's memory object */
-          assert(last->f->fmem->refcnt);
-          --(last->f->fmem->refcnt);
-
-          free(last);
+          /* Increase the usage count of the existing MemMap */
+          assert(last->f->refcnt);
+          ++last->f->refcnt;
         }
-        last = n;
-      }
 
-      /* Deal with the start mmap */
-      if (first)
-      {
-        if (first->end > mmap->start)
+        /* Break the loop if it's a last intersection (or no more regions) */
+        if (!last || last->end >= mmap->end)
         {
-          TRACE("adjusting end of mmap %p (start %lx, end %lx) to %lx\n",
-                first, first->start, first->end, mmap->start);
-          assert(first->start < mmap->start);
-          first->end = mmap->start;
+          if (last && last->start >= mmap->end)
+          {
+            /* Reset last to indicate there is no intersection */
+            p_last = last;
+            last = NULL;
+          }
+          break;
         }
-        mmap->next = first->next;
-        first->next = mmap;
+
+        p_last = last;
+        last = last->next;
       }
-      else
+
+      /* Deal with the partial overlap at the beginning */
+      if (first && first->start < mmap->start)
       {
-        mmap->next = pdesc->mmaps;
-        pdesc->mmaps = mmap;
+        TRACE("splitting first mmap %p (start %lx, end %lx) at %lx\n",
+              first, first->start, first->end, mmap->start);
+
+        /* Split the partial overlap */
+        m = clone_file_mmap(mmap);
+        if (!m)
+          goto failure;
+
+        /* Fix list */
+        m->next = first->next;
+        first->next = m;
+
+        /* Fix start/end */
+        m->end = first->end;
+        first->end = m->start;
+
+        /* Increase the usage count of the overlapping MemMap */
+        assert(m->f->refcnt);
+        ++m->f->refcnt;
       }
-      /* Deal with the end mmap */
-      if (last)
+
+      /* Deal with the partial overlap at the end */
+      if (last && last->end > mmap->end)
       {
-        if (last->start < mmap->end)
-        {
-          TRACE("adjusting start of mmap %p (start %lx, end %lx) to %lx\n",
-                last, last->start, last->end, mmap->end);
-          assert(last->end > mmap->end);
-          last->start = mmap->end;
-        }
+        TRACE("splitting last mmap %p (start %lx, end %lx) at %lx\n",
+              last, last->start, last->end, mmap->end);
+
+        /* Split the partial overlap */
+        m = clone_file_mmap(mmap);
+        if (!m)
+          goto failure;
+
+        /* Fix list */
+        m->next = last;
+        assert(p_last); /* guaranteed by gap filling */
+        assert(p_last->next == last);
+        p_last->next = m;
+
+        /* Fix start/end */
+        m->start = last->start;
+        last->start = m->end;
+
+        /* Increase the usage count of the overlapping MemMap */
+        assert(m->f->refcnt);
+        ++m->f->refcnt;
       }
-      mmap->next = last;
+
+      /* Find a cloned region that starts where mmap would */
+      m = first ? (first->start == mmap->start ? first : first->next) :
+                  prev ? prev->next : pdesc->mmaps;
+      assert(m->start == mmap->start);
+
+      /*
+       * Now Free the original new mmap. We've cloned everything during overlaps
+       * processing so it's no longer needed.
+       */
+      free(mmap);
+      mmap = m;
+
+      /* Bypass fmem and fh reference counter increase */
+      goto success;
     }
   }
   else
   {
     /*
      * Anonymous maps are simple: overlaps are not possible as each mapping is
-     * always backed up by its own unique memory object.
+     * always backed up by its own unique memory object. Also, we come here
+     * when a new memory object for a file map has just been allocated (so no
+     * overlaps too).
      */
     assert(!first);
     if (prev)
@@ -829,15 +952,25 @@ void *mmap(void *addr, size_t len, int prot, int flags,
 
 success:
 
-  TRACE_IF(mmap->flags & MAP_ANON, "mmap %p (%lx..%lx (%lu)\n",
+  TRACE_IF(mmap->flags & MAP_ANON, "mmap %p (%lx..%lx (%lu))\n",
            mmap, mmap->start, mmap->end, mmap->end - mmap->start);
-  TRACE_IF(!(mmap->flags & MAP_ANON), "mmap %p (%lx..%lx (%lu), fmem %p (%lx), fmap %p\n",
-           mmap, mmap->start, mmap->end, mmap->end - mmap->start, mmap->f->fmem,
-           mmap->f->fmem->start, mmap->f->fmem->map);
+  TRACE_IF(!(mmap->flags & MAP_ANON), "mmap %p (%lx..%lx (%lu)), refcnt %d, fmem %p (%lx), fmap %p\n",
+           mmap, mmap->start, mmap->end, mmap->end - mmap->start, mmap->f->refcnt,
+           mmap->f->fmem, mmap->f->fmem->start, mmap->f->fmem->map);
 
   global_unlock();
 
   return (void *)mmap->start;
+
+failure:
+
+  free(mmap);
+
+  global_unlock();
+
+  TRACE("No memory\n");
+  errno = ENOMEM;
+  return MAP_FAILED;
 }
 
 /**
@@ -852,7 +985,7 @@ static MemMap *find_mmap(MemMap *head, ULONG addr, MemMap **prev_out)
   MemMap *m = NULL, *pm = NULL;
 
   m = head;
-  while (m && m->start < addr && m->end <= addr)
+  while (m && m->end <= addr)
   {
     pm = m;
     m = m->next;
@@ -866,13 +999,14 @@ static MemMap *find_mmap(MemMap *head, ULONG addr, MemMap **prev_out)
     m = NULL;
 
   TRACE_IF(!m, "mapping not found\n");
-  TRACE_IF(m, "found m %p (%lx..%lx (%ld), flags %x=%c%c%c%c, dos_flags %lx, fmem %p (%lx))\n",
+  TRACE_IF(m, "found m %p (%lx..%lx (%ld), flags %x=%c%c%c%c, dos_flags %lx, refcnt %d, fmem %p (%lx))\n",
            m, m->start, m->end, m->end - m->start, m->flags,
            m->flags & MAP_SHARED ? 'S' : '-',
            m->flags & MAP_PRIVATE ? 'P' : '-',
            m->flags & MAP_FIXED ? 'F' : '-',
            m->flags & MAP_ANON ? 'A' : '-',
            m->dos_flags,
+           m->flags & MAP_ANON ? 0 : m->f->refcnt,
            m->flags & MAP_ANON ? 0 : m->f->fmem,
            m->flags & MAP_ANON ? 0 : m->f->fmem->start);
 
@@ -1048,9 +1182,9 @@ static void free_mmap(ProcDesc *desc, MemMap *m, MemMap *prev)
 
   assert(m);
 
-  TRACE("%s mapping %p (%lx..%lx, fmem %p (%lx, refcnt %d)\n",
+  TRACE("%s mapping %p (%lx..%lx, refcnt %d), fmem %p (%lx, refcnt %d)\n",
         m->flags & MAP_SHARED ? "shared" : "private",
-        m, m->start, m->end,
+        m, m->start, m->end, m->flags & MAP_ANON ? 0 : m->f->refcnt,
         m->flags & MAP_ANON ? 0 : m->f->fmem,
         m->flags & MAP_ANON ? 0 : m->f->fmem->start,
         m->flags & MAP_ANON ? 0 : m->f->fmem->refcnt);
@@ -1131,6 +1265,10 @@ int munmap(void *addr, size_t len)
   if (m && m->start < (ULONG)addr && m->end > addr_end)
   {
     /* Special case: cut from the middle */
+    TRACE("splitting mmap %p (start %lx, end %lx, refcnt %d) at %lx and %lx\n",
+          m, m->start, m->end, m->flags & MAP_ANON ? 0 : m->f->refcnt,
+          (ULONG)addr, addr_end);
+
     MemMap *nm;
 
     GLOBAL_NEW_PLUS(nm, m->flags & MAP_ANON ? 0 : sizeof(*nm->f));
@@ -1151,48 +1289,132 @@ int munmap(void *addr, size_t len)
       /* Fix pointers */
       nm->next = m->next;
       nm->start = addr_end;
-      nm->end = m->end;
       m->end = (ULONG)addr;
       m->next = nm;
+
+      if (!(nm->flags & MAP_ANON) && nm->f->refcnt > 1)
+      {
+        /* We need one more region (middle) */
+        MemMap *nm2 = clone_file_mmap(m);
+        if (nm2)
+        {
+          /* Fix pointers */
+          nm2->next = nm;
+          nm2->start = m->end;
+          nm2->end = nm->start;
+          m->next = nm2;
+
+          /* Decrease the usage count of the middle MemMap */
+          --nm2->f->refcnt;
+          assert(nm2->f->refcnt);
+        }
+        else
+          rc = -1;
+      }
     }
     else
-    {
-      errno = ENOMEM;
       rc = -1;
-    }
   }
-  else
+  else do
   {
     /* Start with the next region if no match */
     if (!m)
       m = pm ? pm->next : desc->mmaps;
+
     if (m)
     {
       /* Proces first intersection */
       if (m->start < (ULONG)addr)
       {
-        TRACE("adjusting end of mmap %p (start %lx, end %lx) to %lx\n",
-              m, m->start, m->end, (ULONG)addr);
+        TRACE("splitting mmap %p (start %lx, end %lx, refcnt %d) at %lx\n",
+              m, m->start, m->end, m->flags & MAP_ANON ? 0 : m->f->refcnt,
+              (ULONG)addr);
+
         m->end = (ULONG)addr;
         pm = m;
         m = m->next;
+
+        if (!(pm->flags & MAP_ANON) && pm->f->refcnt > 1)
+        {
+          /* We need one more region */
+          MemMap *nm = clone_file_mmap(pm);
+          if (!nm)
+          {
+            rc = -1;
+            break;
+          }
+
+          /* Fix pointers */
+          nm->next = m;
+          nm->start = pm->end;
+          nm->end = m->start;
+          pm->next = nm;
+
+          /* Decrease the usage count of the middle MemMap */
+          --nm->f->refcnt;
+          assert(nm->f->refcnt);
+        }
       }
+
       /* Process middle */
-      while (m && m->start < addr_end && m->end <= addr_end)
+      while (m && m->end <= addr_end)
       {
+        TRACE("unmapping mmap %p (start %lx, end %lx, refcnt %d)\n",
+              m, m->start, m->end, m->flags & MAP_ANON ? 0 : m->f->refcnt);
+
         MemMap *n = m->next;
-        free_mmap(desc, m, pm);
+
+        if (!(m->flags & MAP_ANON) && m->f->refcnt > 1)
+        {
+          /* Decrease the usage count of the middle MemMap */
+          --m->f->refcnt;
+          assert(m->f->refcnt);
+          pm = m;
+        }
+        else
+        {
+          free_mmap(desc, m, pm);
+        }
+
         m = n;
       }
+
       /* Proces last intersection */
-      if (m && m->start < addr_end && m->end > addr_end)
+      if (m && m->start < addr_end)
       {
-        TRACE("adjusting start of mmap %p (start %lx, end %lx) to %lx\n",
-              m, m->start, m->end, addr_end);
+        TRACE("splitting mmap %p (start %lx, end %lx, refcnt %d) at %lx\n",
+              m, m->start, m->end, m->flags & MAP_ANON ? 0 : m->f->refcnt,
+              (ULONG)addr_end);
+
+        if (!(m->flags & MAP_ANON) && m->f->refcnt > 1)
+        {
+          /* We need one more region */
+          MemMap *nm = clone_file_mmap(m);
+          if (!nm)
+          {
+            rc = -1;
+            break;
+          }
+
+          /* Fix pointers */
+          nm->next = m;
+          nm->start = m->start;
+          nm->end = addr_end;
+          if (pm)
+            pm->next = nm;
+          else
+            desc->mmaps = nm;
+
+          /* Decrease the usage count of the middle MemMap */
+          --nm->f->refcnt;
+          assert(nm->f->refcnt);
+        }
+
         m->start = addr_end;
       }
     }
   }
+  while (0);
 
   /*
    * Note that if no regions match the given range at all, we will simply
@@ -1200,6 +1422,12 @@ int munmap(void *addr, size_t len)
    */
 
   global_unlock();
+
+  if (rc == -1)
+  {
+    TRACE("No memory\n");
+    errno = ENOMEM;
+  }
 
   return rc;
 }
