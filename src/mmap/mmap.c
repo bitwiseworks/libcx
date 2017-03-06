@@ -38,79 +38,15 @@
 #include <sys/mman.h>
 
 #define TRACE_GROUP TRACE_GROUP_MMAP
-#include "../shared.h"
 
-/* Width of a dirty map entry in bits */
-#define DIRTYMAP_WIDTH (sizeof(*((struct FileDesc*)0)->p->fh->dirtymap) * 8)
-
-/* Flush operation start delay (ms) */
-#define FLUSH_DELAY 1000
-
-/**
- * Per-process data for memory mappings.
- */
-typedef struct ProcMemMap
-{
-  int flush_tid; /* Flush thread */
-  HEV flush_sem; /* Semaphore for flush thread */
-  int flush_request; /* 1 - semaphore is posted */
-} ProcMemMap;
-
-/**
- * File map's memory object (linked list entry).
- */
-typedef struct FileMapMem
-{
-  struct FileMapMem *next;
-
-  struct FileMap *map; /* parent file map */
-  ULONG start; /* start address */
-  ULONG len; /* object length */
-  int refcnt; /* number of MemMap entries using it */
-} FileMapMem;
-
-/**
- * File map.
- */
-typedef struct FileMap
-{
-  FileDesc *desc; /* associated file desc */
-  FileMapMem *mems; /* list of memory objects of this file */
-  off_t size; /* file size */
-} FileMap;
-
-/**
- * Process specific file handle.
- */
-typedef struct FileHandle
-{
-  FileDesc *desc; /* associated file desc */
-  HFILE fd; /* file handle (descriptor in LIBC) or -1 for MAP_ANONYMOUS */
-  size_t dirtymap_sz; /* size of dirty array in bytes */
-  uint32_t *dirtymap; /* bit array of dirty pages */
-  int refcnt; /* number of MemMap entries using it */
-} FileHandle;
-
-/**
- * Memory mapping (linked list entry).
- */
-typedef struct MemMap
-{
-  struct MemMap *next;
-
-  ULONG start; /* start address */
-  ULONG end; /* end address (exclusive) */
-  int flags; /* mmap flags */
-  ULONG dos_flags; /* DosAllocMem protection flags */
-  struct File /* Only present for non MAP_ANONYMOUS mmaps (must be last) */
-  {
-    FileMapMem *fmem; /* file map's memory */
-    FileHandle *fh; /* File handle */
-    int refcnt; /* number of times this MemMap was returned by mmap */
-  } f[0];
-} MemMap;
+#include "mmap.h"
 
 #define OBJ_MY_SHARED 0x80000000
+
+#ifdef DEBUG
+/* Indicates that mmaps should be allocated for full file size at once */
+static int mmap_full_size = 0;
+#endif
 
 static APIRET DosMyAllocMem(PPVOID addr, ULONG size, ULONG flags)
 {
@@ -406,6 +342,11 @@ void *mmap(void *addr, size_t len, int prot, int flags,
         return MAP_FAILED;
       }
 
+#ifdef DEBUG
+      if (mmap_full_size)
+        fmem->len = MAX(NUM_PAGES(st.cbFile) * PAGE_SIZE, off + len);
+      else
+#endif
       fmem->len = off + len;
 
       arc = DosMyAllocMem((PPVOID)&fmem->start, fmem->len, fmap_flags);
@@ -1253,7 +1194,6 @@ int munmap(void *addr, size_t len)
 
   ProcDesc *desc;
   MemMap *m = NULL, *pm = NULL;
-  pid_t pid = getpid();
 
   global_lock();
 
@@ -2256,6 +2196,31 @@ int ftruncate(int fildes, __off_t length)
 
   return rc;
 }
+
+#ifdef DEBUG
+/**
+ * Used to force mmap() allocate memory objects for file mappings at least
+ * as big as the initial file size rather than as the requested length of the
+ * mapping. Used in some tests.
+ */
+void set_mmap_full_size(int val)
+{
+  mmap_full_size = val;
+}
+
+/**
+ * Returns a list of all memory mappings of this process. Used in some tests.
+ * If pid is -1, returns the mappings of the current process. Note that
+ * global_lock() must be used for the duration of use of the returned value
+ * to provide atomic access.
+ */
+MemMap *get_proc_mmaps(int pid)
+{
+  ProcDesc *desc = find_proc_desc(pid == -1 ? getpid() : pid);
+  assert(desc);
+  return desc->mmaps;
+}
+#endif
 
 static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation)
 {
