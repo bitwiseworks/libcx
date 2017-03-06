@@ -166,7 +166,17 @@ static void shared_init()
       {
         arc = DosGetNamedSharedMem((PPVOID)&gpData, SHAREDMEM_LIBCX, PAG_READ | PAG_WRITE);
         TRACE("DosGetNamedSharedMem = %lu\n", arc);
-        assert(arc == NO_ERROR);
+        if (arc)
+        {
+          /*
+           * This failure means that another process was too fast to do what
+           * it wanted and initiated global uninitialization before we got the
+           * mutex so shared memory was already freed by this time. Retry.
+           */
+          DosReleaseMutexSem(gMutex);
+          DosCloseMutexSem(gMutex);
+          continue;
+        }
 
         TRACE("gpData->heap = %p\n", gpData->heap);
         assert(gpData->heap);
