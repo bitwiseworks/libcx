@@ -167,6 +167,12 @@ do_test (void)
     }
   }
 
+  if (munmap(addr, FILE_SIZE) == -1)
+  {
+    perror("munmap failed");
+    return 1;
+  }
+
 #ifdef DEBUG
   /*
    * Force this process LIBCx usage termination to simulate the parent process

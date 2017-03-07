@@ -203,13 +203,20 @@ do_test (void)
     return 1;
   }
 
-  if (munmap(addr, FILE_SIZE) == -1)
+  if (munmap(addr, FILE_SIZE * 2) == -1)
   {
     perror("munmap failed");
     return 1;
   }
 
   close(fd);
+
+  int status;
+  if (wait(&status) == -1)
+  {
+    perror("wait failed");
+    return 1;
+  }
 
   /* Now read the file and see if the contents matches our changes */
 
@@ -250,6 +257,12 @@ do_test (void)
   }
 
   close(fd);
+
+  if (remove(fname))
+  {
+    perror("remove failed");
+    return 1;
+  }
 
   free(fname);
 

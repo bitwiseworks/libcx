@@ -161,6 +161,10 @@ test_mappings(unsigned char *addr, test_req *list, int num)
 #endif
 }
 
+/*
+ * We only test the layout of mappings in debug builds, no access to it in
+ * release builds.
+ */
 #ifdef DEBUG
 #define TEST_MAPPINGS(addr, ...) \
   do \
@@ -173,6 +177,24 @@ test_mappings(unsigned char *addr, test_req *list, int num)
 #else
 #define TEST_MAPPINGS(addr, ...)
 #define TEST_MAPPINGS_NONE()
+#endif
+
+/*
+ * In release builds we should unmap all addresses as they may be from different
+ * memory objects and not doing so will leave a temporary file as removal will
+ * fail because of an open file handle (duplicate) in mmap structures.
+ */
+#ifdef DEBUG
+#define MUNMAP_ADDRS(...)
+#else
+#define MUNMAP_ADDRS(...) \
+  do \
+  { \
+    unsigned char *addrs[] = { __VA_ARGS__ }; \
+    int i = 0; \
+    for (i = 0; i < ARRAY_SIZE(addrs); ++i) \
+      munmap(addrs[i], PAGES); \
+  } while(0)
 #endif
 
 static int
@@ -237,6 +259,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1, a2);
     }
 
     printf("Test [0],[9],[1-8]\n");
@@ -253,6 +277,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1, a2);
     }
 
     printf("Test [0-5],[0-5]\n");
@@ -272,6 +298,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1);
     }
 
     printf("Test [0-5],[1-3]\n");
@@ -293,6 +321,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1);
     }
 
     printf("Test [1-2],[3-4]\n");
@@ -307,6 +337,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1);
     }
 
     printf("Test [3-4],[1-2]\n");
@@ -321,6 +353,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1);
     }
 
     printf("Test [0-1],[1-2]\n");
@@ -342,6 +376,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1);
     }
 
     printf("Test [1-2],[0-1]\n");
@@ -363,6 +399,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1);
     }
 
     printf("Test [0-1],[0-3]\n");
@@ -383,6 +421,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1);
     }
 
     printf("Test [0-3],[0-1]\n");
@@ -403,6 +443,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1);
     }
 
     printf("Test [6-9],[8-9]\n");
@@ -423,6 +465,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1);
     }
 
     printf("Test [8-9],[6-9]\n");
@@ -443,6 +487,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1);
     }
 
     printf("Test [1],[4-5],[7],[8],[1-8]\n");
@@ -473,6 +519,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1, a2, a3, a4);
     }
 
     printf("Test [1],[4-5],[7],[8],[0-9]\n");
@@ -506,6 +554,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1, a2, a3, a4);
     }
 
     printf("Test [1],[4-5],[7],[8],[3-8]\n");
@@ -535,6 +585,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1, a2, a3, a4);
     }
 
     printf("Test [1],[4-5],[7],[8],[2-8]\n");
@@ -564,6 +616,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1, a2, a3, a4);
     }
 
     printf("Test [1],[4-5],[1-2]\n");
@@ -586,6 +640,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1, a2);
     }
 
     printf("Test [1],[4-5],[1-3]\n");
@@ -608,6 +664,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1, a2);
     }
 
     printf("Test [1],[4-5],[1-4]\n");
@@ -632,6 +690,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1, a2);
     }
 
     printf("Test [1],[4-5],[0-4]\n");
@@ -657,6 +717,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1, a2);
     }
 
     printf("Test [1],[4-5],[0-2]\n");
@@ -680,6 +742,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1, a2);
     }
 
     printf("Test [1-2],[4-5],[2-4]\n");
@@ -705,6 +769,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1, a2);
     }
 
     printf("Test [1-2],[4-5],[0-4]\n");
@@ -730,6 +796,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1, a2);
     }
 
     printf("Test [1-2],[4-5],[2-6]\n");
@@ -755,6 +823,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1, a2);
     }
 
     printf("Test [1-2],[4-5],[7-8],[3-4]\n");
@@ -780,6 +850,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1, a2, a3);
     }
 
     printf("Test [1-2],[4-5],[7-8],[5-6]\n");
@@ -805,6 +877,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1, a2, a3);
     }
 
     /*
@@ -846,6 +920,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1, a2);
     }
 
     printf("Test +[0-1],+[2-3],+[4-5],-[0-4]\n");
@@ -861,6 +937,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1, a2);
     }
 
     printf("Test +[0-1],+[2-3],+[4-5],-[1-5]\n");
@@ -876,6 +954,8 @@ do_test (void)
 
       munmap_pages(a0, PAGES);
       TEST_MAPPINGS_NONE();
+
+      MUNMAP_ADDRS(a1, a2);
     }
   }
 

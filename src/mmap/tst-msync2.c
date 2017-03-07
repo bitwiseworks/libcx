@@ -271,6 +271,12 @@ do_test (void)
         return 1;
       }
 
+      if (munmap(addr2, FILE_SIZE) == -1)
+      {
+        perror("child: munmap failed");
+        return 1;
+      }
+
       return 0;
     }
   }
