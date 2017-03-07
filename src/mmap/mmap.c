@@ -691,9 +691,10 @@ void *mmap(void *addr, size_t len, int prot, int flags,
         /* Fill the gap if any */
         ULONG gap_start = 0, gap_end = 0;
 
-        if (!p_last && last->start > mmap->start)
+        if (pdesc->mmaps == last && last->start > mmap->start)
         {
           /* Special case: no region in front of mmap */
+          assert(last);
           gap_start = mmap->start;
           gap_end = last->start;
           assert(gap_end < mmap->end);
@@ -771,6 +772,13 @@ void *mmap(void *addr, size_t len, int prot, int flags,
         last = last->next;
       }
 
+      /* Fix p_last when we got only one intersecting region */
+      if (first && last == first)
+      {
+        assert(!p_last);
+        p_last = prev;
+      }
+
       /* Deal with the partial overlap at the beginning */
       if (first && first->start < mmap->start)
       {
@@ -806,7 +814,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
         if (!m)
           goto failure;
 
-        /* Fix list */
+        /* Fix list (assume correct p_last with fixes applied above) */
         m->next = last;
         if (p_last)
         {
