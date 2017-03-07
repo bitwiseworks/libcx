@@ -725,9 +725,15 @@ void *mmap(void *addr, size_t len, int prot, int flags,
           /* Fix list */
           m->next = last;
           if (p_last)
+          {
+            assert(p_last->next == last);
             p_last->next = m;
+          }
           else
+          {
+            assert(pdesc->mmaps == last);
             pdesc->mmaps = m;
+          }
 
           /* Fix start/end */
           m->start = gap_start;
@@ -802,9 +808,16 @@ void *mmap(void *addr, size_t len, int prot, int flags,
 
         /* Fix list */
         m->next = last;
-        assert(p_last); /* guaranteed by gap filling */
-        assert(p_last->next == last);
-        p_last->next = m;
+        if (p_last)
+        {
+          assert(p_last->next == last);
+          p_last->next = m;
+        }
+        else
+        {
+          assert(pdesc->mmaps == last);
+          pdesc->mmaps = m;
+        }
 
         /* Fix start/end */
         m->start = last->start;
@@ -813,6 +826,10 @@ void *mmap(void *addr, size_t len, int prot, int flags,
         /* Increase the usage count of the overlapping MemMap */
         assert(m->f->refcnt);
         ++m->f->refcnt;
+
+        /* Update first if it's affected as it might be used below */
+        if (last == first)
+          first = m;
       }
 
       /* Find a cloned region that starts where mmap would */
