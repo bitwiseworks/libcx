@@ -23,6 +23,11 @@
  * Inspired by http://trac.netlabs.org/samba/browser/trunk/server/lib/replace/test/shared_mmap.c
  */
 
+#ifdef __OS2__
+#define INCL_BASE
+#include <os2.h>
+#endif
+
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -64,6 +69,21 @@ do_test (void)
   }
 
 #ifdef __OS2__
+  /*
+   * It turns out that open() is not multiprocess-safe on OS/2 meaning that if
+   * two open calls of the same file happen at the same time in two different
+   * kLIBC processes, one of them is likely to fail with `EACCES` (which breaks
+   * this test). Protect against it with a mutex.
+   * See http://trac.netlabs.org/libc/ticket/373 for more details.
+   */
+  HMTX hmtx;
+  APIRET arc = DosCreateMutexSem(NULL, &hmtx, DC_SEM_SHARED, FALSE);
+  if (arc)
+  {
+    printf("DosCreateMutexSem failed with %ld\n", arc);
+    return 1;
+  }
+
   setmode (fd, O_BINARY);
 #endif
 
@@ -92,7 +112,24 @@ do_test (void)
 
   if (fork() == 0)
   {
+#ifdef __OS2__
+    arc = DosOpenMutexSem(NULL, &hmtx);
+    if (arc)
+    {
+      printf("child: DosOpenMutexSem failed with %ld\n", arc);
+      return 1;
+    }
+    arc = DosRequestMutexSem(hmtx, SEM_INDEFINITE_WAIT);
+    if (arc)
+    {
+      printf("child: DosRequestMutexSem failed with %ld\n", arc);
+      return 1;
+    }
+#endif
     fd = open(fname, O_RDWR);
+#ifdef __OS2__
+    DosReleaseMutexSem(hmtx);
+#endif
     if (fd == -1)
     {
       perror("child: open failed");
@@ -125,7 +162,18 @@ do_test (void)
     return 0;
   }
 
+#ifdef __OS2__
+  arc = DosRequestMutexSem(hmtx, SEM_INDEFINITE_WAIT);
+  if (arc)
+  {
+    printf("DosRequestMutexSem failed with %ld\n", arc);
+    return 1;
+  }
+#endif
   fd = open(fname, O_RDWR);
+#ifdef __OS2__
+  DosReleaseMutexSem(hmtx);
+#endif
   if (fd == -1)
   {
     perror("open failed");
@@ -134,11 +182,6 @@ do_test (void)
 #ifdef __OS2__
   setmode (fd, O_BINARY);
 #endif
-
-  /*
-   * Make sure child goes first (this is to have predictable tracing).
-   */
-  sleep(1);
 
   addr = mmap(NULL, FILE_SIZE * 2, PROT_READ | PROT_WRITE, MAP_FILE | MAP_SHARED, fd, 0);
   if (addr == MAP_FAILED)
