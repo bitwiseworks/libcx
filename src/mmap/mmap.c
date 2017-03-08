@@ -344,10 +344,16 @@ void *mmap(void *addr, size_t len, int prot, int flags,
 
 #ifdef DEBUG
       if (mmap_full_size)
+      {
+        fmem->off = 0;
         fmem->len = MAX(NUM_PAGES(st.cbFile) * PAGE_SIZE, off + len);
+      }
       else
 #endif
-      fmem->len = off + len;
+      {
+        fmem->off = off;
+        fmem->len = len;
+      }
 
       arc = DosMyAllocMem((PPVOID)&fmem->start, fmem->len, fmap_flags);
       if (arc)
@@ -366,11 +372,19 @@ void *mmap(void *addr, size_t len, int prot, int flags,
     {
       assert(fmap->mems);
 
-      /* Check if the requested region fits the longest memory object we have */
-      if (off + len > fmap->mems->len)
+      /* Search for a memory object that can fit the requested range */
+      fmem = fmap->mems;
+      while (fmem)
       {
-        /* Need a bigger object */
-        TRACE ("allocating bigger mem object (need more than %ld bytes)\n", fmap->mems->len);
+        if (fmem->off <= off && fmem->off + fmem->len >= off + len)
+          break;
+        fmem = fmem->next;
+      }
+
+      if (!fmem)
+      {
+        /* Need a new object */
+        TRACE ("allocating new mem object\n");
         GLOBAL_NEW(fmem);
         if (!fmem)
         {
@@ -379,7 +393,8 @@ void *mmap(void *addr, size_t len, int prot, int flags,
           return MAP_FAILED;
         }
 
-        fmem->len = off + len;
+        fmem->off = off;
+        fmem->len = len;
 
         arc = DosMyAllocMem((PPVOID)&fmem->start, fmem->len, fmap_flags);
         if (arc)
@@ -399,25 +414,24 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       {
         /* We're reusing the same memory object, overlaps are possible */
         maybe_overlaps = 1;
-        fmem = fmap->mems;
       }
     }
 
     /* Update fmap with the latest file size */
     fmap->size = st.cbFile;
 
-    assert(fmap->mems == fmem);
-    TRACE("fmap %p (top mem %p (start %lx, len %lx))\n", fmap, fmem, fmem->start, fmem->len);
+    TRACE("fmap %p (top mem %p (start %lx, off %llx, len %lx))\n",
+          fmap, fmem, fmem->start, fmem->off, fmem->len);
 
     /*
      * Search for a mapping containing the requested offset in this process to
      * find where to insert it in the sorted list and to check for region
      * overlaps.
      */
-    first = find_mmap(pdesc->mmaps, fmem->start + off, &prev);
+    first = find_mmap(pdesc->mmaps, fmem->start + (off - fmem->off), &prev);
 
-    if (first && first->start == fmem->start + off &&
-        first->end == fmem->start + off + len)
+    if (maybe_overlaps && first && first->start == fmem->start + (off - fmem->off) &&
+        first->end == fmem->start + (off - fmem->off) + len)
     {
       /* Very fast route: the new mappping fully matches the existing one. */
       TRACE("fully replacing mmap %p (start %lx, end %lx)\n", first, first->start, first->end);
@@ -429,9 +443,6 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       /* Copy the new flags over */
       mmap->flags = flags;
       mmap->dos_flags = dos_flags;
-      /* Fix start/end/off */
-      mmap->start = fmem->start + off;
-      mmap->end = mmap->start + len;
       /* Increase the usage count of the existing MemMap */
       assert(mmap->f->refcnt);
       ++mmap->f->refcnt;
@@ -556,7 +567,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
     mmap->f->fmem = fmem;
     mmap->f->fh = fh;
     mmap->f->refcnt = 1;
-    mmap->start = fmem->start + off;
+    mmap->start = fmem->start + (off - fmem->off);
     mmap->end = mmap->start + len;
     if (flags & MAP_SHARED && fdesc->map)
     {
@@ -881,8 +892,6 @@ void *mmap(void *addr, size_t len, int prot, int flags,
 
   if (fmap)
   {
-    assert(fmap->mems == fmem);
-
     /* Reference the file handle as it's used now */
     if (!proc_fdesc->p->fh)
     {
@@ -1002,6 +1011,7 @@ static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
   size_t i, j;
   uint32_t bit;
   APIRET arc;
+  LONGLONG pos;
 
   if (len)
     len += off - PAGE_ALIGN(off);
@@ -1009,23 +1019,22 @@ static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
   if (!len)
     len = m->end - m->start - off;
 
-  /* Add the offset of this mapping from the base address */
-  off += m->start - m->f->fmem->start;
+  /* Find out the start position in the file */
+  pos = m->f->fmem->off + m->start - m->f->fmem->start + off;
 
-  /* Return early if offset is completely beyond EOF */
-  if (off >= m->f->fmem->map->size)
+  /* Return early if pos is completely beyond EOF */
+  if (pos >= m->f->fmem->map->size)
     return;
 
   /* Make sure we don't sync beyond EOF */
-  if (off + len > m->f->fmem->map->size)
-    len = m->f->fmem->map->size - off;
+  if (pos + len > m->f->fmem->map->size)
+    len = m->f->fmem->map->size - pos;
 
-  page = m->f->fmem->start + off;
+  page = m->start + off;
   end = page + len;
 
-  /* Note: dirty map is file map object-based */
-  i = (off / PAGE_SIZE) / DIRTYMAP_WIDTH;
-  j = (off / PAGE_SIZE) % DIRTYMAP_WIDTH;
+  i = (pos / PAGE_SIZE) / DIRTYMAP_WIDTH;
+  j = (pos / PAGE_SIZE) % DIRTYMAP_WIDTH;
   bit = 0x1 << j;
 
   for (; page < end; ++i, j = 0, bit = 0x1)
@@ -1042,9 +1051,8 @@ static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
         if (m->f->fh->dirtymap[i] & bit)
         {
           ULONG nesting, write, written;
-          LONGLONG pos;
 
-          pos = page - m->f->fmem->start;
+          pos = m->f->fmem->off + page - m->f->fmem->start;
           write = page + PAGE_SIZE <= end ? PAGE_SIZE : end - page;
 
           TRACE("writing %lu bytes from addr %lx to fd %ld at offset %llu\n",
@@ -1068,18 +1076,16 @@ static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
           ASSERT_MSG(!arc && write == written, "%ld (%lu != %lu)\n", arc, write, written);
 
           /*
-           * Now propagate changes to all related mem objects. Note that since
-           * objects are stored in size descending order, we stop when we
-           * find an object too small to receive any changes. Also note that we
+           * Now propagate changes to all related mem objects. Also note that we
            * only copy to committed memory, uncommitted will be fetched directly
            * from the file upon the first access attempt.
            */
           FileMapMem *fm = m->f->fmem->map->mems;
-          while (fm && fm->len > pos)
+          while (fm)
           {
-            if (fm != m->f->fmem)
+            if (fm != m->f->fmem && fm->off <= pos && fm->off + fm->len > pos)
             {
-              ULONG p = fm->start + pos;
+              ULONG p = pos - fm->off + fm->start;
               ULONG l = PAGE_SIZE, f;
 
               arc = DosQueryMem((PVOID)p, &l, &f);
@@ -1097,9 +1103,9 @@ static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
 
               if (f & PAG_COMMIT)
               {
-                l = pos + write <= fm->len ? write : fm->len - pos;
                 TRACE("copying %lu bytes from addr %lx to addr %lx of mem %p (%lx)\n",
-                      l, page, p, fm, fm->start);
+                      write, page, p, fm, fm->start);
+                assert(pos + write <= fm->off + fm->len);
 
                 if (!(f & PAG_WRITE))
                 {
@@ -1108,7 +1114,7 @@ static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
                   ASSERT_MSG(!arc, "%ld\n", arc);
                 }
 
-                memcpy((void *)p, (void *)page, l);
+                memcpy((void *)p, (void *)page, write);
 
                 if (!(f & PAG_WRITE))
                 {
@@ -1592,7 +1598,8 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
     TRACE_IF(m && !(m->flags & MAP_ANON), "file size %llu\n", m->f->fmem->map->size);
 
     if (m && m->dos_flags & fPERM &&
-        (m->flags & MAP_ANON || m->f->fmem->map->size > PAGE_ALIGN(addr - m->f->fmem->start)))
+        (m->flags & MAP_ANON ||
+         m->f->fmem->map->size > m->f->fmem->off + PAGE_ALIGN(addr - m->f->fmem->start)))
     {
       APIRET arc;
       ULONG len = PAGE_SIZE;
@@ -1623,8 +1630,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
                */
               if (report->ExceptionInfo[0] == XCPT_WRITE_ACCESS)
               {
-                /* Note: dirty map is file map object-based */
-                ULONG pn = (page_addr - m->f->fmem->start) / PAGE_SIZE;
+                LONGLONG pn = (m->f->fmem->off + (page_addr - m->f->fmem->start)) / PAGE_SIZE;
                 size_t i = pn / DIRTYMAP_WIDTH;
                 uint32_t bit = 0x1 << (pn % DIRTYMAP_WIDTH);
                 m->f->fh->dirtymap[i] |= bit;
@@ -1657,7 +1663,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
                * and abort the application.
                */
               ULONG read = PAGE_SIZE;
-              LONGLONG pos = page_addr - m->f->fmem->start;
+              LONGLONG pos = m->f->fmem->off + page_addr - m->f->fmem->start;
               TRACE("Reading %lu bytes to addr %lx from fd %ld at offset %llu\n",
                     read, page_addr, m->f->fh->fd, pos);
               arc = DosSetFilePtrL(m->f->fh->fd, pos, FILE_BEGIN, &pos);
@@ -1706,8 +1712,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
             TRACE_IF(arc, "DosSetMem = %ld\n", arc);
             if (!arc)
             {
-              /* Note: dirty map is file map object-based */
-              ULONG pn = (page_addr - m->f->fmem->start) / PAGE_SIZE;
+              LONGLONG pn = (m->f->fmem->off + (page_addr - m->f->fmem->start)) / PAGE_SIZE;
               size_t i = pn / DIRTYMAP_WIDTH;
               uint32_t bit = 0x1 << (pn % DIRTYMAP_WIDTH);
               m->f->fh->dirtymap[i] |= bit;
@@ -2269,7 +2274,7 @@ static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOper
         ULONG start = m->start;
         ULONG dos_flags = m->dos_flags;
 
-        TRACE_IF(!(m->flags & MAP_ANON), "giving mapping %p (start %lx) to pid %x\n",
+        TRACE_IF((m->flags & MAP_ANON), "giving mapping %p (start %lx) to pid %x\n",
                  m, m->start, pForkHandle->pidChild);
         TRACE_IF(!(m->flags & MAP_ANON), "giving mapping %p (start %lx, fmem %p, fmem->start %lx) to pid %x\n",
                  m, m->start, m->f->fmem, m->f->fmem->start, pForkHandle->pidChild);

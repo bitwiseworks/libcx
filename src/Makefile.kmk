@@ -75,6 +75,7 @@ TESTS += \
   mmap/tst-mmap7.c \
   mmap/tst-mmap8.c \
   mmap/tst-mmap9.c \
+  mmap/tst-mmap10.c \
   mmap/tst-msync.c \
   mmap/tst-msync2.c \
   mmap/tst-msync3.c \

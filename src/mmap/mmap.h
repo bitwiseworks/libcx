@@ -51,6 +51,7 @@ typedef struct FileMapMem
 
   struct FileMap *map; /* parent file map */
   ULONG start; /* start address */
+  off_t off; /* offset from the beginning of the file */
   ULONG len; /* object length */
   int refcnt; /* number of MemMap entries using it */
 } FileMapMem;
