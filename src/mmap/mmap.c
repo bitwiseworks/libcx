@@ -1055,7 +1055,7 @@ static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
           pos = m->f->fmem->off + page - m->f->fmem->start;
           write = page + PAGE_SIZE <= end ? PAGE_SIZE : end - page;
 
-          TRACE("writing %lu bytes from addr %lx to fd %ld at offset %llu\n",
+          TRACE("writing %lu bytes from addr %lx to fd %ld at offset %llx\n",
                 write, page, m->f->fh->fd, pos);
 
           /*
@@ -1625,8 +1625,8 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
                * First access to a writable shared mapping page. If it's a read
                * attempt, then we commit the page and remove PAG_WRITE so that
                * we will get an exception when the page is first written to
-               * to mark it dirty. If it's a write attempt, we simply mark it
-               * as dirty right away.
+               * to mark it dirty. If it's a write attempt, we simply commit it
+               * and mark as dirty right away.
                */
               if (report->ExceptionInfo[0] == XCPT_WRITE_ACCESS)
               {
@@ -1664,7 +1664,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
                */
               ULONG read = PAGE_SIZE;
               LONGLONG pos = m->f->fmem->off + page_addr - m->f->fmem->start;
-              TRACE("Reading %lu bytes to addr %lx from fd %ld at offset %llu\n",
+              TRACE("Reading %lu bytes to addr %lx from fd %ld at offset %llx\n",
                     read, page_addr, m->f->fh->fd, pos);
               arc = DosSetFilePtrL(m->f->fh->fd, pos, FILE_BEGIN, &pos);
               TRACE_IF(arc, "DosSetFilePtrL = %ld\n", arc);
@@ -1679,6 +1679,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
             {
               if (revoke_write)
               {
+                TRACE("Revoking PAG_WRITE\n");
                 arc = DosSetMem((PVOID)page_addr, len, m->dos_flags & ~PAG_WRITE);
                 TRACE_IF(arc, "DosSetMem = %ld\n", arc);
               }
