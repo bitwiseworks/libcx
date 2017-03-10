@@ -78,7 +78,7 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
 
 #endif /* TRACE_ENABLED */
 
-#define ASSERT_MSG(cond, msg, ...) do { if (!cond) { fprintf(stderr, "Assertion info: " msg, ## __VA_ARGS__); fflush(stderr); _assert(#cond, __FILE__, __LINE__); } } while(0)
+#define ASSERT_MSG(cond, msg, ...) do { if (!(cond)) { fprintf(stderr, "Assertion info: " msg, ## __VA_ARGS__); fflush(stderr); _assert(#cond, __FILE__, __LINE__); } } while(0)
 
 /** Divides count by bucket_sz and rounds the result up. */
 #define DIVIDE_UP(count, bucket_sz) (((count) + (bucket_sz - 1)) / (bucket_sz))
