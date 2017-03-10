@@ -32,17 +32,18 @@
 #include <stdarg.h>
 
 #include "shared.h"
+#include "version.h"
 
 /*
  * Debug builds are hardly compatible with release builds so
  * use a separat mutex and LIBCx shared memory block.
  */
 #ifdef DEBUG
-#define MUTEX_LIBCX "\\SEM32\\LIBCX_MUTEX_V4_debug"
-#define SHAREDMEM_LIBCX "\\SHAREMEM\\LIBCX_DATA_V4_debug"
+#define MUTEX_LIBCX "\\SEM32\\LIBCX_MUTEX_V" VERSION_MAJ_MIN "_debug"
+#define SHAREDMEM_LIBCX "\\SHAREMEM\\LIBCX_DATA_V" VERSION_MAJ_MIN "_debug"
 #else
-#define MUTEX_LIBCX "\\SEM32\\LIBCX_MUTEX_V4"
-#define SHAREDMEM_LIBCX "\\SHAREMEM\\LIBCX_DATA_V4"
+#define MUTEX_LIBCX "\\SEM32\\LIBCX_MUTEX_V" VERSION_MAJ_MIN
+#define SHAREDMEM_LIBCX "\\SHAREMEM\\LIBCX_DATA_V" VERSION_MAJ_MIN
 #endif
 
 #define HEAP_SIZE (1024 * 1024 * 2) /* 2MB - total shared data area size */
@@ -690,12 +691,26 @@ int close(int fildes)
 }
 
 /**
- * Prints LIBCx memory usage statistics to stdout.
+ * Prints LIBCx version and memory usage statistics to stdout.
  */
 void print_stats()
 {
   int rc;
   _HEAPSTATS hst;
+
+  printf("LIBCx version: %d.%d.%d\n", VERSION_MAJOR, VERSION_MINOR, VERSION_BUILD);
+
+  {
+    char name[CCHMAXPATH] = {0};
+    HMODULE hmod;
+    ULONG obj, offset;
+    APIRET arc;
+    arc = DosQueryModFromEIP(&hmod, &obj, sizeof(name), name, &offset, (ULONG)print_stats);
+    ASSERT_MSG(arc == NO_ERROR, "%ld\n", arc);
+    arc = DosQueryModuleName(hmod, sizeof(name), name);
+    ASSERT_MSG(arc == NO_ERROR, "%ld\n", arc);
+    printf("LIBCx module:  %s\n\n", name);
+  }
 
   global_lock();
 
