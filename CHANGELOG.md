@@ -1,5 +1,11 @@
 # History of changes for LIBCx
 
+#### Version 0.5.0 (2017-03-10)
+
+* mmap: Support overlapped mappings (needed for e.g. git and BerkleyDB).
+* mmap: Significantly reduce memory footprint when mapping files in chunks.
+* libcx-stats: Print LIBCx version and DLL path information.
+
 #### Version 0.4.1 (2017-01-18)
 
 * select: Don't reset fd sets on failure (this fixes odd behavior of cmake).
