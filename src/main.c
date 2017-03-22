@@ -60,6 +60,11 @@ struct mainstack
   char **envp;
 };
 
+static void flush_all_streams()
+{
+  flushall();
+}
+
 __attribute__((__noreturn__))
 extern void __main_hook_return(void *stack);
 
@@ -92,6 +97,15 @@ void __main_hook(struct mainstack *stack)
   newstack.libcXcptRec.ExceptionHandler = libcxExceptionHandler;
   newstack.libcXcptRec.prev_structure = END_OF_CHAIN;
   DosSetExceptionHandler(&newstack.libcXcptRec);
+
+  /*
+   * Register a callback to flush all buffered streams at program termination
+   * which is needed to avoid data loss when I/O is redirected to TCP sockets.
+   * Ssee #31 for more deatils. Note that we rely on the fact that _std_exit
+   * calls atexit callbacks in reverse order so that we are called last, after
+   * program callbacks that may potentially do some buffered I/O too.
+   */
+  atexit(flush_all_streams);
 
   __main_hook_return(&newstack);
 }
