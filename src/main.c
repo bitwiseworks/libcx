@@ -28,6 +28,9 @@
 #include <exceptq.h>
 
 #include <memory.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <pwd.h>
 
 #include "shared.h"
 
@@ -106,6 +109,26 @@ void __main_hook(struct mainstack *stack)
    * program callbacks that may potentially do some buffered I/O too.
    */
   atexit(flush_all_streams);
+
+  /*
+   * EXPERIMENTAL: Set the Unix user ID of this process to the user specified
+   * in the LOGNAME/USER environment variable. This will e.g. make all files
+   * and directories have this user's ID and group ID instead of root. Note
+   * that this depends on kLIBC getlo
+   */
+
+  if (!getenv("LIBCX_NO_SETUID"))
+  {
+    const char *name = getenv("LOGNAME");
+    if (!name)
+      name = getenv("USER");
+    if (name)
+    {
+      struct passwd *pw = getpwnam(name);
+      if (pw)
+        setuid(pw->pw_uid);
+    }
+  }
 
   __main_hook_return(&newstack);
 }
