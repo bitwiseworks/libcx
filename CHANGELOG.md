@@ -1,5 +1,10 @@
 # History of changes for LIBCx
 
+#### Version 0.5.1 (2017-03-24)
+
+* Make streams bound to TCP sockets properly flushed at program exit.
+* EXPERIMENTAL. Set Unix user ID at startup to what is set in LOGNAME/USER envvar.
+
 #### Version 0.5.0 (2017-03-10)
 
 * mmap: Support overlapped mappings (needed for e.g. git and BerkleyDB).
