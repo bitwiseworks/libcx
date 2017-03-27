@@ -113,11 +113,13 @@ void __main_hook(struct mainstack *stack)
   /*
    * EXPERIMENTAL: Set the Unix user ID of this process to the user specified
    * in the LOGNAME/USER environment variable. This will e.g. make all files
-   * and directories have this user's ID and group ID instead of root. Note
-   * that this depends on kLIBC getlo
+   * and directories have this user's ID and group ID instead of root. It will
+   * also make many tools (e.g. yum) break due to the lack of root priveleges.
+   * For this reason, it's disabled by default. We will re-enable it once we've
+   * got sudo and such.
    */
 
-  if (!getenv("LIBCX_NO_SETUID"))
+  if (getenv("LIBCX_SETUID"))
   {
     const char *name = getenv("LOGNAME");
     if (!name)

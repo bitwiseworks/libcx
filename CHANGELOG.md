@@ -1,5 +1,9 @@
 # History of changes for LIBCx
 
+#### Version 0.5.2 (2017-03-27)
+
+* EXPERIMENTAL. Make setting Unix user ID at startup disabled by default.
+
 #### Version 0.5.1 (2017-03-24)
 
 * Make streams bound to TCP sockets properly flushed at program exit.
