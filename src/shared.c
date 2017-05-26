@@ -850,14 +850,25 @@ void touch_pages(void *buf, size_t len)
     buf_addr = PAGE_ALIGN(buf_addr) + PAGE_SIZE;
   }
 
-  dos_len = PAGE_SIZE;
   while (buf_addr < buf_end)
   {
+    dos_len = ~0U;
     arc = DosQueryMem((PVOID)PAGE_ALIGN(buf_addr), &dos_len, &dos_flags);
     TRACE_IF(arc, "DosQueryMem = %lu\n", arc);
     if (!arc && !(dos_flags & (PAG_FREE | PAG_COMMIT)))
-      *(int *)buf_addr = *(int *)buf_addr;
-    buf_addr += PAGE_SIZE;
+    {
+      /* touch all pages within the reported range */
+      dos_len += buf_addr;
+      while (buf_addr < dos_len)
+      {
+        *(int *)buf_addr = *(int *)buf_addr;
+        buf_addr += PAGE_SIZE;
+      }
+    }
+    else
+    {
+      buf_addr += dos_len;
+    }
   }
 }
 
