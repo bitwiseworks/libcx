@@ -185,45 +185,122 @@ ssize_t pwrite(int fildes, const void *buf, size_t nbyte, off_t offset)
 #undef TRACE_GROUP
 #define TRACE_GROUP TRACE_GROUP_DOSREADBUGFIX
 
+/*
+ * Chunk size to prevent JFS from screwing up (found out experimentally, 128 MB
+ * and more cause the same hangs on subsequental runs as with no chunks, so be
+ * on the safe side).
+ */
+#define DOS_READ_MAX_CHUNK (32U * 1024U * 1024U) /* 32 MB */
+
 /**
  * LIBC read replacement.
  * Override to fix DosRead bug, see touch_pages docs.
+ * Also override to fix another DosRead bug, see #36.
  */
 ssize_t read(int fd, void *buf, size_t nbyte)
 {
   TRACE("fd %d, buf %p, nbyte %u\n", fd, buf, nbyte);
 
   touch_pages(buf, nbyte);
-  return _std_read(fd, buf, nbyte);
+
+  if (nbyte < DOS_READ_MAX_CHUNK)
+    return _std_read(fd, buf, nbyte);
+
+  int rc, final_rc = 0;
+  size_t chunk = DOS_READ_MAX_CHUNK;
+  do
+  {
+    rc = _std_read(fd, buf, chunk);
+    if (rc >= 0)
+      final_rc += rc;
+    else
+      final_rc = rc;
+    if (rc < 0 || rc < chunk || nbyte == chunk)
+      break;
+    nbyte -= chunk;
+    buf += chunk;
+    if (nbyte < chunk)
+      chunk = nbyte;
+  }
+  while (1);
+
+  return final_rc;
 }
 
 /**
  * LIBC __read replacement.
  * Override to fix DosRead bug, see touch_pages docs.
+ * Also override to fix another DosRead bug, see #36.
  */
 int __read(int handle, void *buf, size_t nbyte)
 {
   TRACE("handle %d, buf %p, nbyte %u\n", handle, buf, nbyte);
 
   touch_pages(buf, nbyte);
-  return _libc__read(handle, buf, nbyte);
+
+  if (nbyte < DOS_READ_MAX_CHUNK)
+    return _libc__read(handle, buf, nbyte);
+
+  int rc, final_rc = 0;
+  size_t chunk = DOS_READ_MAX_CHUNK;
+  do
+  {
+    rc = _libc__read(handle, buf, chunk);
+    if (rc >= 0)
+      final_rc += rc;
+    else
+      final_rc = rc;
+    if (rc < 0 || rc < chunk || nbyte == chunk)
+      break;
+    nbyte -= chunk;
+    buf += chunk;
+    if (nbyte < chunk)
+      chunk = nbyte;
+  }
+  while (1);
+
+  return final_rc;
 }
 
 /**
  * LIBC _stream_read replacement.
  * Override to fix DosRead bug, see touch_pages docs.
+ * Also override to fix another DosRead bug, see #36.
  */
 int _stream_read(int fd, void *buf, size_t nbyte)
 {
   TRACE("fd %d, buf %p, nbyte %u\n", fd, buf, nbyte);
 
   touch_pages(buf, nbyte);
-  return _libc_stream_read(fd, buf, nbyte);
+
+  if (nbyte < DOS_READ_MAX_CHUNK)
+    return _libc_stream_read(fd, buf, nbyte);
+
+  int rc, final_rc = 0;
+  size_t chunk = DOS_READ_MAX_CHUNK;
+  do
+  {
+    rc = _libc_stream_read(fd, buf, chunk);
+    if (rc >= 0)
+      final_rc += rc;
+    else
+      final_rc = rc;
+    if (rc < 0 || rc < chunk || nbyte == chunk)
+      break;
+    nbyte -= chunk;
+    buf += chunk;
+    if (nbyte < chunk)
+      chunk = nbyte;
+  }
+  while (1);
+
+  return final_rc;
 }
 
 /**
  * DOSCALLS DosRead replacement.
  * Override to fix DosRead bug, see touch_pages docs.
+ * Also override to fix another DosRead bug, see #36.
  */
 ULONG APIENTRY DosRead(HFILE hFile, PVOID pBuffer, ULONG ulLength,
                        PULONG pulBytesRead)
@@ -232,5 +309,25 @@ ULONG APIENTRY DosRead(HFILE hFile, PVOID pBuffer, ULONG ulLength,
         hFile, pBuffer, ulLength, pulBytesRead);
 
   touch_pages(pBuffer, ulLength);
-  return _doscalls_DosRead(hFile, pBuffer, ulLength, pulBytesRead);
+
+  if (ulLength < DOS_READ_MAX_CHUNK)
+    return _doscalls_DosRead(hFile, pBuffer, ulLength, pulBytesRead);
+
+  APIRET arc;
+  ULONG ulChunk = DOS_READ_MAX_CHUNK, ulRead = 0;
+  *pulBytesRead = 0;
+  do
+  {
+    arc = _doscalls_DosRead(hFile, pBuffer, ulChunk, &ulRead);
+    *pulBytesRead += ulRead;
+    if (arc || ulRead < ulChunk || ulLength == ulChunk)
+      break;
+    ulLength -= ulChunk;
+    pBuffer += ulChunk;
+    if (ulLength < ulChunk)
+      ulChunk = ulLength;
+  }
+  while (1);
+
+  return arc;
 }
