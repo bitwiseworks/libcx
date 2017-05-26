@@ -298,6 +298,43 @@ int _stream_read(int fd, void *buf, size_t nbyte)
 }
 
 /**
+ * LIBC fread replacement.
+ * Override to fix DosRead bug, see touch_pages docs.
+ * Also override to fix another DosRead bug, see #36.
+ */
+size_t fread(void *buf, size_t size, size_t count, FILE *stream)
+{
+  TRACE("stream %p, buf %p, size %u, count %u\n", stream, buf, size, count);
+
+  size_t nbyte = size * count;
+
+  touch_pages(buf, nbyte);
+
+  if (nbyte < DOS_READ_MAX_CHUNK)
+    return _std_fread(buf, size, count, stream);
+
+  int rc, final_rc = 0;
+  size_t chunk = DOS_READ_MAX_CHUNK;
+  do
+  {
+    rc = _std_fread(buf, 1, chunk, stream);
+    if (rc >= 0)
+      final_rc += rc;
+    else
+      final_rc = rc;
+    if (rc < 0 || rc < chunk || nbyte == chunk)
+      break;
+    nbyte -= chunk;
+    buf += chunk;
+    if (nbyte < chunk)
+      chunk = nbyte;
+  }
+  while (1);
+
+  return final_rc;
+}
+
+/**
  * DOSCALLS DosRead replacement.
  * Override to fix DosRead bug, see touch_pages docs.
  * Also override to fix another DosRead bug, see #36.

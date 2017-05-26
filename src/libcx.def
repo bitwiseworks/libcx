@@ -18,6 +18,7 @@ EXPORTS
   "_read"
   "___read"
   "__stream_read"
+  "_fread"
   "DosRead"
   "_ftruncate"
   ; private symbols
