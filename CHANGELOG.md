@@ -1,5 +1,10 @@
 # History of changes for LIBCx
 
+#### Version 0.5.3 (2017-06-02)
+
+* Add workaround for another `DosRead` bug that leads to hard system freezes on JFS when reading big files at once.
+* Add 'fread()` override to incorporate all 'DosRead` workarounds applied to `read()` and other calls.
+
 #### Version 0.5.2 (2017-03-27)
 
 * EXPERIMENTAL. Make setting Unix user ID at startup disabled by default.
@@ -28,7 +33,7 @@
 * mmap: Fix race when another process sets needed permissions on shared memory.
 * mmap: Optimize LIBCx global memory pool usage.
 * poll: Return EFAULT if first argument is NULL (not required by POSIX but many platforms do that).
-* Add `read()`, `__read()`, `_stream_read()` and `DosRead()` overrides that fix a known `DosRead` bug when fails if interrupted by an exception handler and returns garbage.
+* Add `read()`, `__read()`, `_stream_read()` and `DosRead()` overrides that fix a known `DosRead` bug when it fails if interrupted by an exception handler and returns garbage.
 * Make `pread()` use the fixed `DosRead` call to avoid returning EINVAL on mapped memory.
 
 #### Version 0.3.1 (2016-09-26)
