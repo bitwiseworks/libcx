@@ -71,13 +71,13 @@ define def_test_rules
 PROGRAMS += $(target)
 $(target)_TEMPLATE = Test
 $(target)_INCS = $$(abspathex $$(dir $(test)), $$($(test)_DEFPATH))
-$(target)_SOURCES = $$(abspathex $(test), $$($(test)_DEFPATH))
+$(target)_SOURCES = $$(abspathex $(test), $$($(test)_DEFPATH)) $$(abspathex $($(test)_SOURCES), $$($(test)_DEFPATH))
 
 # Note: LIBPATHSTRICT=T doesn't work with posix shells, use cmd.exe.
 .PHONY: test-$(target)
 test-$(target):
 	%$(call MSG_L1,Running test $(target)...)
-	$(QUIET)cmd.exe /c "set BEGINLIBPATH=$(PATH_STAGE_LIB);%BEGINLIBPATH% && set LIBPATHSTRICT=T && $$($(target)_1_TARGET) --direct > test-$(target).log 2>&1"
+	$(QUIET)cmd.exe /c "set BEGINLIBPATH=$(PATH_STAGE_LIB);%BEGINLIBPATH% && set LIBPATHSTRICT=T && $(PATH_STAGE_BIN)/$$(notdir $$($(target)_1_TARGET)) --direct > test-$(target).log 2>&1"
 
 ifneq ($(ordered),)
 .NOTPARALLEL: test-$(target)

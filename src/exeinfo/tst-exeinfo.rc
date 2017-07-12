@@ -1,0 +1,11 @@
+#include "tst-exeinfo-rc.h"
+
+RCDATA ID_1 { ID_1_DATA }
+RCDATA ID_2 { ID_2_DATA }
+
+
+/* Make sure we're big enough for lxlite to pack data with both EXEPACK1 and EXEPACK2 */
+RCDATA 0xFFF0 { "garbagegarbagegarbagegarbagegarbagegarbagegarbagegarbagegarbagegarbage"
+                "garbagegarbagegarbagegarbagegarbagegarbagegarbagegarbagegarbagegarbage" }
+RCDATA 0xFFF1 { "garbagegarbagegarbagegarbagegarbagegarbagegarbagegarbagegarbagegarbage"
+                "garbagegarbagegarbagegarbagegarbagegarbagegarbagegarbagegarbagegarbage" }

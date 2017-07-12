@@ -86,4 +86,17 @@ TESTS += \
   mmap/tst-madvise.c \
   mmap/tst-mprotect.c
 
+TESTS += exeinfo/tst-exeinfo.c
+exeinfo/tst-exeinfo.c_SOURCES = exeinfo/tst-exeinfo.rc
+
+PROGRAMS += tst-exeinfo-packed-1
+tst-exeinfo-packed-1_TEMPLATE = Test
+tst-exeinfo-packed-1_SOURCES = exeinfo/tst-exeinfo.c exeinfo/tst-exeinfo.rc
+tst-exeinfo-packed-1_POST_CMDS = lxlite $(out) /CS /MR3 /MLN >nul
+
+PROGRAMS += tst-exeinfo-packed-2
+tst-exeinfo-packed-2_TEMPLATE = Test
+tst-exeinfo-packed-2_SOURCES = exeinfo/tst-exeinfo.c exeinfo/tst-exeinfo.rc
+tst-exeinfo-packed-2_POST_CMDS = lxlite $(out) /CS /MRN /ML1 >nul
+
 include $(FILE_KBUILD_SUB_FOOTER)
