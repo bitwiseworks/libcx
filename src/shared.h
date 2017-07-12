@@ -24,6 +24,9 @@
 #include <umalloc.h>
 #include <sys/param.h> /* PAGE_SIZE */
 
+/** Executes statement(s) syntactically wrapped as a func call. */
+#define do_(stmt) if (1) { stmt; } else do {} while (0)
+
 #ifdef TRACE_ENABLED
 
 #ifndef TRACE_USE_LIBC_LOG
@@ -58,11 +61,17 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
 #define TRACE_RAW(msg, ...) printf("*** [%d:%d] %s:%d:%s: " msg, getpid(), _gettid(), __FILE__, __LINE__, __FUNCTION__, ## __VA_ARGS__)
 #define TRACE_CONT(msg, ...) printf(msg, ## __VA_ARGS__)
 #endif
+
 #define TRACE(msg, ...) do { TRACE_RAW(msg, ## __VA_ARGS__); TRACE_FLUSH(); } while(0)
 #define TRACE_BEGIN(msg, ...) { do { TRACE_RAW(msg, ## __VA_ARGS__); } while(0)
 #define TRACE_END() TRACE_FLUSH(); } do {} while(0)
 #define TRACE_IF(cond, msg, ...) if (cond) TRACE(msg, ## __VA_ARGS__)
 #define TRACE_BEGIN_IF(cond, msg, ...) if (cond) TRACE_BEGIN(msg, ## __VA_ARGS__)
+
+#define TRACE_ERRNO(msg, ...) TRACE(msg ": %s\n", ##__VA_ARGS__, strerror(errno))
+
+#define TRACE_AND(stmt, msg, ...) do_(TRACE(msg, ##__VA_ARGS__); stmt)
+#define TRACE_ERRNO_AND(stmt, msg, ...) do_(TRACE_ERRNO(msg, ##__VA_ARGS__); stmt)
 
 #else
 
@@ -75,13 +84,25 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
 #define TRACE_END() } do {} while(0)
 #define TRACE_IF(cond, msg, ...) do {} while (0)
 #define TRACE_BEGIN_IF(cond, msg, ...) if (0) { do {} while(0)
+#define TRACE_ERRNO(msg, ...) do {} while (0)
+#define TRACE_AND(stmt, msg, ...) do_(stmt)
+#define TRACE_ERRNO_AND(stmt, msg, ...) do_(stmt)
 
 #endif /* TRACE_ENABLED */
 
 #define ASSERT_MSG(cond, msg, ...) do { if (!(cond)) { fprintf(stderr, "Assertion info: " msg, ## __VA_ARGS__); fflush(stderr); _assert(#cond, __FILE__, __LINE__); } } while(0)
 
+/** Set errno and execute the given statement (does tracing in debug builds). */
+#define SET_ERRNO_AND(stmt, code) do_(TRACE("setting errno to %d", (code)); errno = (code); stmt)
+/** Set errno (does tracing in debug builds). */
+#define SET_ERRNO(code) SET_ERRNO_AND(code, (void)0)
+
 /** Divides count by bucket_sz and rounds the result up. */
 #define DIVIDE_UP(count, bucket_sz) (((count) + (bucket_sz - 1)) / (bucket_sz))
+/** Rounds count up to be a multiple of bucket_sz */
+#define ROUND_UP(count, bucket_sz) (DIVIDE_UP(count, bucket_sz) * bucket_sz)
+/** Same as ROUND_UP but optimized for when bucket_sz is a power of 2 */
+#define ROUND_UP_2(count, bucket_sz) (((count) + (bucket_sz - 1)) & ~(bucket_sz - 1))
 
 /** Returns 1 if addr is page-aligned and 0 otherwise. */
 #define PAGE_ALIGNED(addr) (!(((ULONG)addr) & (PAGE_SIZE - 1)))
