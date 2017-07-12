@@ -186,9 +186,9 @@ void *global_alloc(size_t size);
 #define GLOBAL_NEW_PLUS(ptr, more) (ptr) = (__typeof(ptr))global_alloc(sizeof(*ptr) + (more))
 #define GLOBAL_NEW_ARRAY(ptr, sz) (ptr) = (__typeof(ptr))global_alloc(sizeof(*ptr) * (sz))
 
-#define NEW(ptr) (ptr) = (__typeof(ptr))malloc(sizeof(*ptr))
-#define NEW_PLUS(ptr, more) (ptr) = (__typeof(ptr))malloc(sizeof(*ptr) + (more))
-#define NEW_ARRAY(ptr, sz) (ptr) = (__typeof(ptr))malloc(sizeof(*ptr) * (sz))
+#define NEW(ptr) (ptr) = (__typeof(ptr))calloc(1, sizeof(*ptr))
+#define NEW_PLUS(ptr, more) (ptr) = (__typeof(ptr))calloc(1, sizeof(*ptr) + (more))
+#define NEW_ARRAY(ptr, sz) (ptr) = (__typeof(ptr))calloc((sz), sizeof(*ptr))
 
 #define RENEW_ARRAY(ptr, sz) (ptr) = (__typeof(ptr))realloc(ptr, sizeof(*ptr) * (sz))
 
