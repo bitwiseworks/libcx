@@ -36,6 +36,18 @@
 #include <sys/param.h>
 #include <time.h>
 
+/* Borrow from shared.h */
+#ifndef do_
+#define do_(stmt1, stmt2) \
+  if (1) { stmt1; stmt2; } else do {} while (0)
+#endif
+
+#define perr(msg, ...) printf("ERROR: " msg "\n" , ##__VA_ARGS__)
+#define perrno(msg, ...) printf("ERROR: " msg ": %s\n", ##__VA_ARGS__, strerror (errno))
+
+#define perr_and(stmt, msg, ...) do_(perr (msg, ##__VA_ARGS__), stmt)
+#define perrno_and(stmt, msg, ...) do_(perrno (msg, ##__VA_ARGS__), stmt)
+
 #if defined(__EMX__) || defined(__APPLE__)
 /* EMX has no public definition qelem (que_elem is used internally) */
 struct qelem {
