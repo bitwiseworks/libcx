@@ -21,6 +21,10 @@ EXPORTS
   "_fread"
   "DosRead"
   "_ftruncate"
+  "_exeinfo_open"
+  "_exeinfo_get_format"
+  "_exeinfo_get_resource_data"
+  "_exeinfo_close"
   ; private symbols
   _print_stats @60000 NONAME
   ; debug symbols (absent from release builds)

@@ -20,6 +20,7 @@ libcx_SOURCES = \
   poll/poll.c \
   select/select.c \
   mmap/mmap.c \
+  exeinfo/exeinfo.c \
   beginthread.c \
   main.c \
   main.s \

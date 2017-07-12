@@ -62,6 +62,7 @@ static __LIBC_LOGGROUP  logGroup[] =
   { 1, "select" },            /*  3 */
   { 1, "mmap" },              /*  4 */
   { 1, "dosreadbugfix" },     /*  5 */
+  { 1, "exeinfo" },           /*  6 */
 };
 
 static __LIBC_LOGGROUPS logGroups =
