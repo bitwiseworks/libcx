@@ -41,8 +41,6 @@
 
 typedef struct
 {
-  struct exe_hdr hdr;
-
   union
   {
     struct
@@ -285,25 +283,29 @@ EXEINFO exeinfo_open(const char *fname)
   {
     struct exe_hdr hdr;
 
-    rc = read(info->fd, &hdr, sizeof (hdr));
-    if (rc < sizeof(hdr))
+    /* Read at least the first 2 bytes of the header (magic signature) */
+    rc = read(info->fd, &hdr, sizeof(hdr));
+    if (rc < sizeof(hdr.e_magic))
       TRACE_ERRNO_AND(break, "read");
-    if (hdr.e_magic != EMAGIC)
-      TRACE_AND(break, "invalid MZ magic %x\n", hdr.e_magic);
+
+    if (hdr.e_magic == EMAGIC)
+    {
+      if (!hdr.e_lfanew)
+        TRACE_AND(break, "missing new header\n");
+    }
+    else if (hdr.e_magic != E32MAGIC)
+      TRACE_AND(break, "unsupported header 0x%X\n", hdr.e_magic);
 
     NEW(info->exe);
     if (!info->exe)
       TRACE_ERRNO_AND(break, "NEW");
 
-    // Keep a copy around for possible further reference
-    info->exe->hdr = hdr;
-
-    if (!hdr.e_lfanew)
-      TRACE_AND(break, "missing new header\n");
-
     struct e32_exe *lx = &info->exe->lx.hdr;
 
-    rc = lseek(info->fd, hdr.e_lfanew, SEEK_SET);
+    if (hdr.e_magic == EMAGIC)
+      rc = lseek(info->fd, hdr.e_lfanew, SEEK_SET);
+    else
+      rc = lseek(info->fd, 0, SEEK_SET);
     if (rc != -1)
       rc = read(info->fd, lx, sizeof(*lx));
     if (rc < sizeof(*lx))
