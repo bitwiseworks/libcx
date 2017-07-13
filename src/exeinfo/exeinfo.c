@@ -65,6 +65,12 @@ typedef struct _exeinfo
 }
 exeinfo;
 
+/*
+ * Implementation note: LX header traversal and unpack functions are based on
+ * the Pascal code by Veit Kannegieser found in rdc2.pas in the source archive
+ * for the RESMGR tool (http://hobbes.nmsu.edu/h-search.php?key=resmgr).
+ */
+
 void lx_unexepack1(const char *from, char *to, unsigned short sz)
 {
   const char *fp = from, *fe = from + sz;
