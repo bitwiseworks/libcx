@@ -369,11 +369,15 @@ int exeinfo_get_resource_data(EXEINFO info, int type, int id, const char **data)
       if (res->obj < 1 || res->obj > info->exe->lx.hdr.e32_objcnt)
         SET_ERRNO_AND(return -1, EILSEQ);
 
-      const char *obj_data = lx_load_object(info, res->obj);
-      if (!obj_data)
-          return -1;
+      if (data)
+      {
+        const char *obj_data = lx_load_object(info, res->obj);
+        if (!obj_data)
+            return -1;
 
-      *data = obj_data + res->offset;
+        *data = obj_data + res->offset;
+      }
+
       return res->cb;
     }
   }

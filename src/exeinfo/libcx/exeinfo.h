@@ -113,7 +113,8 @@ EXEINFO_RESOURCE *exeinfo_find_next_resource(EXEINFO info);
  * contents should be copied to a user buffer prior to this call.
  *
  * If @a data is NULL, only the size of the requested resource object's data
- * buffer is returned.
+ * is returned. Note that the object's data itself is not accessed in this case
+ * so a subsequent call with a non-NULL argument may fail with EILSEQ or ENOMEM.
  *
  * If the requested resource is not found in the given executable file, this
  * function returns -1 and sets @c errno to ENOENT.
@@ -124,7 +125,7 @@ EXEINFO_RESOURCE *exeinfo_find_next_resource(EXEINFO info);
  * @param info Handle to the executable file returned by #exeinfo_open().
  * @param type Resource type.
  * @param id Resource identifier.
- * @param data Address of the variable to receive a pointer to the resource data.
+ * @param data Address of a variable to receive a pointer to the resource data.
  * @return Size of the data buffer returned in @a data, in bytes or -1 on
  * failure. Sets @c errno to a POSIX error code if -1 is returned.
  */
