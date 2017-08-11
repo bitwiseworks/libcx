@@ -76,10 +76,11 @@
 #include <unistd.h>			     /* standard Unix definitions */
 #include <sys/types.h>                       /* system types */
 #include <sys/time.h>                        /* time definitions */
-#include <assert.h>                          /* assertion macros */
 #include <string.h>                          /* string functions */
 #include <errno.h>                           /* time definitions */
 #include "poll.h"                            /* this package */
+
+#include "../shared.h"
 
 /*---------------------------------------------------------------------------*\
 				  Macros
@@ -177,7 +178,7 @@ static struct timeval *map_timeout
        accordingly.
     */
 
-    assert (pSelTimeout != (struct timeval *) NULL);
+    ASSERT (pSelTimeout != (struct timeval *) NULL);
 
     switch (poll_timeout)
     {

@@ -27,12 +27,17 @@
 #include <string.h>
 #include <stdlib.h>
 #include <limits.h>
-#include <assert.h>
 #include <process.h>
 #include <stdarg.h>
+#include <sys/builtin.h>
 
 #include "shared.h"
 #include "version.h"
+
+#define __LIBC_LOG_GROUP TRACE_GROUP
+#include <InnoTekLIBC/logstrict.h>
+
+#include <InnoTekLIBC/fork.h>
 
 /*
  * Debug builds are hardly compatible with release builds so
@@ -49,8 +54,6 @@
 #define HEAP_SIZE (1024 * 1024 * 2) /* 2MB - total shared data area size */
 #define HEAP_INIT_SIZE 65536 /* Initial size of committed memory */
 #define HEAP_INC_SIZE 65536 /* Heap increment amount */
-
-#include <InnoTekLIBC/fork.h>
 
 #if defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG)
 
@@ -73,6 +76,10 @@ static __LIBC_LOGGROUPS logGroups =
 void *gLogInstance = NULL;
 
 #endif
+
+void *gAssertLogInstance = NULL;
+
+HMODULE ghModule = NULLHANDLE;
 
 SharedData *gpData = NULL;
 
@@ -136,7 +143,7 @@ static void shared_init()
   int rc;
 
   arc = DosExitList(EXLST_ADD, ProcessExit);
-  assert(arc == NO_ERROR);
+  ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
 
 #if defined(TRACE_ENABLED) && !defined(TRACE_USE_LIBC_LOG)
   /*
@@ -161,8 +168,7 @@ static void shared_init()
        * it and open shared heap located in that memory.
        */
       arc = DosRequestMutexSem(gMutex, SEM_INDEFINITE_WAIT);
-      TRACE("DosRequestMutexSem = %lu\n", arc);
-      assert(arc == NO_ERROR);
+      ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
 
       if (arc == NO_ERROR)
       {
@@ -181,13 +187,12 @@ static void shared_init()
         }
 
         TRACE("gpData->heap = %p\n", gpData->heap);
-        assert(gpData->heap);
+        ASSERT(gpData->heap);
 
         rc = _uopen(gpData->heap);
-        TRACE("_uopen = %d (%d)\n", rc, errno);
-        assert(rc == 0);
+        ASSERT_MSG(rc == 0, "%d (%d)", rc, errno);
 
-        assert(gpData->refcnt);
+        ASSERT(gpData->refcnt);
         gpData->refcnt++;
       }
 
@@ -207,7 +212,7 @@ static void shared_init()
       }
     }
 
-    assert(arc == NO_ERROR);
+    ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
 
     /*
      * We are the process that successfully created the main mutex.
@@ -228,14 +233,13 @@ static void shared_init()
       TRACE("DosAllocSharedMem = %ld\n", arc);
     }
 
-    assert(arc == NO_ERROR);
+    ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
 
     TRACE("gpData %p\n", gpData);
 
     /* Commit the initial block */
     arc = DosSetMem(gpData, HEAP_INIT_SIZE, PAG_DEFAULT | PAG_COMMIT);
-    TRACE("DosSetMem = %ld\n", arc);
-    assert(arc == NO_ERROR);
+    ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
 
     gpData->size = HEAP_INIT_SIZE;
 
@@ -244,20 +248,20 @@ static void shared_init()
                             _BLOCK_CLEAN, _HEAP_REGULAR | _HEAP_SHARED,
                             mem_alloc, NULL);
     TRACE("gpData->heap = %p\n", gpData->heap);
-    assert(gpData->heap);
+    ASSERT(gpData->heap);
 
-    rc =_uopen(gpData->heap);
-    assert(rc == 0);
+    rc = _uopen(gpData->heap);
+    ASSERT_MSG(rc == 0, "%d (%d)", rc, errno);
 
     gpData->refcnt = 1;
 
     /* Initialize common structures */
     GLOBAL_NEW_ARRAY(gpData->procs, PROC_DESC_HASH_SIZE);
     TRACE("gpData->procs = %p\n", gpData->procs);
-    assert(gpData->procs);
+    ASSERT(gpData->procs);
     GLOBAL_NEW_ARRAY(gpData->files, FILE_DESC_HASH_SIZE);
     TRACE("gpData->files = %p\n", gpData->files);
-    assert(gpData->files);
+    ASSERT(gpData->files);
 
     break;
   }
@@ -278,7 +282,7 @@ static void shared_term()
         gMutex, gpData, gpData ? gpData->heap : 0,
         gpData ? gpData->refcnt : 0);
 
-  assert(gMutex != NULLHANDLE);
+  ASSERT(gMutex != NULLHANDLE);
 
   DosRequestMutexSem(gMutex, SEM_INDEFINITE_WAIT);
 
@@ -292,7 +296,7 @@ static void shared_term()
       int i;
       ProcDesc *proc;
 
-      assert(gpData->refcnt);
+      ASSERT(gpData->refcnt);
       gpData->refcnt--;
 
       /* Uninitialize individual components */
@@ -367,7 +371,7 @@ static void shared_term()
       if (gpData->refcnt == 0)
       {
 #ifdef STATS_ENABLED
-        ASSERT_MSG(!hst._used, "%d\n", hst._used);
+        ASSERT_MSG(!hst._used, "%d", hst._used);
 #endif
         rc = _udestroy(gpData->heap, !_FORCE);
         TRACE("_udestroy = %d (%d)\n", rc, errno);
@@ -398,7 +402,7 @@ static void shared_term()
  */
 unsigned long _System _DLL_InitTerm(unsigned long hModule, unsigned long ulFlag)
 {
-  TRACE("ulFlag %lu\n", ulFlag);
+  TRACE("hModule %lx, ulFlag %lu\n", hModule, ulFlag);
 
   switch (ulFlag)
   {
@@ -414,6 +418,7 @@ unsigned long _System _DLL_InitTerm(unsigned long hModule, unsigned long ulFlag)
      */
     case 0:
     {
+      ghModule = hModule;
       if (_CRT_init() != 0)
         return 0;
       __ctordtorInit();
@@ -430,6 +435,7 @@ unsigned long _System _DLL_InitTerm(unsigned long hModule, unsigned long ulFlag)
     {
       __ctordtorTerm();
       _CRT_term();
+      ghModule = NULLHANDLE;
       break;
     }
 
@@ -462,13 +468,12 @@ void global_lock()
 {
   APIRET arc;
 
-  assert(gMutex != NULLHANDLE);
-  assert(gpData);
+  ASSERT(gMutex != NULLHANDLE);
+  ASSERT(gpData);
 
   arc = DosRequestMutexSem(gMutex, SEM_INDEFINITE_WAIT);
-  TRACE_IF(arc, "DosRequestMutexSem = %lu\n", arc);
 
-  ASSERT_MSG(arc == NO_ERROR, "%ld\n", arc);
+  ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
 }
 
 /**
@@ -478,12 +483,11 @@ void global_unlock()
 {
   APIRET arc;
 
-  assert(gMutex != NULLHANDLE);
+  ASSERT(gMutex != NULLHANDLE);
 
   arc = DosReleaseMutexSem(gMutex);
-  TRACE_IF(arc, "DosReleaseMutexSem = %lu\n", arc);
 
-  ASSERT_MSG(arc == NO_ERROR, "%ld\n", arc);
+  ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
 }
 
 /**
@@ -542,7 +546,7 @@ ProcDesc *get_proc_desc_ex(pid_t pid, enum HashMapOpt opt)
   ProcDesc *desc, *prev;
   int rc;
 
-  assert(gpData);
+  ASSERT(gpData);
 
   /*
    * We use identity as the hash function as we get a regularly ascending
@@ -604,9 +608,9 @@ FileDesc *get_proc_file_desc_ex(pid_t pid, const char *path, enum HashMapOpt opt
   FileDesc **map;
   int rc;
 
-  assert(gpData);
-  assert(path);
-  assert(strlen(path) < PATH_MAX);
+  ASSERT(gpData);
+  ASSERT(path);
+  ASSERT(strlen(path) < PATH_MAX);
 
   if (pid)
   {
@@ -707,9 +711,9 @@ void print_stats()
     ULONG obj, offset;
     APIRET arc;
     arc = DosQueryModFromEIP(&hmod, &obj, sizeof(name), name, &offset, (ULONG)print_stats);
-    ASSERT_MSG(arc == NO_ERROR, "%ld\n", arc);
+    ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
     arc = DosQueryModuleName(hmod, sizeof(name), name);
-    ASSERT_MSG(arc == NO_ERROR, "%ld\n", arc);
+    ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
     printf("LIBCx module:  %s\n\n", name);
   }
 
@@ -718,7 +722,7 @@ void print_stats()
   printf("Reserved memory size:  %d bytes\n", HEAP_SIZE);
   printf("Committed memory size: %d bytes\n", gpData->size);
   rc = _ustats(gpData->heap, &hst);
-  assert(rc == 0);
+  ASSERT_MSG(rc == 0, "%d (%d)", rc, errno);
   printf("Heap size total:       %d bytes\n"
          "Heap size used now:    %d bytes\n", hst._provided, hst._used);
 #ifdef STATS_ENABLED
@@ -763,7 +767,7 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
   {
     __libc_LogGroupInit(&logGroups, "LIBCX_TRACE");
     gLogInstance = __libc_LogInit(0, &logGroups, "NUL");
-    assert(gLogInstance);
+    ASSERT(gLogInstance);
 
     /*
      * This is a dirty hack to write logs to the console,
@@ -780,7 +784,7 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
     } __LIBC_LOGINST, *__LIBC_PLOGINST;
 
     /* Sanity check */
-    assert(((__LIBC_PLOGINST)gLogInstance)->pGroups == &logGroups);
+    ASSERT(((__LIBC_PLOGINST)gLogInstance)->pGroups == &logGroups);
 
     DosDupHandle(1, &((__LIBC_PLOGINST)gLogInstance)->hFile);
   }
@@ -812,6 +816,112 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
 }
 
 #endif /* defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG) */
+
+static void *get_assert_log_instance()
+{
+  if (gAssertLogInstance)
+    return gAssertLogInstance;
+
+  char buf[CCHMAXPATH + 128];
+
+  // We don't query QSV_TIME_HIGH as it will remain 0 until 19-Jan-2038 and for
+  // our purposes (generate an unique log name sorted by date) it's fine.
+  ULONG time;
+  DosQuerySysInfo(QSV_TIME_LOW, QSV_TIME_LOW, &time, sizeof(time));
+
+  // Get log directory (boot drive if no UNIXROOT)
+  const char *path = "/var/log/libcx";
+  PSZ unixroot;
+  if (DosScanEnv("UNIXROOT", &unixroot) != NO_ERROR)
+  {
+    ULONG drv;
+    DosQuerySysInfo(QSV_BOOT_DRIVE, QSV_BOOT_DRIVE, &drv, sizeof(drv));
+
+    unixroot = "C:";
+    unixroot[0] = '@' + drv;
+    path = "";
+  }
+  else
+  {
+    // Make sure the directory exists (no error checks here as the missing
+    // directory will pop up later in __libc_LogInit anyway)
+    if (strlen(unixroot) >= CCHMAXPATH)
+      return NULL;
+    strcpy(buf, unixroot);
+    strcat(buf, path);
+    DosCreateDir(buf, NULL);
+  }
+
+  // Get program name
+  char name[CCHMAXPATH];
+  PPIB ppib = NULL;
+  DosGetInfoBlocks(NULL, &ppib);
+  if (DosQueryModuleName(ppib->pib_hmte, sizeof(name), name) != NO_ERROR)
+    return NULL;
+  _remext(name);
+
+  void *inst = __libc_LogInit(0, NULL, "%s%s/%s-%08lx-%04x.log",
+                              unixroot, path, _getname(name), time, getpid());
+  if (inst)
+    if (!__atomic_cmpxchg32((uint32_t *)&gAssertLogInstance, (uint32_t)inst, 0))
+      // NOTE: this must be __libc_LogTerm(inst) but it's missing (kLIBC bug)
+      free(inst);
+
+  // Bail out if we failed to create a log file at all
+  if (!gAssertLogInstance)
+    return NULL;
+
+  // Write out LIBCx info
+  strcpy(buf, "LIBCx version : " VERSION_MAJ_MIN_BLD "\n");
+  strcat(buf, "LIBCx module  : ");
+  APIRET arc = DosQueryModuleName(ghModule, CCHMAXPATH, buf + strlen(buf));
+  if (arc == NO_ERROR)
+    sprintf(buf + strlen(buf), " (hmod=%04lx)\n", ghModule);
+  else
+    sprintf(buf + strlen(buf), " <error %ld>\n", arc);
+  __libc_LogRaw(gAssertLogInstance, __LIBC_LOG_MSGF_FLUSH, buf, strlen(buf));
+}
+
+void libcx_assert(const char *string, const char *fname, unsigned int line, const char *format, ...)
+{
+  if (!gAssertLogInstance)
+    if (!get_assert_log_instance())
+      return;
+
+  va_list args;
+  char *msg = NULL;
+
+  enum { MaxBuf = 512 };
+
+  if (format)
+  {
+    msg = (char *)alloca(MaxBuf);
+    if (!msg)
+        return;
+
+    va_start(args, format);
+
+    int n = vsnprintf(msg, MaxBuf - 1, format, args);
+    if (n != EOF)
+    {
+      // Check for truncation
+      if (n >= MaxBuf - 1)
+        n = MaxBuf - 2;
+      // Add \n at the end if missing
+      if (msg[n] != '\n')
+      {
+        msg[n] = '\n';
+        msg[n + 1] = '\0';
+      }
+    }
+
+    va_end(args);
+  }
+
+  // NOTE: This will issue a debugger breakpoint (or INT 3) and log to stderr
+  // unless LIBC_STRICT_DISABLED is set.
+  __libc_LogAssert(gAssertLogInstance, 0, NULL, fname, line, string, "%s", msg ? msg : "");
+}
 
 /*
  * Touches (reads/writes) the first word in every page of memory pointed to by

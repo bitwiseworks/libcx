@@ -37,8 +37,6 @@
 #ifndef TRACE_GROUP
 #define TRACE_GROUP 0
 #endif
-#define __LIBC_LOG_GROUP TRACE_GROUP
-#include <InnoTekLIBC/logstrict.h>
 /* The below defs must be in sync with the logGroup array */
 #define TRACE_GROUP_FCNTL 1
 #define TRACE_GROUP_PWRITE 2
@@ -91,7 +89,19 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
 
 #endif /* TRACE_ENABLED */
 
+#ifndef ASSERT_USE_LIBC_LOG
+#define ASSERT_USE_LIBC_LOG 1
+#endif
+
+#if ASSERT_USE_LIBC_LOG
+void libcx_assert(const char *string, const char *fname, unsigned int line, const char *format, ...) __printflike(4, 5);
+#define ASSERT_MSG(cond, msg, ...) do { if (!(cond)) { libcx_assert(#cond, __FILE__, __LINE__, msg, ## __VA_ARGS__); } } while(0)
+#define ASSERT(cond) ASSERT_MSG(cond, NULL)
+#else
+#include <assert.h>
 #define ASSERT_MSG(cond, msg, ...) do { if (!(cond)) { fprintf(stderr, "Assertion info: " msg, ## __VA_ARGS__); fflush(stderr); _assert(#cond, __FILE__, __LINE__); } } while(0)
+#deifne ASSERT(cond) assert(cond)
+#endif
 
 /** Set errno and execute the given statement (does tracing in debug builds). */
 #define SET_ERRNO_AND(stmt, code) do_(TRACE("setting errno to %d", (code)); errno = (code); stmt)

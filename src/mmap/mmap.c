@@ -26,7 +26,6 @@
 #include <errno.h>
 #include <process.h>
 #include <sys/types.h>
-#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 #include <emx/io.h>
@@ -52,7 +51,7 @@ static APIRET DosMyAllocMem(PPVOID addr, ULONG size, ULONG flags)
 {
   APIRET arc;
 
-  assert(!(flags & OBJ_ANY));
+  ASSERT(!(flags & OBJ_ANY));
 
   if (flags & OBJ_MY_SHARED)
   {
@@ -90,7 +89,7 @@ static void free_file_handle(FileHandle *fh)
   APIRET arc;
 
   TRACE("freeing file handle %p (fd %ld)\n", fh, fh->fd);
-  assert(!fh->refcnt);
+  ASSERT(!fh->refcnt);
 
   if (fh->dirtymap_sz)
     free(fh->dirtymap);
@@ -98,7 +97,7 @@ static void free_file_handle(FileHandle *fh)
 
   if (fh->desc)
   {
-    assert(fh->desc->p->fh == fh);
+    ASSERT(fh->desc->p->fh == fh);
     fh->desc->p->fh = NULL;
   }
 
@@ -114,13 +113,12 @@ static void free_file_map_mem(FileMapMem *mem)
   APIRET arc;
 
   TRACE("freeing file mem %p\n", mem);
-  assert(!mem->refcnt);
+  ASSERT_MSG(!mem->refcnt, "%d", mem->refcnt);
 
   if (mem->start)
   {
     arc = DosFreeMem((PVOID)mem->start);
-    TRACE("DosFreeMem = %ld\n", arc);
-    assert(!arc);
+    ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
   }
 
   FileMap *fmap = mem->map;
@@ -136,7 +134,7 @@ static void free_file_map_mem(FileMapMem *mem)
     /* Remove elsewhere */
     while (m && m->next != mem)
       m = m->next;
-    assert(m);
+    ASSERT(m);
     m->next = mem->next;
   }
 
@@ -148,7 +146,7 @@ static void free_file_map_mem(FileMapMem *mem)
     TRACE("freeing file map %p\n", fmap);
     if (fmap->desc)
     {
-      assert(fmap->desc->map == fmap);
+      ASSERT(fmap->desc->map == fmap);
       fmap->desc->map = NULL;
     }
     free(fmap);
@@ -164,8 +162,8 @@ static MemMap *find_mmap(MemMap *head, ULONG addr, MemMap **prev_out);
  */
 static MemMap *clone_file_mmap(MemMap *m)
 {
-  assert(m->f->fmem);
-  assert(m->f->fh);
+  ASSERT(m->f->fmem);
+  ASSERT(m->f->fh);
 
   MemMap *nm;
   GLOBAL_NEW_PLUS(nm, sizeof(*nm->f));
@@ -175,11 +173,11 @@ static MemMap *clone_file_mmap(MemMap *m)
   COPY_STRUCT_PLUS(nm, m, sizeof(*nm->f));
 
   /* Reference file maps' memory object */
-  assert(nm->f->fmem->refcnt);
+  ASSERT(nm->f->fmem->refcnt);
   ++nm->f->fmem->refcnt;
 
   /* Reference file handle */
-  assert(nm->f->fh->refcnt);
+  ASSERT(nm->f->fh->refcnt);
   ++nm->f->fh->refcnt;
 
   return nm;
@@ -250,7 +248,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
     dos_flags |= PAG_EXECUTE;
 
   pdesc = find_proc_desc(getpid());
-  assert(pdesc);
+  ASSERT(pdesc);
 
   if (!(flags & MAP_ANON))
   {
@@ -370,7 +368,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
     }
     else
     {
-      assert(fmap->mems);
+      ASSERT(fmap->mems);
 
       /* Search for a memory object that can fit the requested range */
       fmem = fmap->mems;
@@ -435,8 +433,8 @@ void *mmap(void *addr, size_t len, int prot, int flags,
     {
       /* Very fast route: the new mappping fully matches the existing one. */
       TRACE("fully replacing mmap %p (start %lx, end %lx)\n", first, first->start, first->end);
-      assert(first->f->fmem == fmem);
-      assert(first->f->fh);
+      ASSERT(first->f->fmem == fmem);
+      ASSERT(first->f->fh);
 
       mmap = first;
 
@@ -444,7 +442,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       mmap->flags = flags;
       mmap->dos_flags = dos_flags;
       /* Increase the usage count of the existing MemMap */
-      assert(mmap->f->refcnt);
+      ASSERT(mmap->f->refcnt);
       ++mmap->f->refcnt;
       goto success;
     }
@@ -501,8 +499,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       if (flags & MAP_PRIVATE)
         mode |= OPEN_FLAGS_NOINHERIT;
       arc = DosSetFHState(fh->fd, mode);
-      TRACE_IF(arc, "DosSetFHState = %lu\n", arc);
-      assert(!arc);
+      ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
 
       TRACE("dup fd %ld\n", fh->fd);
     }
@@ -512,7 +509,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       if (fh->dirtymap_sz < dirtymap_sz)
       {
         TRACE("increasing dirty map (old size %u bytes)\n", fh->dirtymap_sz);
-        assert(fh->dirtymap);
+        ASSERT(fh->dirtymap);
         uint32_t *dirtymap = realloc(fh->dirtymap, dirtymap_sz);
         if (!dirtymap)
         {
@@ -527,7 +524,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       }
     }
 
-    assert(fh);
+    ASSERT(fh);
   }
   else
   {
@@ -563,7 +560,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   if (!(flags & MAP_ANON))
   {
     /* Use the file map */
-    assert(fmem && fh);
+    ASSERT(fmem && fh);
     mmap->f->fmem = fmem;
     mmap->f->fh = fh;
     mmap->f->refcnt = 1;
@@ -575,8 +572,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       ULONG mem_flags, mem_len = fmem->len;
 
       arc = DosQueryMem((PVOID)fmem->start, &mem_len, &mem_flags);
-      TRACE_IF(arc, "DosQueryMem = %ld\n", arc);
-      assert(!arc);
+      ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
       if (mem_flags & PAG_FREE)
       {
         /*
@@ -584,8 +580,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
          * exception upon the first write to a page(see mmap_exception()).
          */
         arc = DosGetSharedMem((PVOID)fmem->start, PAG_READ | PAG_EXECUTE);
-        TRACE("DosGetSharedMem = %lu\n", arc);
-        assert(!arc);
+        ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
       }
     }
     arc = NO_ERROR;
@@ -624,7 +619,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   }
 
   /* Check if aligned to page size */
-  assert(mmap->start && PAGE_ALIGNED(mmap->start));
+  ASSERT(mmap->start && PAGE_ALIGNED(mmap->start));
 
   /* Now insert the new mapping into the sorted list */
   if (fmap && maybe_overlaps)
@@ -674,7 +669,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       last->start = mmap->end;
 
       /* Increase the usage count of the middle MemMap */
-      assert(mmap->f->refcnt);
+      ASSERT(mmap->f->refcnt);
       ++mmap->f->refcnt;
     }
     else
@@ -695,7 +690,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
        * all the gaps between regions fully overlapped by the new mmap.
        */
       last = first ? first : prev ? prev : pdesc->mmaps;
-      assert(last);
+      ASSERT(last);
       p_last = NULL;
       while (1)
       {
@@ -705,18 +700,18 @@ void *mmap(void *addr, size_t len, int prot, int flags,
         if (pdesc->mmaps == last && last->start > mmap->start)
         {
           /* Special case: no region in front of mmap */
-          assert(last);
+          ASSERT(last);
           gap_start = mmap->start;
           gap_end = last->start;
-          assert(gap_end < mmap->end);
+          ASSERT(gap_end < mmap->end);
         }
         else if (!last)
         {
           /* Special case: no region after mmap */
-          assert(p_last);
+          ASSERT(p_last);
           gap_start = p_last->end;
           gap_end = mmap->end;
-          assert(gap_start > mmap->start);
+          ASSERT(gap_start > mmap->start);
         }
         else if (p_last && p_last->end < last->start)
         {
@@ -728,7 +723,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
         if (gap_end)
         {
           TRACE("filling gap (start %lx, end %lx)\n", gap_start, gap_end);
-          assert(gap_start != gap_end);
+          ASSERT(gap_start != gap_end);
 
           m = clone_file_mmap(mmap);
           if (!m)
@@ -738,12 +733,12 @@ void *mmap(void *addr, size_t len, int prot, int flags,
           m->next = last;
           if (p_last)
           {
-            assert(p_last->next == last);
+            ASSERT(p_last->next == last);
             p_last->next = m;
           }
           else
           {
-            assert(pdesc->mmaps == last);
+            ASSERT(pdesc->mmaps == last);
             pdesc->mmaps = m;
           }
 
@@ -759,11 +754,11 @@ void *mmap(void *addr, size_t len, int prot, int flags,
         if (last && last->start >= mmap->start && last->end <= mmap->end)
         {
           TRACE("overlapping mmap %p (start %lx, end %lx)\n", last, last->start, last->end);
-          assert(last->f->fmem == fmem);
-          assert(last->f->fh == fh);
+          ASSERT(last->f->fmem == fmem);
+          ASSERT(last->f->fh == fh);
 
           /* Increase the usage count of the existing MemMap */
-          assert(last->f->refcnt);
+          ASSERT(last->f->refcnt);
           ++last->f->refcnt;
         }
 
@@ -786,7 +781,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       /* Fix p_last when we got only one intersecting region */
       if (first && last == first)
       {
-        assert(!p_last);
+        ASSERT(!p_last);
         p_last = prev;
       }
 
@@ -810,7 +805,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
         first->end = m->start;
 
         /* Increase the usage count of the overlapping MemMap */
-        assert(m->f->refcnt);
+        ASSERT(m->f->refcnt);
         ++m->f->refcnt;
       }
 
@@ -829,12 +824,12 @@ void *mmap(void *addr, size_t len, int prot, int flags,
         m->next = last;
         if (p_last)
         {
-          assert(p_last->next == last);
+          ASSERT(p_last->next == last);
           p_last->next = m;
         }
         else
         {
-          assert(pdesc->mmaps == last);
+          ASSERT(pdesc->mmaps == last);
           pdesc->mmaps = m;
         }
 
@@ -843,7 +838,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
         last->start = m->end;
 
         /* Increase the usage count of the overlapping MemMap */
-        assert(m->f->refcnt);
+        ASSERT(m->f->refcnt);
         ++m->f->refcnt;
 
         /* Update first if it's affected as it might be used below */
@@ -854,7 +849,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       /* Find a cloned region that starts where mmap would */
       m = first ? (first->start == mmap->start ? first : first->next) :
                   prev ? prev->next : pdesc->mmaps;
-      assert(m->start == mmap->start);
+      ASSERT(m->start == mmap->start);
 
       /*
        * Now Free the original new mmap. We've cloned everything during overlaps
@@ -875,7 +870,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
      * when a new memory object for a file map has just been allocated (so no
      * overlaps too).
      */
-    assert(!first);
+    ASSERT_MSG(!first, "%p", first);
     if (prev)
     {
       /* Insert in the middle/end */
@@ -903,9 +898,9 @@ void *mmap(void *addr, size_t len, int prot, int flags,
     else
     {
       ++(fh->refcnt);
-      assert(fh->refcnt);
-      assert(fh->desc == proc_fdesc);
-      assert(proc_fdesc->p->fh == fh);
+      ASSERT(fh->refcnt);
+      ASSERT(fh->desc == proc_fdesc);
+      ASSERT(proc_fdesc->p->fh == fh);
     }
 
     /* Reference the file map's memory object as it is used now */
@@ -919,9 +914,9 @@ void *mmap(void *addr, size_t len, int prot, int flags,
     else
     {
       ++(fmem->refcnt);
-      assert(fmem->refcnt);
-      assert(fmap->desc == fdesc);
-      assert(fdesc->map == fmap);
+      ASSERT(fmem->refcnt);
+      ASSERT(fmap->desc == fdesc);
+      ASSERT(fdesc->map == fmap);
     }
   }
 
@@ -1003,8 +998,8 @@ static MemMap *find_mmap(MemMap *head, ULONG addr, MemMap **prev_out)
  */
 static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
 {
-  assert(m && !(m->flags & MAP_ANON) && m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE);
-  assert(off + len <= (m->end - m->start));
+  ASSERT(m && !(m->flags & MAP_ANON) && m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE);
+  ASSERT(off + len <= (m->end - m->start));
   TRACE("m %p (fmem %p), off %lu, len %lu\n", m, m->f->fmem, off, len);
 
   ULONG page, end;
@@ -1070,10 +1065,10 @@ static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
           DosEnterMustComplete(&nesting);
 
           arc = DosSetFilePtrL(m->f->fh->fd, pos, FILE_BEGIN, &pos);
-          ASSERT_MSG(!arc, "%ld\n", arc);
+          ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
 
           arc = DosWrite(m->f->fh->fd, (PVOID)page, write, &written);
-          ASSERT_MSG(!arc && write == written, "%ld (%lu != %lu)\n", arc, write, written);
+          ASSERT_MSG(arc == NO_ERROR && write == written, "%ld (%lu != %lu)", arc, write, written);
 
           /*
            * Now propagate changes to all related mem objects. Also note that we
@@ -1089,29 +1084,29 @@ static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
               ULONG l = PAGE_SIZE, f;
 
               arc = DosQueryMem((PVOID)p, &l, &f);
-              ASSERT_MSG(!arc, "%ld\n", arc);
+              ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
 
               if (f & PAG_FREE)
               {
                 TRACE("getting shared memory %lx of mem %p\n", fm->start, fm);
                 arc = DosGetSharedMem((PVOID)fm->start, PAG_READ | PAG_EXECUTE);
-                ASSERT_MSG(!arc, "%ld\n", arc);
+                ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
               }
 
               arc = DosQueryMem((PVOID)p, &l, &f);
-              assert(!arc);
+              ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
 
               if (f & PAG_COMMIT)
               {
                 TRACE("copying %lu bytes from addr %lx to addr %lx of mem %p (%lx)\n",
                       write, page, p, fm, fm->start);
-                assert(pos + write <= fm->off + fm->len);
+                ASSERT(pos + write <= fm->off + fm->len);
 
                 if (!(f & PAG_WRITE))
                 {
                   /* memcpy needs PAG_WRITE, avoid unneeded mmap exceptions */
                   arc = DosSetMem((PVOID)p, l, (f & fPERM) | PAG_WRITE);
-                  ASSERT_MSG(!arc, "%ld\n", arc);
+                  ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
                 }
 
                 memcpy((void *)p, (void *)page, write);
@@ -1120,7 +1115,7 @@ static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
                 {
                   /* Restore PAG_WRITE */
                   arc = DosSetMem((PVOID)p, l, (f & fPERM));
-                  ASSERT_MSG(!arc, "%ld\n", arc);
+                  ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
                 }
               }
             }
@@ -1133,7 +1128,7 @@ static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
            * and the dirty bit on success.
            */
           arc = DosSetMem((PVOID)page, PAGE_SIZE, m->dos_flags & ~PAG_WRITE);
-          ASSERT_MSG(!arc, "%ld\n", arc);
+          ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
 
           m->f->fh->dirtymap[i] &= ~bit;
 
@@ -1152,7 +1147,7 @@ static void free_mmap(ProcDesc *desc, MemMap *m, MemMap *prev)
 {
   APIRET arc;
 
-  assert(m);
+  ASSERT(m);
 
   TRACE("%s mapping %p (%lx..%lx, refcnt %d), fmem %p (%lx, refcnt %d)\n",
         m->flags & MAP_SHARED ? "shared" : "private",
@@ -1167,13 +1162,13 @@ static void free_mmap(ProcDesc *desc, MemMap *m, MemMap *prev)
   if (!(m->flags & MAP_ANON))
   {
     /* Free the file handle if we are the last user */
-    assert(m->f->fh->refcnt);
+    ASSERT(m->f->fh->refcnt);
     --(m->f->fh->refcnt);
     if (!m->f->fh->refcnt)
       free_file_handle(m->f->fh);
 
     /* Free the file map's memory object if we are the last user */
-    assert(m->f->fmem->refcnt);
+    ASSERT(m->f->fmem->refcnt);
     --(m->f->fmem->refcnt);
     if (!m->f->fmem->refcnt)
       free_file_map_mem(m->f->fmem);
@@ -1182,8 +1177,7 @@ static void free_mmap(ProcDesc *desc, MemMap *m, MemMap *prev)
   {
     /* Release process-specific memory */
     arc = DosFreeMem((PVOID)m->start);
-    TRACE("DosFreeMem = %ld\n", arc);
-    assert(!arc);
+    ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
   }
 
   /* Remove this mapping from this process' mapping list */
@@ -1229,7 +1223,7 @@ int munmap(void *addr, size_t len)
   global_lock();
 
   desc = find_proc_desc(getpid());
-  assert(desc);
+  ASSERT(desc);
 
   m = find_mmap(desc->mmaps, (ULONG)addr, &pm);
 
@@ -1249,11 +1243,11 @@ int munmap(void *addr, size_t len)
       if (!(nm->flags & MAP_ANON))
       {
         /* Rreference file map's memory object */
-        assert(nm->f->fmem->refcnt);
+        ASSERT(nm->f->fmem->refcnt);
         ++nm->f->fmem->refcnt;
 
         /* Rreference file handle */
-        assert(nm->f->fh->refcnt);
+        ASSERT(nm->f->fh->refcnt);
         ++nm->f->fh->refcnt;
       }
 
@@ -1277,7 +1271,7 @@ int munmap(void *addr, size_t len)
 
           /* Decrease the usage count of the middle MemMap */
           --nm2->f->refcnt;
-          assert(nm2->f->refcnt);
+          ASSERT(nm2->f->refcnt);
         }
         else
           rc = -1;
@@ -1323,7 +1317,7 @@ int munmap(void *addr, size_t len)
 
           /* Decrease the usage count of the middle MemMap */
           --nm->f->refcnt;
-          assert(nm->f->refcnt);
+          ASSERT(nm->f->refcnt);
         }
       }
 
@@ -1339,7 +1333,7 @@ int munmap(void *addr, size_t len)
         {
           /* Decrease the usage count of the middle MemMap */
           --m->f->refcnt;
-          assert(m->f->refcnt);
+          ASSERT(m->f->refcnt);
           pm = m;
         }
         else
@@ -1378,7 +1372,7 @@ int munmap(void *addr, size_t len)
 
           /* Decrease the usage count of the middle MemMap */
           --nm->f->refcnt;
-          assert(nm->f->refcnt);
+          ASSERT(nm->f->refcnt);
         }
 
         m->start = addr_end;
@@ -1439,8 +1433,7 @@ static void mmap_flush_thread(void *arg)
   }
 
   /* Should never reach here: the thread gets killed at process termination */
-  TRACE("Stopped\n");
-  assert(0);
+  ASSERT(0);
 }
 
 /**
@@ -1454,16 +1447,15 @@ void mmap_init()
 
   /* Initialize our part of ProcDesc */
   desc = get_proc_desc(getpid());
-  assert(desc);
+  ASSERT(desc);
 
   GLOBAL_NEW(desc->mmap);
-  assert(desc->mmap);
+  ASSERT(desc->mmap);
   desc->mmap->flush_tid = -1;
 
   /* Note: we need a shared semaphore for DosAsyncTimer */
   arc = DosCreateEventSem(NULL, &desc->mmap->flush_sem, DC_SEM_SHARED | DCE_AUTORESET, FALSE);
-  TRACE("DosCreateEventSem = %ld\n", arc);
-  assert(arc == NO_ERROR);
+  ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
 }
 
 /**
@@ -1521,7 +1513,7 @@ static void schedule_flush_dirty(ProcDesc *desc, int immediate)
     /* Lazily start a worker thread */
     desc->mmap->flush_tid = _beginthread(mmap_flush_thread, NULL, 0, desc);
     TRACE_IF(desc->mmap->flush_tid == -1, "_beginthread = %s\n", strerror(errno));
-    assert(desc->mmap->flush_tid != -1);
+    ASSERT(desc->mmap->flush_tid != -1);
   }
 
   /*
@@ -1538,16 +1530,14 @@ static void schedule_flush_dirty(ProcDesc *desc, int immediate)
     if (desc->mmap->flush_request)
     {
       arc = DosQueryEventSem(desc->mmap->flush_sem, &cnt);
-      TRACE_IF(arc, "DosQueryEventSem = %ld\n", arc);
-      assert(!arc);
+      ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
       TRACE("cnt %lu\n", cnt);
     }
 
     if (cnt == 0)
     {
       arc = DosPostEventSem(desc->mmap->flush_sem);
-      TRACE_IF(arc, "DosPostEventSem = %ld\n", arc);
-      assert(!arc);
+      ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
     }
 
     if (!desc->mmap->flush_request)
@@ -1556,8 +1546,7 @@ static void schedule_flush_dirty(ProcDesc *desc, int immediate)
   else if (!desc->mmap->flush_request)
   {
     arc = DosAsyncTimer(FLUSH_DELAY, (HSEM)desc->mmap->flush_sem, NULL);
-    TRACE_IF(arc, "DosAsyncTimer = %ld\n", arc);
-    assert(!arc);
+    ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
 
     desc->mmap->flush_request = 1;
   }
@@ -1807,7 +1796,7 @@ int msync(void *addr, size_t len, int flags)
   global_lock();
 
   desc = find_proc_desc(getpid());
-  assert(desc);
+  ASSERT(desc);
 
   m = find_mmap(desc->mmaps, (ULONG)addr, &pm);
 
@@ -1919,7 +1908,7 @@ int madvise(void *addr, size_t len, int flags)
   global_lock();
 
   desc = find_proc_desc(getpid());
-  assert(desc);
+  ASSERT(desc);
 
   m = find_mmap(desc->mmaps, (ULONG)addr, &pm);
 
@@ -2061,7 +2050,7 @@ int mprotect(const void *addr, size_t len, int prot)
   global_lock();
 
   desc = find_proc_desc(getpid());
-  assert(desc);
+  ASSERT(desc);
 
   mmap = find_mmap(desc->mmaps, (ULONG)addr, &pm);
 
@@ -2248,7 +2237,7 @@ void set_mmap_full_size(int val)
 MemMap *get_proc_mmaps(int pid)
 {
   ProcDesc *desc = find_proc_desc(pid == -1 ? getpid() : pid);
-  assert(desc);
+  ASSERT(desc);
   return desc->mmaps;
 }
 #endif
@@ -2264,7 +2253,7 @@ static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOper
     global_lock();
 
     desc = find_proc_desc(getpid());
-    assert(desc);
+    ASSERT(desc);
 
     /* Give access to shared mappings to the forked child process */
     m = desc->mmaps;
@@ -2293,8 +2282,7 @@ static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOper
          * the same region multiple times, but this should not hurt.
          */
         arc = DosGiveSharedMem((PVOID)start, pForkHandle->pidChild, dos_flags);
-        TRACE_IF(arc, "DosGiveSharedMem = %ld\n", arc);
-        assert(!arc);
+        ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
       }
       m = m->next;
     }
@@ -2310,10 +2298,10 @@ static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOper
     global_lock();
 
     pdesc = find_proc_desc(pForkHandle->pidParent);
-    assert(pdesc);
+    ASSERT(pdesc);
 
     desc = find_proc_desc(getpid());
-    assert(desc);
+    ASSERT(desc);
 
     /* Copy parent's shared mappings to our own list */
     m = pdesc->mmaps;
@@ -2349,7 +2337,7 @@ static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOper
           if (m->dos_flags & PAG_WRITE)
             dirtymap_sz = DIVIDE_UP(NUM_PAGES(newm->f->fmem->map->size), DIRTYMAP_WIDTH) * (DIRTYMAP_WIDTH / 8);
 
-          assert(fdesc);
+          ASSERT(fdesc);
           proc_fdesc = get_proc_file_desc(getpid(), fdesc->path);
           if (!proc_fdesc)
           {
@@ -2381,11 +2369,11 @@ static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOper
 
           /* Reference file handle */
           ++(newm->f->fh->refcnt);
-          assert(newm->f->fh->refcnt);
+          ASSERT(newm->f->fh->refcnt);
 
           /* Reference file map */
           ++(newm->f->fmem->refcnt);
-          assert(newm->f->fmem->refcnt);
+          ASSERT(newm->f->fmem->refcnt);
         }
 
         /* Add the new entry the list */

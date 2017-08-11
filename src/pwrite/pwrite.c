@@ -26,7 +26,6 @@
 #include <errno.h>
 #include <unistd.h>
 #include <string.h>
-#include <assert.h>
 #include <emx/io.h>
 
 #define TRACE_GROUP TRACE_GROUP_PWRITE
@@ -43,7 +42,7 @@ int pwrite_filedesc_init(ProcDesc *proc, FileDesc *desc)
   if (!proc)
   {
     /* Mutex is lazily created in pread_pwrite */
-    assert(!desc->g->pwrite_lock);
+    ASSERT_MSG(!desc->g->pwrite_lock, "%lx", desc->g->pwrite_lock);
   }
   return 0;
 }
@@ -140,8 +139,8 @@ static ssize_t pread_pwrite(int bWrite, int fildes, void *buf,
     }
     arc = DosRequestMutexSem(mutex, SEM_INDEFINITE_WAIT);
   }
-  TRACE_IF(arc, "DosRequestMutexSem = %d\n", arc);
-  assert(arc == NO_ERROR);
+
+  ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
 
   TRACE("Will call %s\n", bWrite ? "_std_pwrite" : "_std_pread");
 

@@ -34,7 +34,6 @@
 #include <string.h>
 #include <stdlib.h>
 #include <limits.h>
-#include <assert.h>
 #include <emx/io.h>
 
 #undef fcntl
@@ -96,7 +95,7 @@ static int gbTerminate = 0; /* 1 after fcntl_locking_term is called */
 
 static PidList *copy_pids(const PidList *list)
 {
-  assert(list);
+  ASSERT(list);
   size_t size = sizeof(*list) + sizeof(list->list[0]) * list->size;
   PidList *nlist = global_alloc(size);
   if (nlist)
@@ -111,11 +110,11 @@ static pid_t first_pid(struct FcntlLock *l)
   if (l->type == 'r')
   {
     int i;
-    assert(l->pids && l->pids->used);
+    ASSERT(l->pids && l->pids->used);
     for (i = 0; i < l->pids->size; ++i)
       if (l->pids->list[i])
         return l->pids->list[i];
-    assert(FALSE);
+    ASSERT(FALSE);
   }
   return l->pid;
 }
@@ -145,11 +144,11 @@ static int equal_pids(PidList *l1, PidList *l2)
 
 static int lock_has_pid(struct FcntlLock *l, pid_t pid)
 {
-  assert(l->type != 0 && pid != 0);
+  ASSERT(l->type != 0 && pid != 0);
   if (l->type == 'r')
   {
     int i;
-    assert(l->pids && l->pids->used);
+    ASSERT(l->pids && l->pids->used);
     for (i = 0; i < l->pids->size; ++i)
       if (l->pids->list[i] == pid)
         return 1;
@@ -180,12 +179,12 @@ static int lock_mark(struct FcntlLock *l, short type, pid_t pid)
   switch (type)
   {
     case F_UNLCK:
-      assert(l->type != 0);
+      ASSERT(l->type != 0);
       if (l->type == 'r')
       {
         int i;
         pid_t p = 0;
-        assert(l->pids && l->pids->used);
+        ASSERT(l->pids && l->pids->used);
         for (i = 0; i < l->pids->size; ++i)
         {
           if (l->pids->list[i] == pid)
@@ -199,7 +198,7 @@ static int lock_mark(struct FcntlLock *l, short type, pid_t pid)
               {
                 /* Didn't see the other pid yet, search for it */
                 while (++i < l->pids->size && !l->pids->list[i]);
-                assert(i < l->pids->size);
+                ASSERT(i < l->pids->size);
                 p = l->pids->list[i];
               }
               free(l->pids);
@@ -220,7 +219,7 @@ static int lock_mark(struct FcntlLock *l, short type, pid_t pid)
             p = l->pids->list[i];
           }
         }
-        assert(l->type == 0 || l->type == 'R' || i < l->pids->size);
+        ASSERT(l->type == 0 || l->type == 'R' || i < l->pids->size);
       }
       else
       {
@@ -229,8 +228,8 @@ static int lock_mark(struct FcntlLock *l, short type, pid_t pid)
       }
       break;
     case F_WRLCK:
-      assert(l->type != 'W' && l->type != 'r');
-      assert((l->type == 0 && l->pid == 0) || l->pid == pid);
+      ASSERT(l->type != 'W' && l->type != 'r');
+      ASSERT((l->type == 0 && l->pid == 0) || l->pid == pid);
       l->type = 'W';
       l->pid = pid;
       break;
@@ -238,7 +237,7 @@ static int lock_mark(struct FcntlLock *l, short type, pid_t pid)
       if (l->type == 'r')
       {
         int i;
-        assert(l->pids && l->pids->used);
+        ASSERT(l->pids && l->pids->used);
         if (l->pids->used < l->pids->size)
         {
           for (i = 0; i < l->pids->size; ++i)
@@ -250,12 +249,12 @@ static int lock_mark(struct FcntlLock *l, short type, pid_t pid)
               break;
             }
           }
-          assert(i < l->pids->size);
+          ASSERT(i < l->pids->size);
         }
         else
         {
           /* Need more space */
-          assert(l->pids->used == l->pids->size);
+          ASSERT(l->pids->used == l->pids->size);
           size_t nsize = l->pids->size += PID_LIST_MIN_SIZE;
           PidList *nlist =
               realloc(l->pids, sizeof(*l->pids) + sizeof(l->pids->list[0]) * nsize);
@@ -268,7 +267,7 @@ static int lock_mark(struct FcntlLock *l, short type, pid_t pid)
       }
       else if (l->type == 'R')
       {
-        assert(l->pid && l->pid != pid);
+        ASSERT(l->pid && l->pid != pid);
         size_t nsize = PID_LIST_MIN_SIZE;
         PidList *nlist =
             global_alloc(sizeof(*l->pids) + sizeof(l->pids->list[0]) * nsize);
@@ -283,13 +282,13 @@ static int lock_mark(struct FcntlLock *l, short type, pid_t pid)
       }
       else
       {
-        assert((l->type == 0 && l->pid == 0) || l->pid == pid);
+        ASSERT((l->type == 0 && l->pid == 0) || l->pid == pid);
         l->type = 'R';
         l->pid = pid;
       }
       break;
     default:
-      assert(0);
+      ASSERT(0);
   }
 
   return 0;
@@ -322,8 +321,8 @@ static struct FcntlLock *lock_split(struct FcntlLock *l, off_t split)
 {
   struct FcntlLock *ln = NULL;
 
-  assert(l);
-  assert(l->start < split && split <= lock_end(l));
+  ASSERT(l);
+  ASSERT(l->start < split && split <= lock_end(l));
 
   GLOBAL_NEW(ln);
   if (!ln)
@@ -359,8 +358,8 @@ static void optimize_locks(FileDesc *desc, struct FcntlLock *lpb,
                            struct FcntlLock *lb, struct FcntlLock *le)
 {
   /* Optimize regions by joining matching ones */
-  assert(desc);
-  assert((!lpb && lb == desc->g->fcntl_locks) || lpb->next == lb);
+  ASSERT(desc);
+  ASSERT((!lpb && lb == desc->g->fcntl_locks) || lpb->next == lb);
   struct FcntlLock *l = lpb ? lpb : lb;
   while (l->next && (!le || l != le->next))
   {
@@ -444,20 +443,18 @@ void fcntl_locking_init()
   {
     /* We are the first processs, initialize fcntl structures */
     GLOBAL_NEW(gpData->fcntl_locking);
-    assert(gpData->fcntl_locking);
+    ASSERT(gpData->fcntl_locking);
 
     arc = DosCreateEventSem(NULL, &gpData->fcntl_locking->hEvSem,
                             DC_SEM_SHARED | DCE_AUTORESET, FALSE);
-    TRACE("DosCreateEventSem = %d\n", arc);
-    assert(arc == NO_ERROR);
+    ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
   }
   else
   {
-    assert(gpData->fcntl_locking);
-    assert(gpData->fcntl_locking->hEvSem);
+    ASSERT(gpData->fcntl_locking);
+    ASSERT(gpData->fcntl_locking->hEvSem);
     arc = DosOpenEventSem(NULL, &gpData->fcntl_locking->hEvSem);
-    TRACE("DosOpenEventSem = %d\n", arc);
-    assert(arc == NO_ERROR);
+    ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
   }
 }
 
@@ -727,8 +724,8 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
     TRACE_END();
 
     /* Search for the first overlapping region */
-    assert(desc->g->fcntl_locks);
-    assert(desc->g->fcntl_locks->start == 0);
+    ASSERT(desc->g->fcntl_locks);
+    ASSERT(desc->g->fcntl_locks->start == 0);
     lpb = NULL; /* prev to lb or NULL */
     lb = desc->g->fcntl_locks;
     while (lb->next && lb->next->start <= start)
@@ -766,7 +763,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
           if (fl->l_type == F_WRLCK)
           {
             /* 'r' implies other PIDs hold a read lock, so write is blocked */
-            assert(le->pids->used > 1);
+            ASSERT(le->pids->used > 1);
             blocker = le;
           }
         }
@@ -837,7 +834,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
           /* Block this thread due to F_SETLKW */
           ProcBlock *bp, *b;
 
-          assert(fl->l_type != F_UNLCK);
+          ASSERT(fl->l_type != F_UNLCK);
 
           TRACE("Need type '%c', start %lld, len %lld\n", fl->l_type == F_WRLCK ? 'W' : 'R',
                 (uint64_t)start, (uint64_t)(end == OFF_MAX ? 0 : end - start + 1));
@@ -888,7 +885,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
           arc = DosWaitEventSem(gpData->fcntl_locking->hEvSem, SEM_INDEFINITE_WAIT);
           TRACE("DosWaitEventSem = %d\n", arc);
 
-          assert(arc == NO_ERROR || arc == ERROR_INTERRUPT);
+          ASSERT(arc == NO_ERROR || arc == ERROR_INTERRUPT);
 
           if (arc == ERROR_INTERRUPT)
           {
@@ -1031,7 +1028,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
               struct FcntlLock *l = lb->next;
               while (l != le)
               {
-                assert(l);
+                ASSERT(l);
                 struct FcntlLock *next = l->next;
                 lock_free(l);
                 l = next;
@@ -1058,7 +1055,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
             struct FcntlLock *l = lb->next;
             while (l != le)
             {
-              assert(l);
+              ASSERT(l);
               if (lock_needs_mark (l, fl->l_type, pid))
               {
                 bNeededMark = 1;
@@ -1195,7 +1192,7 @@ int fcntl_locking_close(int fildes)
 
   global_lock();
 
-  assert(gpData->files);
+  ASSERT(gpData->files);
 
   desc = find_file_desc(pFH->pszNativePath);
   if (desc)
