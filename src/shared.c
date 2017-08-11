@@ -30,6 +30,7 @@
 #include <process.h>
 #include <stdarg.h>
 #include <sys/builtin.h>
+#include <assert.h>
 
 #include "shared.h"
 #include "version.h"
@@ -928,38 +929,43 @@ static void *get_assert_log_instance()
 
 void libcx_assert(const char *string, const char *fname, unsigned int line, const char *format, ...)
 {
-  if (!gAssertLogInstance)
-    if (!get_assert_log_instance())
-      return;
-
-  va_list args;
   char *msg = NULL;
-
-  enum { MaxBuf = 512 };
 
   if (format)
   {
+    va_list args;
+
+    enum { MaxBuf = 512 };
+
     msg = (char *)alloca(MaxBuf);
-    if (!msg)
-        return;
-
-    va_start(args, format);
-
-    int n = vsnprintf(msg, MaxBuf - 1, format, args);
-    if (n != EOF)
+    if (msg)
     {
-      // Check for truncation
-      if (n >= MaxBuf - 1)
-        n = MaxBuf - 2;
-      // Add \n at the end if missing
-      if (msg[n] != '\n')
-      {
-        msg[n] = '\n';
-        msg[n + 1] = '\0';
-      }
-    }
+      va_start(args, format);
 
-    va_end(args);
+      int n = vsnprintf(msg, MaxBuf - 1, format, args);
+      if (n != EOF)
+      {
+        // Check for truncation
+        if (n >= MaxBuf - 1)
+          n = MaxBuf - 2;
+        // Add \n at the end if missing
+        if (msg[n] != '\n')
+        {
+          msg[n] = '\n';
+          msg[n + 1] = '\0';
+        }
+      }
+
+      va_end(args);
+    }
+  }
+
+  if (!gAssertLogInstance && !get_assert_log_instance())
+  {
+    // Fallback to LIBC assert
+    if (msg)
+      fprintf(stderr, "Assertion info: %s", msg);
+    _assert(string, fname, line);
   }
 
   // NOTE: This will issue a debugger breakpoint (or INT 3) and log to stderr
