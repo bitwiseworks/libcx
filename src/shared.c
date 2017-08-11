@@ -87,6 +87,9 @@ static HMTX gMutex = NULLHANDLE;
 
 static void APIENTRY ProcessExit(ULONG);
 
+enum { StatsBufSize = 256 };
+static int format_stats(char *buf, int size);
+
 /*
  * @todo Currently we reserve a static block of HEAP_SIZE at LIBCx init
  * which we commit/release as needed. The disadvantage is obvious - we
@@ -281,6 +284,14 @@ static void shared_term()
   TRACE("gMutex %lx, gpData %p (heap %p, refcnt %d)\n",
         gMutex, gpData, gpData ? gpData->heap : 0,
         gpData ? gpData->refcnt : 0);
+
+  if (gAssertLogInstance)
+  {
+    // We're most likely crashing after an assertion, write out LIBCx stats
+    char buf[StatsBufSize];
+    format_stats(buf, sizeof(buf));
+    __libc_LogRaw(gAssertLogInstance, __LIBC_LOG_MSGF_FLUSH, buf, sizeof(buf));
+  }
 
   ASSERT(gMutex != NULLHANDLE);
 
@@ -696,6 +707,43 @@ int close(int fildes)
 }
 
 /**
+ * Prints LIBCx statistics to a buffer which must be at least StatsBufSize
+ * bytes long, otherwise truncation will happen.
+ * @return snprintf return value.
+ */
+static int format_stats(char *buf, int size)
+{
+  int rc;
+  _HEAPSTATS hst;
+
+  rc = _ustats(gpData->heap, &hst);
+  if (rc)
+  {
+    // Don't assert here as we might be terminating after another assert
+    return snprintf(buf, size, "_ustats failed with %d (%d)\n", rc, errno);
+  }
+
+  return snprintf(buf, size,
+                  "\n"
+                  "LIBCx resource usage\n"
+                  "--------------------\n"
+                  "Reserved memory size:  %d bytes\n"
+                  "Committed memory size: %d bytes\n"
+                  "Heap size total:       %d bytes\n"
+                  "Heap size used now:    %d bytes\n"
+#ifdef STATS_ENABLED
+                  "Heap size used max:    %d bytes\n"
+#endif
+                  ,
+                  HEAP_SIZE, gpData->size,
+                  hst._provided, hst._used
+#ifdef STATS_ENABLED
+                  , gpData->maxHeapUsed
+#endif
+                  );
+}
+
+/**
  * Prints LIBCx version and memory usage statistics to stdout.
  */
 void print_stats()
@@ -714,20 +762,14 @@ void print_stats()
     ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
     arc = DosQueryModuleName(hmod, sizeof(name), name);
     ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
-    printf("LIBCx module:  %s\n\n", name);
+    printf("LIBCx module:  %s\n", name);
   }
 
   global_lock();
 
-  printf("Reserved memory size:  %d bytes\n", HEAP_SIZE);
-  printf("Committed memory size: %d bytes\n", gpData->size);
-  rc = _ustats(gpData->heap, &hst);
-  ASSERT_MSG(rc == 0, "%d (%d)", rc, errno);
-  printf("Heap size total:       %d bytes\n"
-         "Heap size used now:    %d bytes\n", hst._provided, hst._used);
-#ifdef STATS_ENABLED
-  printf("Heap size used max:    %d bytes\n", gpData->maxHeapUsed);
-#endif
+  char buf[StatsBufSize];
+  format_stats(buf, sizeof(buf));
+  fputs(buf, stdout);
 
   global_unlock();
 }
@@ -880,6 +922,8 @@ static void *get_assert_log_instance()
   else
     sprintf(buf + strlen(buf), " <error %ld>\n", arc);
   __libc_LogRaw(gAssertLogInstance, __LIBC_LOG_MSGF_FLUSH, buf, strlen(buf));
+
+  return gAssertLogInstance;
 }
 
 void libcx_assert(const char *string, const char *fname, unsigned int line, const char *format, ...)
@@ -920,7 +964,7 @@ void libcx_assert(const char *string, const char *fname, unsigned int line, cons
 
   // NOTE: This will issue a debugger breakpoint (or INT 3) and log to stderr
   // unless LIBC_STRICT_DISABLED is set.
-  __libc_LogAssert(gAssertLogInstance, 0, NULL, fname, line, string, "%s", msg ? msg : "");
+  __libc_LogAssert(gAssertLogInstance, __LIBC_LOG_MSGF_FLUSH, NULL, fname, line, string, "%s", msg ? msg : "");
 }
 
 /*
