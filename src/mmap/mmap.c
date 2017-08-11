@@ -481,16 +481,38 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       fh->fd = -1;
       arc = DosDupHandle(fildes, &fh->fd);
       TRACE_IF(arc, "DosDupHandle = %lu\n", arc);
-      if (arc)
+      if (arc != NO_ERROR)
       {
-        if (dirtymap_sz)
-          free(fh->dirtymap);
-        free(fh);
-        if (!fdesc->map)
-          free_file_map_mem(fmem);
-        global_unlock();
-        errno = EMFILE;
-        return MAP_FAILED;
+        if (arc == ERROR_TOO_MANY_OPEN_FILES)
+        {
+          // Try to increase the file handle limit
+          LONG increment = 0;
+          ULONG curMax = 0;
+#if defined(TRACE_ENABLED)
+          arc = DosSetRelMaxFH(&increment, &curMax);
+          TRACE_IF(arc, "DosSetRelMaxFH = %lu\n", arc);
+          TRACE_IF(!arc, "curMax before %ld\n", curMax);
+#endif
+          increment = 100;
+          arc = DosSetRelMaxFH(&increment, &curMax);
+          TRACE_IF(arc, "DosSetRelMaxFH = %lu\n", arc);
+          TRACE_IF(!arc, "curMax after %ld\n", curMax);
+          // And try to dup again
+          if (arc == NO_ERROR)
+            arc = DosDupHandle(fildes, &fh->fd);
+        }
+        // Re-evaluate the error check
+        if (arc != NO_ERROR)
+        {
+          if (dirtymap_sz)
+            free(fh->dirtymap);
+          free(fh);
+          if (!fdesc->map)
+            free_file_map_mem(fmem);
+          global_unlock();
+          errno = EMFILE;
+          return MAP_FAILED;
+        }
       }
 
       /* Prevent the system critical-error handler */
@@ -1433,6 +1455,7 @@ static void mmap_flush_thread(void *arg)
   }
 
   /* Should never reach here: the thread gets killed at process termination */
+  TRACE("Stopped\n");
   ASSERT(0);
 }
 
