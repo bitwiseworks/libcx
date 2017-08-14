@@ -58,7 +58,7 @@
 
 #if defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG)
 
-static __LIBC_LOGGROUP  logGroup[] =
+static __LIBC_LOGGROUP  gLogGroup[] =
 {
   { 1, "nogroup" },           /*  0 */
   { 1, "fcntl" },             /*  1 */
@@ -69,18 +69,20 @@ static __LIBC_LOGGROUP  logGroup[] =
   { 1, "exeinfo" },           /*  6 */
 };
 
-static __LIBC_LOGGROUPS logGroups =
+static __LIBC_LOGGROUPS gLogGroups =
 {
-  0, sizeof(logGroup)/sizeof(logGroup[0]), logGroup
+  0, sizeof(gLogGroup)/sizeof(gLogGroup[0]), gLogGroup
 };
-
-void *gLogInstance = NULL;
 
 #endif
 
-void *gAssertLogInstance = NULL;
+static volatile uint32_t gLogInstanceState = 0;
+static void *gLogInstance = NULL;
+static void *gLogInstanceOld = NULL;
+static BOOL gLogToConsole = FALSE;
+static BOOL gSeenAssertion = FALSE;
 
-HMODULE ghModule = NULLHANDLE;
+static HMODULE ghModule = NULLHANDLE;
 
 SharedData *gpData = NULL;
 
@@ -90,6 +92,8 @@ static void APIENTRY ProcessExit(ULONG);
 
 enum { StatsBufSize = 256 };
 static int format_stats(char *buf, int size);
+
+static void *get_log_instance();
 
 /*
  * @todo Currently we reserve a static block of HEAP_SIZE at LIBCx init
@@ -286,15 +290,18 @@ static void shared_term()
         gMutex, gpData, gpData ? gpData->heap : 0,
         gpData ? gpData->refcnt : 0);
 
-  if (gAssertLogInstance)
+#if !defined(TRACE_ENABLED)
+  if (gSeenAssertion && get_log_instance())
   {
-    // We're most likely crashing after an assertion, write out LIBCx stats
+    // We're crashing after an assertion, write out LIBCx stats (not needed in
+    // trace builds as we will trace that out later anyway)
     char buf[StatsBufSize];
     format_stats(buf, sizeof(buf));
-    __libc_LogRaw(gAssertLogInstance, __LIBC_LOG_MSGF_FLUSH, buf, sizeof(buf));
+    __libc_LogRaw(gLogInstance, __LIBC_LOG_MSGF_FLUSH, buf, sizeof(buf));
   }
+#endif
 
-  ASSERT(gMutex != NULLHANDLE);
+  ASSERT(gSeenAssertion || gMutex != NULLHANDLE);
 
   DosRequestMutexSem(gMutex, SEM_INDEFINITE_WAIT);
 
@@ -414,6 +421,10 @@ static void shared_term()
  */
 unsigned long _System _DLL_InitTerm(unsigned long hModule, unsigned long ulFlag)
 {
+  // Make sure ghModule is initialized, TRACE needs it.
+  if (ghModule == NULLHANDLE)
+    ghModule = hModule;
+
   TRACE("hModule %lx, ulFlag %lu\n", hModule, ulFlag);
 
   switch (ulFlag)
@@ -430,7 +441,6 @@ unsigned long _System _DLL_InitTerm(unsigned long hModule, unsigned long ulFlag)
      */
     case 0:
     {
-      ghModule = hModule;
       if (_CRT_init() != 0)
         return 0;
       __ctordtorInit();
@@ -447,7 +457,6 @@ unsigned long _System _DLL_InitTerm(unsigned long hModule, unsigned long ulFlag)
     {
       __ctordtorTerm();
       _CRT_term();
-      ghModule = NULLHANDLE;
       break;
     }
 
@@ -796,8 +805,11 @@ void force_libcx_init()
 
 #if defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG)
 
-void trace(unsigned traceGroup, const char *file, int line, const char *func, const char *format, ...)
+void libcx_trace(unsigned traceGroup, const char *file, int line, const char *func, const char *format, ...)
 {
+  if (!gLogInstance && !get_log_instance())
+    return;
+
   va_list args;
   char *msg;
   unsigned cch;
@@ -806,44 +818,41 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
 
   enum { MaxBuf = 513 };
 
-  if (!gLogInstance)
-  {
-    __libc_LogGroupInit(&logGroups, "LIBCX_TRACE");
-    gLogInstance = __libc_LogInit(0, &logGroups, "NUL");
-    ASSERT(gLogInstance);
-
-    /*
-     * This is a dirty hack to write logs to the console,
-     * LIBC isn't capable of it on its own (@todo fix LIBC).
-     */
-    typedef struct __libc_logInstance
-    {
-        /** Write Semaphore. */
-        HMTX                    hmtx;
-        /** Filehandle. */
-        HFILE                   hFile;
-        /** Api groups. */
-        __LIBC_PLOGGROUPS       pGroups;
-    } __LIBC_LOGINST, *__LIBC_PLOGINST;
-
-    /* Sanity check */
-    ASSERT(((__LIBC_PLOGINST)gLogInstance)->pGroups == &logGroups);
-
-    DosDupHandle(1, &((__LIBC_PLOGINST)gLogInstance)->hFile);
-  }
-
   msg = (char *)alloca(MaxBuf);
   if (!msg)
       return;
 
   DosQuerySysInfo(QSV_MS_COUNT, QSV_MS_COUNT, &ts, sizeof(ts));
 
-  if (file != NULL && line != 0 && func != NULL)
-    n = snprintf(msg, MaxBuf, "*** %08lx [%x:%d] %s:%d:%s: ", ts, getpid(), _gettid(), _getname(file), line, func);
-  else if (file == NULL && line == 0 && func == NULL)
-    n = snprintf(msg, MaxBuf, "*** %08lx [%x:%d] ", ts, getpid(), _gettid());
+  if (gLogToConsole)
+  {
+    /*
+     * Logging to the console differs from logging to the file: 1) we want to
+     * put PID in prefix (since there may be more than one PID logging) and
+     * 2) we want to visually differentiate from the normal program output so
+     * we prefix it with stars too.
+     */
+    if (file != NULL && line != 0 && func != NULL)
+      n = snprintf(msg, MaxBuf, "*** %08lx %04x:%02x %s:%d:%s: ", ts, getpid(), _gettid(), _getname(file), line, func);
+    else if (file == NULL && line == 0 && func == NULL)
+      n = snprintf(msg, MaxBuf, "*** %08lx %04x:%02x ", ts, getpid(), _gettid());
+    else
+      n = 0;
+  }
   else
-    n = 0;
+  {
+    /*
+     * Try to match the standard LIBC log file formatting as much as we can
+     * TODO: Add a flag to LIBC to suppress the standard legend in the log header
+     */
+    if (file != NULL && line != 0 && func != NULL)
+      n = snprintf(msg, MaxBuf, "%08lx %02x %s:%d:%s: ", ts, _gettid(), _getname(file), line, func);
+    else if (file == NULL && line == 0 && func == NULL)
+      n = snprintf(msg, MaxBuf, "%08lx %02x ", ts, _gettid());
+    else
+      n = 0;
+  }
+
   if (n < MaxBuf)
   {
     va_start(args, format);
@@ -860,75 +869,151 @@ void trace(unsigned traceGroup, const char *file, int line, const char *func, co
 
 #endif /* defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG) */
 
-static void *get_assert_log_instance()
+static void *get_log_instance()
 {
-  if (gAssertLogInstance)
-    return gAssertLogInstance;
+  if (gLogInstance)
+    return gLogInstance;
+
+  /* Set a flag that we're going to init a new log instance */
+  if (!__atomic_cmpxchg32(&gLogInstanceState, 1, 0))
+  {
+    /*
+     * Another thread was faster in starting instance creation, wait for it
+     * to complete in a simple spin loop (completion should be really quick).
+     */
+    while (gLogInstanceState == 1)
+      DosSleep(1);
+    return gLogInstance;
+  }
+
+  void *logInstance = NULL;
+  __LIBC_LOGGROUPS *logGroups = NULL;
+
+#if defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG)
+  logGroups = &gLogGroups;
+  __libc_LogGroupInit(&gLogGroups, "LIBCX_TRACE");
+#endif
+
+  /* Check if we are asked to log to console */
+  {
+    PSZ dummy;
+    gLogToConsole = DosScanEnv("LIBCX_TRACE_TO_CONSOLE", &dummy) == NO_ERROR;
+  }
 
   char buf[CCHMAXPATH + 128];
 
-  // We don't query QSV_TIME_HIGH as it will remain 0 until 19-Jan-2038 and for
-  // our purposes (generate an unique log name sorted by date) it's fine.
-  ULONG time;
-  DosQuerySysInfo(QSV_TIME_LOW, QSV_TIME_LOW, &time, sizeof(time));
-
-  // Get log directory (boot drive if no UNIXROOT)
-  const char *path = "/var/log/libcx";
-  PSZ unixroot;
-  if (DosScanEnv("UNIXROOT", &unixroot) != NO_ERROR)
+  if (gLogInstanceOld)
   {
-    ULONG drv;
-    DosQuerySysInfo(QSV_BOOT_DRIVE, QSV_BOOT_DRIVE, &drv, sizeof(drv));
+    /* Free the instance inherited from the parent after fork */
+    free(gLogInstanceOld);
+    gLogInstanceOld = NULL;
+  }
 
-    unixroot = "C:";
-    unixroot[0] = '@' + drv;
-    path = "";
+  if (gLogToConsole)
+  {
+    logInstance = __libc_LogInit(0, logGroups, "NUL");
+    if (logInstance)
+    {
+      /*
+       * This is a dirty hack to write logs to stdout,
+       * LIBC isn't capable of it on its own (@todo fix LIBC).
+       */
+      typedef struct __libc_logInstance
+      {
+        /** Write Semaphore. */
+        HMTX                    hmtx;
+        /** Filehandle. */
+        HFILE                   hFile;
+        /** Api groups. */
+        __LIBC_PLOGGROUPS       pGroups;
+      } __LIBC_LOGINST, *__LIBC_PLOGINST;
+
+      /* Sanity check (note: we use LIBC assert here to avoid recursion) */
+      assert(((__LIBC_PLOGINST)logInstance)->pGroups == logGroups);
+
+      /* Duplicate STDOUT */
+      DosDupHandle(1, &((__LIBC_PLOGINST)logInstance)->hFile);
+    }
   }
   else
   {
-    // Make sure the directory exists (no error checks here as the missing
-    // directory will pop up later in __libc_LogInit anyway)
-    if (strlen(unixroot) >= CCHMAXPATH)
+    /*
+     * We don't query QSV_TIME_HIGH as it will remain 0 until 19-Jan-2038 and for
+     * our purposes (generate an unique log name sorted by date) it's fine.
+     */
+    ULONG time;
+    DosQuerySysInfo(QSV_TIME_LOW, QSV_TIME_LOW, &time, sizeof(time));
+
+    // Get log directory (boot drive if no UNIXROOT)
+    const char *path = "/var/log/libcx";
+    PSZ unixroot;
+    if (DosScanEnv("UNIXROOT", &unixroot) != NO_ERROR)
+    {
+      ULONG drv;
+      DosQuerySysInfo(QSV_BOOT_DRIVE, QSV_BOOT_DRIVE, &drv, sizeof(drv));
+
+      unixroot = "C:";
+      unixroot[0] = '@' + drv;
+      path = "";
+    }
+    else
+    {
+      /*
+       * Make sure the directory exists (no error checks here as a failure to
+       * do so will pop up later in __libc_LogInit anyway).
+       */
+      if (strlen(unixroot) >= CCHMAXPATH)
+        return NULL;
+      strcpy(buf, unixroot);
+      strcat(buf, path);
+      DosCreateDir(buf, NULL);
+    }
+
+    // Get program name
+    char name[CCHMAXPATH];
+    PPIB ppib = NULL;
+    DosGetInfoBlocks(NULL, &ppib);
+    if (DosQueryModuleName(ppib->pib_hmte, sizeof(name), name) != NO_ERROR)
       return NULL;
-    strcpy(buf, unixroot);
-    strcat(buf, path);
-    DosCreateDir(buf, NULL);
+    _remext(name);
+
+    logInstance = __libc_LogInit(0, logGroups, "%s%s/%s-%08lx-%04x.log",
+                                 unixroot, path, _getname(name), time, getpid());
   }
 
-  // Get program name
-  char name[CCHMAXPATH];
-  PPIB ppib = NULL;
-  DosGetInfoBlocks(NULL, &ppib);
-  if (DosQueryModuleName(ppib->pib_hmte, sizeof(name), name) != NO_ERROR)
+  /* Bail out if we failed to create a log file at all */
+  if (!logInstance)
+  {
+    gLogInstanceState = 0;
     return NULL;
-  _remext(name);
+  }
 
-  void *inst = __libc_LogInit(0, NULL, "%s%s/%s-%08lx-%04x.log",
-                              unixroot, path, _getname(name), time, getpid());
-  if (inst)
-    if (!__atomic_cmpxchg32((uint32_t *)&gAssertLogInstance, (uint32_t)inst, 0))
-      // NOTE: this must be __libc_LogTerm(inst) but it's missing (kLIBC bug)
-      free(inst);
+  if (!gLogToConsole)
+  {
+    // Write out LIBCx info
+    strcpy(buf, "LIBCx version : " VERSION_MAJ_MIN_BLD "\n");
+    strcat(buf, "LIBCx module  : ");
+    APIRET arc = DosQueryModuleName(ghModule, CCHMAXPATH, buf + strlen(buf));
+    if (arc == NO_ERROR)
+      sprintf(buf + strlen(buf), " (hmod=%04lx)\n", ghModule);
+    else
+      sprintf(buf + strlen(buf), " <error %ld>\n", arc);
+    __libc_LogRaw(logInstance, __LIBC_LOG_MSGF_FLUSH, buf, strlen(buf));
+  }
 
-  // Bail out if we failed to create a log file at all
-  if (!gAssertLogInstance)
-    return NULL;
-
-  // Write out LIBCx info
-  strcpy(buf, "LIBCx version : " VERSION_MAJ_MIN_BLD "\n");
-  strcat(buf, "LIBCx module  : ");
-  APIRET arc = DosQueryModuleName(ghModule, CCHMAXPATH, buf + strlen(buf));
-  if (arc == NO_ERROR)
-    sprintf(buf + strlen(buf), " (hmod=%04lx)\n", ghModule);
-  else
-    sprintf(buf + strlen(buf), " <error %ld>\n", arc);
-  __libc_LogRaw(gAssertLogInstance, __LIBC_LOG_MSGF_FLUSH, buf, strlen(buf));
-
-  return gAssertLogInstance;
+  /*
+   * Finish initialization by storing the instance and setting the state to 2
+   * (this will unfreeze other threads that started instance creation, if any).
+   */
+  gLogInstance = logInstance;
+  gLogInstanceState = 2;
+  return gLogInstance;
 }
 
 void libcx_assert(const char *string, const char *fname, unsigned int line, const char *format, ...)
 {
+  gSeenAssertion = TRUE;
+
   char *msg = NULL;
 
   if (format)
@@ -945,10 +1030,10 @@ void libcx_assert(const char *string, const char *fname, unsigned int line, cons
       int n = vsnprintf(msg, MaxBuf - 1, format, args);
       if (n != EOF)
       {
-        // Check for truncation
+        /* Check for truncation */
         if (n >= MaxBuf - 1)
           n = MaxBuf - 2;
-        // Add \n at the end if missing
+        /* Add \n at the end if missing */
         if (msg[n] != '\n')
         {
           msg[n] = '\n';
@@ -960,17 +1045,23 @@ void libcx_assert(const char *string, const char *fname, unsigned int line, cons
     }
   }
 
-  if (!gAssertLogInstance && !get_assert_log_instance())
+  if (!gLogInstance && !get_log_instance())
   {
-    // Fallback to LIBC assert
+    /* Fallback to LIBC assert */
     if (msg)
       fprintf(stderr, "Assertion info: %s", msg);
     _assert(string, fname, line);
+    /* Should never get here but still... */
+    return;
   }
 
-  // NOTE: This will issue a debugger breakpoint (or INT 3) and log to stderr
-  // unless LIBC_STRICT_DISABLED is set.
-  __libc_LogAssert(gAssertLogInstance, __LIBC_LOG_MSGF_FLUSH, NULL, fname, line, string, "%s", msg ? msg : "");
+  /*
+   * NOTE: This will issue a debugger breakpoint (or INT 3) and log to stderr
+   * unless LIBC_STRICT_DISABLED is set. Also note that it will also duplicate
+   * the assert message output to STDERR so in case if we log to console, there
+   * will be two copies of it (kLIBC bug/limitation).
+   */
+  __libc_LogAssert(gLogInstance, __LIBC_LOG_MSGF_FLUSH, NULL, fname, line, string, "%s", msg ? msg : "");
 }
 
 /*
@@ -1041,12 +1132,11 @@ static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOper
   {
     case __LIBC_FORK_OP_FORK_CHILD:
     {
-      shared_init();
-
       /*
-       * @todo We would like to free & reset the log instance to NULL here to have it
-       * properly re-initialized in the child process but this crashes the child
-       * because LIBC Heap can't be used at that point. A solution would be either:
+       * @todo We would like to free & reset the log instance to NULL *before*
+       * calling shared_init() above to to have it properly re-initialized in
+       * the child process but this crashes the child because LIBC Heap can't be
+       * used at that point. A solution would be either:
        *
        * - Re-init the log instance w/o allocation but __libc_LogInit doesn't support
        * that.
@@ -1057,16 +1147,31 @@ static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOper
        * do it from there. There is a proposed fix for LIBC that makes it possible,
        * see http://trac.netlabs.org/libc/ticket/366#comment:4.
        *
-       * For now, we don't do anything and this is accidentially fine for us because
-       * we force logging to the console in trace() and the console handles in the
-       * child process are identical to the parent (even the one we create with
-       * DosDupHandle as it's inherited by default).
+       * For now we just don't do anything and this effectively disables logging
+       * done in shared_init(). We could hack around this by supplying a manually
+       * open file but it's too much hassle (see __libc_LogInit implementation).
+       * It's better to fix kLIBC.
        */
-#if defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG) && 0
-      /* Reset the log instance in the child process to cause a reinit */
-      free(gLogInstance);
-      gLogInstance = NULL;
-#endif
+
+      shared_init();
+
+      /*
+       * Reset the log instance in the child process to cause a reinit (note
+       * that we store the old instance to free it and a avoid memory leak).
+       * Note that we only do it when logging to a file. For console logging
+       * it's accidentally fine to just leave it as is because the console
+       * handles in the child process are identical to the parent (even the one
+       * we create with DosDupHandle as it's inherited by default).
+       */
+      if (!gLogToConsole)
+      {
+        gLogInstanceOld = gLogInstance;
+        gLogInstanceState = 0;
+        gLogInstance = NULL;
+        gLogToConsole = FALSE;
+        gSeenAssertion = FALSE;
+      }
+
       break;
     }
   }

@@ -37,7 +37,7 @@
 #ifndef TRACE_GROUP
 #define TRACE_GROUP 0
 #endif
-/* The below defs must be in sync with the logGroup array */
+/* The below defs must be in sync with the gLogGroup array */
 #define TRACE_GROUP_FCNTL 1
 #define TRACE_GROUP_PWRITE 2
 #define TRACE_GROUP_SELECT 3
@@ -51,10 +51,10 @@
 #endif
 
 #ifdef TRACE_USE_LIBC_LOG
-void trace(unsigned traceGroup, const char *file, int line, const char *func, const char *format, ...) __printflike(5, 6);
+void libcx_trace(unsigned traceGroup, const char *file, int line, const char *func, const char *format, ...) __printflike(5, 6);
 #define TRACE_FLUSH() do {} while (0)
-#define TRACE_RAW(msg, ...) trace(TRACE_GROUP, __FILE__, __LINE__, __FUNCTION__, msg, ## __VA_ARGS__)
-#define TRACE_CONT(msg, ...) trace(TRACE_GROUP, NULL, -1, NULL, msg, ## __VA_ARGS__)
+#define TRACE_RAW(msg, ...) libcx_trace(TRACE_GROUP, __FILE__, __LINE__, __FUNCTION__, msg, ## __VA_ARGS__)
+#define TRACE_CONT(msg, ...) libcx_trace(TRACE_GROUP, NULL, -1, NULL, msg, ## __VA_ARGS__)
 #else
 #define TRACE_FLUSH() fflush(stdout)
 #define TRACE_RAW(msg, ...) printf("*** [%d:%d] %s:%d:%s: " msg, getpid(), _gettid(), __FILE__, __LINE__, __FUNCTION__, ## __VA_ARGS__)
