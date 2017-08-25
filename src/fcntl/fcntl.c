@@ -354,12 +354,12 @@ static struct FcntlLock *lock_split(struct FcntlLock *l, off_t split)
  * a need for optmimizaiton and @a le is the last changed region
  * (may be NULL to scan till the end).
  */
-static void optimize_locks(FileDesc *desc, struct FcntlLock *lpb,
+static void optimize_locks(SharedFileDesc *desc, struct FcntlLock *lpb,
                            struct FcntlLock *lb, struct FcntlLock *le)
 {
   /* Optimize regions by joining matching ones */
   ASSERT(desc);
-  ASSERT((!lpb && lb == desc->g->fcntl_locks) || lpb->next == lb);
+  ASSERT((!lpb && lb == desc->fcntl_locks) || lpb->next == lb);
   struct FcntlLock *l = lpb ? lpb : lb;
   while (l->next && (!le || l != le->next))
   {
@@ -380,31 +380,30 @@ static void optimize_locks(FileDesc *desc, struct FcntlLock *lpb,
 }
 
 /**
- * Initializes the fcntl portion of FileDesc.
- * If proc is not NULL, desc a per-process entry, otherwise a global one.
- * Called right after the FileDesc pointer is allocated.
+ * Initializes the fcntl portion of SharedFileDesc and FileDesc.
+ * Called right after the SharedFileDesc and/or FileDesc pointers are allocated.
  * Returns 0 on success or -1 on failure.
  */
-int fcntl_locking_filedesc_init(ProcDesc *proc, FileDesc *desc)
+int fcntl_locking_filedesc_init(FileDesc *desc)
 {
-  if (!proc)
+  if (desc->g->refcnt == 1)
   {
     /* Add one free region that covers the entire file */
     GLOBAL_NEW(desc->g->fcntl_locks);
     if (!desc->g->fcntl_locks)
       return -1;
   }
+
   return 0;
 }
 
 /**
- * Uninitializes the fcntl portion of FileDesc.
- * If proc is not NULL, desc a per-process entry, otherwise a global one.
- * Called right before the FileDesc pointer is freed.
+ * Uninitializes the fcntl portion of SharedFileDesc and FileDesc.
+ * Called right before the SharedFileDesc and/or FileDesc pointers are freed.
  */
-void fcntl_locking_filedesc_term(ProcDesc *proc, FileDesc *desc)
+void fcntl_locking_filedesc_term(FileDesc *desc)
 {
-  if (!proc)
+  if (desc->g->refcnt == 1)
   {
     struct FcntlLock *l = desc->g->fcntl_locks;
     while (l)
@@ -433,9 +432,10 @@ void fcntl_locking_filedesc_term(ProcDesc *proc, FileDesc *desc)
 
 /**
  * Initializes the fcntl shared structures.
- * Called after successfull gpData allocation and gpData->heap creation.
+ * Called upon each process startup after successfull ProcDesc and gpData
+ * allocation.
  */
-void fcntl_locking_init()
+void fcntl_locking_init(ProcDesc *proc)
 {
   APIRET arc;
 
@@ -460,17 +460,22 @@ void fcntl_locking_init()
 
 /**
  * Uninitializes the fcntl shared structures.
- * Called upon each process termination before gpData is uninitialized
- * or destroyed.
+ * Called upon each process termination before gpData destruction. Note that
+ * @a proc may be NULL on critical failures.
  */
-void fcntl_locking_term()
+void fcntl_locking_term(ProcDesc *proc)
 {
   APIRET arc;
   int rc, i;
 
   gbTerminate = 1;
 
-  if (gpData->files)
+  /*
+   * Note: while fcntl_locking works with SharedFileDesc, we assume that no
+   * SharedFileDesc were used in this process (and hence nothing to unlock on
+   * termination) unless theere are also FileDesc for these files.
+   */
+  if (gpData->files && proc && proc->files)
   {
     pid_t pid = getpid();
     int bNeededMark = 0;
@@ -479,7 +484,7 @@ void fcntl_locking_term()
     /* Note: this code is similar to one in fcntl_locking_close */
     for (i = 0; i < FILE_DESC_HASH_SIZE; ++i)
     {
-      FileDesc *desc = gpData->files[i];
+      FileDesc *desc = proc->files[i];
       while (desc)
       {
         struct FcntlLock *l = desc->g->fcntl_locks;
@@ -488,7 +493,7 @@ void fcntl_locking_term()
           if (lock_needs_mark(l, F_UNLCK, pid))
           {
             TRACE("Will unlock [%s], type '%c', start %lld, len %lld\n",
-                  desc->path, l->type ? l->type : ' ', (uint64_t)l->start, (uint64_t)lock_len(l));
+                  desc->g->path, l->type ? l->type : ' ', (uint64_t)l->start, (uint64_t)lock_len(l));
             rc = lock_mark(l, F_UNLCK, pid);
             TRACE_IF(rc, "rc = %d\n", rc);
             bNeededMark = 1;
@@ -497,7 +502,7 @@ void fcntl_locking_term()
         }
 
         if (bNeededMark)
-          optimize_locks(desc, NULL, desc->g->fcntl_locks, NULL);
+          optimize_locks(desc->g, NULL, desc->g->fcntl_locks, NULL);
 
         desc = desc->next;
       }
@@ -677,7 +682,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
 
   while (1)
   {
-    desc = cmd == F_GETLK ? find_file_desc(pFH->pszNativePath) : get_file_desc(pFH->pszNativePath);
+    desc = cmd == F_GETLK ? find_file_desc(pFH->pszNativePath) : get_file_desc(fildes, pFH->pszNativePath);
     if (!desc)
     {
       if (cmd == F_GETLK)
@@ -1073,7 +1078,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
         if (rc == -1)
           bNoMem = 1;
         else
-          optimize_locks(desc, lpb, lb, le);
+          optimize_locks(desc->g, lpb, lb, le);
       }
     }
 
@@ -1174,64 +1179,43 @@ int fcntl(int fildes, int cmd, intptr_t *arg)
 }
 
 /**
- * LIBC close callback. Called before actually closing the file.
+ * LIBC close callback.
+ * Called under global lock and before actually closing the file.
  */
-int fcntl_locking_close(int fildes)
+int fcntl_locking_close(FileDesc *desc)
 {
-  FileDesc *desc = NULL;
-  __LIBC_PFH pFH;
+  pid_t pid = getpid();
+  int bNeededMark = 0;
 
-  pFH = __libc_FH(fildes);
-  if (!pFH || !pFH->pszNativePath)
+  /* Go through all locks to unlock any regions this process owns */
+  /* Note: this code is similar to one in fcntl_locking_term */
+  struct FcntlLock *l = desc->g->fcntl_locks;
+  while (l)
   {
-    /* Don't fail here as we want normal close to proceed. */
-    return 0;
+    if (lock_needs_mark(l, F_UNLCK, pid))
+    {
+      TRACE("Will unlock [%s], type '%c', start %lld, len %lld\n",
+            desc->g->path, l->type ? l->type : ' ', (uint64_t)l->start, (uint64_t)lock_len(l));
+      int rc = lock_mark(l, F_UNLCK, pid);
+      TRACE_IF(rc, "rc = %d\n", rc);
+      bNeededMark = 1;
+    }
+    l = l->next;
   }
 
-  TRACE("pszNativePath %s, fFlags %x\n", pFH->pszNativePath, pFH->fFlags);
-
-  global_lock();
-
-  ASSERT(gpData->files);
-
-  desc = find_file_desc(pFH->pszNativePath);
-  if (desc)
+  if (bNeededMark)
   {
-    pid_t pid = getpid();
-    int bNeededMark = 0;
+    optimize_locks(desc->g, NULL, desc->g->fcntl_locks, NULL);
 
-    /* Go through all locks to unlock any regions this process owns */
-    /* Note: this code is similar to one in fcntl_locking_term */
-    struct FcntlLock *l = desc->g->fcntl_locks;
-    while (l)
+    if (gpData->fcntl_locking->blocked)
     {
-      if (lock_needs_mark(l, F_UNLCK, pid))
-      {
-        TRACE("Will unlock [%s], type '%c', start %lld, len %lld\n",
-              desc->path, l->type ? l->type : ' ', (uint64_t)l->start, (uint64_t)lock_len(l));
-        int rc = lock_mark(l, F_UNLCK, pid);
-        TRACE_IF(rc, "rc = %d\n", rc);
-        bNeededMark = 1;
-      }
-      l = l->next;
-    }
-
-    if (bNeededMark)
-    {
-      optimize_locks(desc, NULL, desc->g->fcntl_locks, NULL);
-
-      if (gpData->fcntl_locking->blocked)
-      {
-        /* We unblocked something and there are blocked threads, release them */
-        APIRET arc = DosPostEventSem(gpData->fcntl_locking->hEvSem);
-        TRACE("DosPostEventSem = %d\n", arc);
-        /* Invalidate the blocked list (see the other DosPostEventSem call) */
-        gpData->fcntl_locking->blocked = NULL;
-      }
+      /* We unblocked something and there are blocked threads, release them */
+      APIRET arc = DosPostEventSem(gpData->fcntl_locking->hEvSem);
+      TRACE("DosPostEventSem = %d\n", arc);
+      /* Invalidate the blocked list (see the other DosPostEventSem call) */
+      gpData->fcntl_locking->blocked = NULL;
     }
   }
-
-  global_unlock();
 
   return 0;
 }

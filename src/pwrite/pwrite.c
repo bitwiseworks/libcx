@@ -32,14 +32,13 @@
 #include "../shared.h"
 
 /**
- * Initializes the pwrite portion of FileDesc.
- * If proc is not NULL, desc a per-process entry, otherwise a global one.
- * Called right after the FileDesc pointer is allocated.
+ * Initializes the pwrite portion of SharedFileDesc and FileDesc.
+ * Called right after the SharedFileDesc and/or FileDesc pointers are allocated.
  * Returns 0 on success or -1 on failure.
  */
-int pwrite_filedesc_init(ProcDesc *proc, FileDesc *desc)
+int pwrite_filedesc_init(FileDesc *desc)
 {
-  if (!proc)
+  if (desc->g->refcnt == 1)
   {
     /* Mutex is lazily created in pread_pwrite */
     ASSERT_MSG(!desc->g->pwrite_lock, "%lx", desc->g->pwrite_lock);
@@ -48,13 +47,12 @@ int pwrite_filedesc_init(ProcDesc *proc, FileDesc *desc)
 }
 
 /**
- * Uninitializes the pwrite portion of FileDesc.
- * If proc is not NULL, desc a per-process entry, otherwise a global one.
- * Called right before the FileDesc pointer is freed.
+ * Uninitializes the pwrite portion of SharedFileDesc and FileDesc.
+ * Called right before the SharedFileDesc and/or FileDesc pointers are freed.
  */
-void pwrite_filedesc_term(ProcDesc *proc, FileDesc *desc)
+void pwrite_filedesc_term(FileDesc *desc)
 {
-  if (!proc)
+  if (desc->g->refcnt == 1)
   {
     APIRET arc;
 
@@ -79,9 +77,9 @@ static ssize_t pread_pwrite(int bWrite, int fildes, void *buf,
   TRACE("bWrite %d, fildes %d, buf %p, nbyte %u, offset %lld\n",
         bWrite, fildes, buf, nbyte, offset);
 
-  int rc;
-  APIRET arc;
-  HMTX mutex;
+  int rc = 0;
+  APIRET arc = NO_ERROR;
+  HMTX mutex = NULLHANDLE;
   __LIBC_PFH pFH;
 
   pFH = __libc_FH(fildes);
@@ -96,20 +94,28 @@ static ssize_t pread_pwrite(int bWrite, int fildes, void *buf,
   global_lock();
 
   {
-    FileDesc *desc = get_file_desc(pFH->pszNativePath);
+    FileDesc *desc = get_file_desc(fildes, pFH->pszNativePath);
     if (desc)
+    {
+      if (desc->g->pwrite_lock == NULLHANDLE)
+      {
+        /* Lazily create a mutex for pread/pwrite serialization */
+        arc = DosCreateMutexSem(NULL, &desc->g->pwrite_lock, DC_SEM_SHARED, FALSE);
+        TRACE("DosCreateMutexSem = %d\n", arc);
+      }
       mutex = desc->g->pwrite_lock;
+    }
 
     global_unlock();
 
-    if (!desc)
+    if (!desc || arc != NO_ERROR)
     {
-      errno = ENOMEM;
+      errno = !desc ? ENOMEM : ENFILE;
       return -1;
     }
   }
 
-  TRACE("mutex %x\n", mutex);
+  ASSERT(mutex);
 
   arc = DosRequestMutexSem(mutex, SEM_INDEFINITE_WAIT);
   if (arc == ERROR_INVALID_HANDLE)
@@ -117,27 +123,8 @@ static ssize_t pread_pwrite(int bWrite, int fildes, void *buf,
     /* Try to open the mutex for this process */
     arc = DosOpenMutexSem(NULL, &mutex);
     TRACE("DosOpenMutexSem = %d\n", arc);
-    if (arc == ERROR_INVALID_HANDLE)
-    {
-      /* The mutex is no longer valid, create a new one */
-      /* @todo this is a temporary hack, see https://github.com/bitwiseworks/libcx/issues/7 */
-      global_lock();
-      FileDesc *desc = get_file_desc(pFH->pszNativePath);
-      if (desc)
-      {
-        arc = DosCreateMutexSem(NULL, &desc->g->pwrite_lock, DC_SEM_SHARED, FALSE);
-        TRACE("DosCreateMutexSem = %d\n", arc);
-        if (arc == NO_ERROR)
-          mutex = desc->g->pwrite_lock;
-      }
-      global_unlock();
-      if (!desc || arc != NO_ERROR)
-      {
-        errno = ENOMEM;
-        return -1;
-      }
-    }
-    arc = DosRequestMutexSem(mutex, SEM_INDEFINITE_WAIT);
+    if (arc == NO_ERROR)
+      arc = DosRequestMutexSem(mutex, SEM_INDEFINITE_WAIT);
   }
 
   ASSERT_MSG(arc == NO_ERROR, "%ld", arc);

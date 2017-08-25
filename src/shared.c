@@ -31,6 +31,7 @@
 #include <stdarg.h>
 #include <sys/builtin.h>
 #include <assert.h>
+#include <emx/io.h>
 
 #include "shared.h"
 #include "version.h"
@@ -85,9 +86,10 @@ static __LIBC_LOGGROUPS gLogGroups =
 
 static volatile uint32_t gLogInstanceState = 0;
 static void *gLogInstance = NULL;
-static void *gLogInstanceOld = NULL;
 static BOOL gLogToConsole = FALSE;
 static BOOL gSeenAssertion = FALSE;
+
+static BOOL gInFork = FALSE;
 
 static HMODULE ghModule = NULLHANDLE;
 
@@ -97,7 +99,7 @@ static HMTX gMutex = NULLHANDLE;
 
 static void APIENTRY ProcessExit(ULONG);
 
-enum { StatsBufSize = 256 };
+enum { StatsBufSize = 512 };
 static int format_stats(char *buf, int size);
 
 static void *get_log_instance();
@@ -123,7 +125,10 @@ static void *mem_alloc(Heap_t h, size_t *psize, int *pclean)
   /* Round requested size up to HEAP_INC_SIZE */
   size = (*psize + HEAP_INC_SIZE - 1) / HEAP_INC_SIZE * HEAP_INC_SIZE;
   if (size + gpData->size > HEAP_SIZE)
+  {
+    TRACE("out of memory");
     return NULL;
+  }
 
   mem = (char *)gpData + gpData->size;
 
@@ -148,12 +153,6 @@ static void *mem_alloc(Heap_t h, size_t *psize, int *pclean)
  */
 static void shared_init()
 {
-  /*
-   * Note that due to LIBC bug #366 (http://trac.netlabs.org/libc/ticket/366)
-   * it is forbidden to use many common LIBC functions (like malloc/printf/etc)
-   * in this function.
-   */
-
   APIRET arc;
   int rc;
 
@@ -209,6 +208,8 @@ static void shared_init()
 
         ASSERT(gpData->refcnt);
         gpData->refcnt++;
+
+        TRACE("gpData->refcnt = %d\n", gpData->refcnt);
       }
 
       break;
@@ -281,11 +282,17 @@ static void shared_init()
     break;
   }
 
+  /* Make sure a process description for this process is created */
+  ProcDesc *proc = get_proc_desc(getpid());
+  ASSERT(proc);
+
   /* Initialize individual components */
-  mmap_init();
-  fcntl_locking_init();
+  mmap_init(proc);
+  fcntl_locking_init(proc);
 
   DosReleaseMutexSem(gMutex);
+
+  TRACE("done\n");
 }
 
 static void shared_term()
@@ -300,11 +307,16 @@ static void shared_term()
 #if !defined(TRACE_ENABLED)
   if (gSeenAssertion && get_log_instance())
   {
-    // We're crashing after an assertion, write out LIBCx stats (not needed in
-    // trace builds as we will trace that out later anyway)
-    char buf[StatsBufSize];
-    format_stats(buf, sizeof(buf));
-    __libc_LogRaw(gLogInstance, __LIBC_LOG_MSGF_FLUSH, buf, sizeof(buf));
+    /*
+     * We're crashing after an assertion, write out LIBCx stats (not needed in
+     * trace builds as we will trace that out later anyway)
+     */
+    char *buf = alloca(StatsBufSize);
+    if (buf)
+    {
+      format_stats(buf, sizeof(buf));
+      __libc_LogRaw(gLogInstance, __LIBC_LOG_MSGF_FLUSH, buf, StatsBufSize);
+    }
   }
 #endif
 
@@ -316,25 +328,21 @@ static void shared_term()
   {
     if (gpData->heap)
     {
-#ifdef STATS_ENABLED
-      _HEAPSTATS hst;
-#endif
       int i;
       ProcDesc *proc;
 
       ASSERT(gpData->refcnt);
       gpData->refcnt--;
 
-      /* Uninitialize individual components */
-      fcntl_locking_term();
-      mmap_term();
+      /* Remove the process description upon process termination */
+      size_t bucket = 0;
+      ProcDesc *prev = NULL;
+      proc = find_proc_desc_ex(getpid(), &bucket, &prev);
 
-      /*
-       * Remove the process description upon process termination (note that
-       * all individual components of the desc should be already uninitialized
-       * above)
-       */
-      proc = take_proc_desc(getpid());
+      /* Uninitialize individual components */
+      fcntl_locking_term(proc);
+      mmap_term(proc);
+
       if (proc)
       {
         /* Free common per-process structures */
@@ -347,16 +355,14 @@ static void shared_term()
             while (desc)
             {
               FileDesc *next = desc->next;
-              /* Call component-specific uninitialization */
-              pwrite_filedesc_term(proc, desc);
-              fcntl_locking_filedesc_term(proc, desc);
-              free(desc);
+              free_file_desc(desc, i, NULL, NULL);
               desc = next;
             }
           }
           free(proc->files);
         }
-        free(proc);
+
+        free_proc_desc(proc, bucket, prev);
       }
 
       if (gpData->refcnt == 0)
@@ -365,19 +371,9 @@ static void shared_term()
         TRACE("gpData->files %p\n", gpData->files);
         if (gpData->files)
         {
+          /* Make sure we don't have lost SharedFileDesc data */
           for (i = 0; i < FILE_DESC_HASH_SIZE; ++i)
-          {
-            FileDesc *desc = gpData->files[i];
-            while (desc)
-            {
-              FileDesc *next = desc->next;
-              /* Call component-specific uninitialization */
-              pwrite_filedesc_term(NULL, desc);
-              fcntl_locking_filedesc_term(NULL, desc);
-              free(desc);
-              desc = next;
-            }
-          }
+            ASSERT_MSG(!gpData->files[i], "%p", gpData->files[i]);
           free(gpData->files);
         }
         TRACE("gpData->procs %p\n", gpData->procs);
@@ -385,18 +381,25 @@ static void shared_term()
           free(gpData->procs);
       }
 
-      _uclose(gpData->heap);
-
-      TRACE("reserved memory size %d\n", HEAP_SIZE);
-      TRACE("committed memory size %d\n", gpData->size);
-#ifdef STATS_ENABLED
-      rc = _ustats(gpData->heap, &hst);
-      TRACE("heap stats: %d total, %d used now, %d used max\n", hst._provided, hst._used, gpData->maxHeapUsed);
+#ifdef TRACE_ENABLED
+      {
+        char *buf = alloca(StatsBufSize);
+        if (buf)
+        {
+          format_stats(buf, StatsBufSize);
+          TRACE(buf);
+        }
+      }
 #endif
+
+      _uclose(gpData->heap);
 
       if (gpData->refcnt == 0)
       {
 #ifdef STATS_ENABLED
+        _HEAPSTATS hst;
+        rc = _ustats(gpData->heap, &hst);
+        ASSERT_MSG(!rc, "%d (%d)", rc, errno);
         ASSERT_MSG(!hst._used, "%d", hst._used);
 #endif
         rc = _udestroy(gpData->heap, !_FORCE);
@@ -481,6 +484,10 @@ unsigned long _System _DLL_InitTerm(unsigned long hModule, unsigned long ulFlag)
  */
 static void APIENTRY ProcessExit(ULONG reason)
 {
+  /* Make sure we don't start an endless spin in get_log_instance() */
+  if (gLogInstanceState == 1)
+    gLogInstanceState = 2;
+
   TRACE("reason %lu\n", reason);
 
   shared_term();
@@ -529,8 +536,8 @@ void *global_alloc(size_t size)
   if (result)
   {
     _HEAPSTATS hst;
-    if (_ustats(gpData->heap, &hst) == 0 && gpData->maxHeapUsed < hst._used)
-      gpData->maxHeapUsed = hst._used;
+    if (_ustats(gpData->heap, &hst) == 0 && gpData->max_heap_used < hst._used)
+      gpData->max_heap_used = hst._used;
   }
   return result;
 #else
@@ -560,17 +567,18 @@ static size_t hash_string(const char *str)
 }
 
 /**
- * Returns a process descriptor sturcture for the given process.
+ * Returns a process description sturcture for the given process.
  * Must be called under global_lock().
+ * Optional o_bucket and o_prev arguments will receive the appropriate values
+ * for the returned process description when they are not NULL (and may be later
+ * used in e.g. a free_proc_desc_ex() call).
  * Returns NULL when opt is HashMapOpt_New and there is not enough memory
  * to allocate a new sctructure, or when opt is not HashMapOpt_New and there
- * is no descriptor for the given process. When opt is HashMapOpt_Take and
- * the descriptor is found, it will be removed from the hash map (it's then
- * the responsibility of the caller to free the returned pointer).
+ * is no descriptor for the given process.
  */
-ProcDesc *get_proc_desc_ex(pid_t pid, enum HashMapOpt opt)
+ProcDesc *get_proc_desc_ex(pid_t pid, enum HashMapOpt opt, size_t *o_bucket, ProcDesc **o_prev)
 {
-  size_t h;
+  size_t bucket;
   ProcDesc *desc, *prev;
   int rc;
 
@@ -580,8 +588,8 @@ ProcDesc *get_proc_desc_ex(pid_t pid, enum HashMapOpt opt)
    * We use identity as the hash function as we get a regularly ascending
    * sequence of PIDs on input and prime for the hash table size.
    */
-  h = pid % PROC_DESC_HASH_SIZE;
-  desc = gpData->procs[h];
+  bucket = pid % PROC_DESC_HASH_SIZE;
+  desc = gpData->procs[bucket];
   prev = NULL;
 
   while (desc)
@@ -599,74 +607,103 @@ ProcDesc *get_proc_desc_ex(pid_t pid, enum HashMapOpt opt)
     {
       /* Initialize the new desc */
       desc->pid = pid;
+
       /* Call component-specific initialization */
       /* NOTE: None at the moment. */
+
       /* Put to the head of the bucket */
-      desc->next = gpData->procs[h];
-      gpData->procs[h] = desc;
+      desc->next = gpData->procs[bucket];
+      gpData->procs[bucket] = desc;
+
+#if STATS_ENABLED
+      ++gpData->num_procs;
+      if (gpData->num_procs > gpData->max_procs)
+        gpData->max_procs = gpData->num_procs;
+#endif
     }
   }
-  else if (desc && opt == HashMapOpt_Take)
-  {
-    if (prev)
-      prev->next = desc->next;
-    else
-      gpData->procs[h] = desc->next;
-  }
+
+  if (o_bucket)
+    *o_bucket = bucket;
+  if (o_prev)
+    *o_prev = prev;
 
   return desc;
 }
 
 /**
- * Returns a file descriptor sturcture for the given path.
- * The pid argument specifies the scope of the search: 0 will look up in the
- * global system-wide table, any other value - in a process-specific table.
+ * Frees the given process description. Note that bucket, prev, and proc must be
+ * valid values as received from find_proc_desc_ex in order to maintain
+ * the map of remaining process descriptions.
+ */
+void free_proc_desc(ProcDesc *desc, size_t bucket, ProcDesc *prev)
+{
+  ASSERT(desc);
+  ASSERT_MSG(bucket <= PROC_DESC_HASH_SIZE, "%u", bucket);
+
+  /* Remove from the hash map */
+  if (prev)
+    prev->next = desc->next;
+  else
+    gpData->procs[bucket] = desc->next;
+
+  free(desc);
+
+#if STATS_ENABLED
+  --gpData->num_procs;
+#endif
+}
+
+/**
+ * Returns a file description structure for the given process and file name.
  * Must be called under global_lock().
+ * The fd argument is only used when it's not -1 and when opt is HashMapOpt_New
+ * — in this case the given fd will be associated with the returned description
+ * so that when close is called on that fd it will be deassociated (and will
+ * cause the desc deletion if there is no other use of it). Optional o_bucket,
+ * o_prev and o_proc arguments will receive the appropriate values for the
+ * returned file description when they are not NULL (and may be later used in
+ * e.g. a free_file_desc_ex() call).
  * Returns NULL when opt is HashMapOpt_New and there is not enough memory
  * to allocate a new sctructure, or when opt is not HashMapOpt_New and there
- * is no descriptor for the given file. When opt is HashMapOpt_Take and
- * the descriptor is found, it will be removed from the hash map (it's then
- * the responsibility of the caller to free the returned pointer).
+ * is no descriptor for the given file.
  */
-FileDesc *get_proc_file_desc_ex(pid_t pid, const char *path, enum HashMapOpt opt)
+FileDesc *get_file_desc_ex(pid_t pid, int fd, const char *path, enum HashMapOpt opt,
+                           size_t *o_bucket, FileDesc **o_prev, ProcDesc **o_proc)
 {
-  size_t h;
+  size_t bucket;
   FileDesc *desc, *prev;
   ProcDesc *proc;
-  FileDesc **map;
   int rc;
 
   ASSERT(gpData);
   ASSERT(path);
-  ASSERT(strlen(path) < PATH_MAX);
 
-  if (pid)
+  if (pid == -1)
+    pid = getpid();
+
+  enum { FDArrayInc = 4 };
+
+  proc = get_proc_desc_ex(pid, opt == HashMapOpt_New ? opt : HashMapOpt_None, NULL, NULL);
+  if (!proc)
+    return NULL;
+
+  if (!proc->files)
   {
-    proc = get_proc_desc_ex(pid, opt == HashMapOpt_New ? opt : HashMapOpt_None);
-    if (!proc)
-      return NULL;
+    /* Lazily create a process-specific file desc hash map */
+    GLOBAL_NEW_ARRAY(proc->files, FILE_DESC_HASH_SIZE);
     if (!proc->files)
-    {
-      /* Lazily create process-specific file desc hash map */
-      GLOBAL_NEW_ARRAY(proc->files, FILE_DESC_HASH_SIZE);
-      if (!proc->files)
-        return NULL;
-    }
-    map = proc->files;
-  }
-  else
-  {
-    proc = NULL;
-    map = gpData->files;
+      return NULL;
   }
 
-  h = hash_string(path) % FILE_DESC_HASH_SIZE;
-  desc = map[h];
+  bucket = hash_string(path) % FILE_DESC_HASH_SIZE;
+  desc = proc->files[bucket];
   prev = NULL;
 
   while (desc)
   {
-    if (strcmp(desc->path, path) == 0)
+    ASSERT(desc->g);
+    if (strcmp(desc->g->path, path) == 0)
       break;
     desc = desc->next;
     prev = desc;
@@ -674,40 +711,205 @@ FileDesc *get_proc_file_desc_ex(pid_t pid, const char *path, enum HashMapOpt opt
 
   if (!desc && opt == HashMapOpt_New)
   {
-    size_t extra_sz = proc ? sizeof(*desc->p) : sizeof(*desc->g);
-    GLOBAL_NEW_PLUS(desc, extra_sz + strlen(path) + 1);
+    /* Initialize a new desc */
+    GLOBAL_NEW(desc);
     if (desc)
     {
-      /* Initialize the new desc */
-      desc->path = ((char *)(desc + 1)) + extra_sz;
-      strcpy(desc->path, path);
-      /* Call component-specific initialization */
-      rc = fcntl_locking_filedesc_init(proc, desc);
-      if (rc == 0)
+      /* Associate the fd with this description */
+      desc->size_fds = FDArrayInc;
+      GLOBAL_NEW_ARRAY(desc->fds, desc->size_fds);
+      if (desc->fds)
       {
-        rc = pwrite_filedesc_init(proc, desc);
-        if (rc == -1)
-          fcntl_locking_filedesc_term(proc, desc);
+        desc->fds[0] = fd;
+        memset(&desc->fds[1], 0xFF, sizeof(desc->fds[0]) * (FDArrayInc - 1));
+
+        /* Associate with the shared part, if any */
+        desc->g = gpData->files[bucket];
+        while (desc->g)
+        {
+          if (strcmp(desc->g->path, path) == 0)
+            break;
+          desc->g = desc->g->next;
+        }
+
+        if (!desc->g)
+        {
+          /* Initialize a new shared part */
+          GLOBAL_NEW_PLUS(desc->g, strlen(path) + 1);
+          if (desc->g)
+          {
+            desc->g->refcnt = 1;
+            desc->g->path = ((char *)(desc->g + 1));
+            strcpy(desc->g->path, path);
+          }
+        }
+        else
+        {
+          /* Reuse the existing shared part */
+          ++desc->g->refcnt;
+          ASSERT_MSG(desc->g->refcnt >= 2, "%d", desc->g->refcnt);
+        }
+
+        if (desc->g)
+        {
+          /* Call component-specific initialization */
+          rc = fcntl_locking_filedesc_init(desc);
+          if (rc == 0)
+          {
+            rc = pwrite_filedesc_init(desc);
+            if (rc == -1)
+              fcntl_locking_filedesc_term(desc);
+          }
+
+          if (rc == 0)
+          {
+            if (desc->g->refcnt == 1)
+            {
+              /* Put to the head of the bucket (shared part) */
+              desc->g->next = gpData->files[bucket];
+              gpData->files[bucket] = desc->g;
+
+#if STATS_ENABLED
+              ++gpData->num_shared_files;
+              if (gpData->num_shared_files > gpData->max_shared_files)
+                gpData->max_shared_files = gpData->num_shared_files;
+#endif
+            }
+
+            /* Put to the head of the bucket */
+            desc->next = proc->files[bucket];
+            proc->files[bucket] = desc;
+
+#if STATS_ENABLED
+            ++gpData->num_files;
+            if (gpData->num_files > gpData->max_files)
+              gpData->max_files = gpData->num_files;
+#endif
+          }
+          else
+          {
+            if (desc->g->refcnt == 1)
+              free(desc->g);
+            else
+              --desc->g->refcnt;
+            free(desc->fds);
+            free(desc);
+            desc = NULL;
+          }
+        }
+        else
+        {
+          free(desc->fds);
+          free(desc);
+          desc = NULL;
+        }
       }
-      if (rc == -1)
+      else
       {
         free(desc);
-        return NULL;
+        desc = NULL;
       }
-      /* Put to the head of the bucket */
-      desc->next = map[h];
-      map[h] = desc;
     }
   }
-  else if (desc && opt == HashMapOpt_Take)
+
+  if (fd != -1 && desc && opt == HashMapOpt_New)
   {
-    if (prev)
-      prev->next = desc->next;
+    int i;
+
+    /* Associate the fd with this file description (if not already) */
+    for (i = 0; i < desc->size_fds; ++i)
+      if (desc->fds[i] == -1 || desc->fds[i] == fd)
+        break;
+
+    if (i < desc->size_fds)
+    {
+      desc->fds[i] = fd;
+    }
     else
-      map[h] = desc->next;
+    {
+      int *fds = RENEW_ARRAY(desc->fds, desc->size_fds + FDArrayInc);
+      if (fds)
+      {
+        desc->fds = fds;
+        desc->fds[desc->size_fds] = fd;
+        memset(&desc->fds[desc->size_fds + 1], 0xFF, sizeof(desc->fds[0]) * (FDArrayInc - 1));
+        desc->size_fds += FDArrayInc;
+      }
+      else
+        desc = NULL;
+    }
   }
 
+  if (o_bucket)
+    *o_bucket = bucket;
+  if (o_prev)
+    *o_prev = prev;
+  if (o_proc)
+    *o_proc = proc;
+
   return desc;
+}
+
+/**
+ * Frees the given file description. Note that bucket, prev, and proc must be
+ * valid values as received from find_file_desc_ex in order to maintain
+ * the map of remaining file descriptions. An exception is when all file
+ * descriptions for a given process are deleted at once in which case only
+ * bucket must be valid (and equal to an index of desc in the bucket).
+ */
+void free_file_desc(FileDesc *desc, size_t bucket, FileDesc *prev, ProcDesc *proc)
+{
+  ASSERT(desc);
+  ASSERT(desc->g);
+
+  TRACE("Will free file desc for [%s] (refcnt %d)\n", desc->g->path, desc->g->refcnt);
+
+  ASSERT_MSG(!desc->fh, "%p", desc->fh);
+  ASSERT_MSG(!desc->map, "%p", desc->map);
+
+  ASSERT_MSG(bucket <= FILE_DESC_HASH_SIZE, "%u", bucket);
+
+  /* Call component-specific uninitialization */
+  pwrite_filedesc_term(desc);
+  fcntl_locking_filedesc_term(desc);
+
+  --desc->g->refcnt;
+  if (desc->g->refcnt == 0)
+  {
+    /* Remove from the hash map (shared part) */
+    SharedFileDesc *prev_g = gpData->files[bucket];
+    if (prev_g == desc->g)
+    {
+      gpData->files[bucket] = desc->g->next;
+    }
+    else
+    {
+      while (prev_g && prev_g->next != desc->g)
+        prev_g = prev_g->next;
+      ASSERT(prev_g);
+      prev_g->next = desc->g->next;
+    }
+
+    /* And free data (shared part) */
+    free(desc->g);
+
+#if STATS_ENABLED
+    --gpData->num_shared_files;
+#endif
+  }
+
+  /* Remove from the hash map */
+  if (prev)
+    prev->next = desc->next;
+  else if (proc)
+    proc->files[bucket] = desc->next;
+
+  free(desc->fds);
+  free(desc);
+
+#if STATS_ENABLED
+  --gpData->num_files;
+#endif
 }
 
 /**
@@ -718,8 +920,67 @@ int close(int fildes)
 {
   TRACE_TO(TRACE_GROUP_CLOSE, "fildes %d\n", fildes);
 
-  if (fcntl_locking_close(fildes) == -1)
-    return -1;
+  __LIBC_PFH pFH;
+  int rc = 0;
+
+  pFH = __libc_FH(fildes);
+  if (pFH && pFH->pszNativePath)
+  {
+    TRACE_TO(TRACE_GROUP_CLOSE, "pszNativePath %s, fFlags %x\n", pFH->pszNativePath, pFH->fFlags);
+
+    global_lock();
+
+    size_t bucket = 0;
+    FileDesc *prev = NULL;
+    ProcDesc *proc = NULL;
+    FileDesc *desc = find_file_desc_ex(pFH->pszNativePath, &bucket, &prev, &proc);
+    if (desc)
+    {
+      TRACE_TO(TRACE_GROUP_CLOSE, "Found file desc %x for [%s]\n", desc, desc->g->path);
+
+      rc = fcntl_locking_close(desc);
+
+      if (rc == 0)
+      {
+        int i;
+        int seen_other_fd = 0;
+
+        /*
+         * Deassociate the fd from this file description (note that there may be
+         * none — e.g. if this desc was created for shared mmap in a forked
+         * child and never for anything else)
+         */
+        for (i = 0; i < desc->size_fds; ++i)
+        {
+          if (desc->fds[i] == fildes)
+          {
+            desc->fds[i] = -1;
+            break;
+          }
+          if (desc->fds[i] != -1)
+            seen_other_fd = 1;
+        }
+
+        if (desc->fh == NULL && desc->map == NULL && !seen_other_fd)
+        {
+          /* Finish checking if there is any usage through fds for this desc */
+          for (++i; i < desc->size_fds; ++i)
+            if (desc->fds[i] != -1)
+              break;
+          seen_other_fd = i < desc->size_fds;
+
+          if (!seen_other_fd)
+            free_file_desc(desc, bucket, prev, proc);
+        }
+      }
+    }
+
+    global_unlock();
+  }
+
+  if (rc != 0)
+    return rc;
+
   return _std_close(fildes);
 }
 
@@ -736,9 +997,55 @@ static int format_stats(char *buf, int size)
   rc = _ustats(gpData->heap, &hst);
   if (rc)
   {
-    // Don't assert here as we might be terminating after another assert
+    /* Don't assert here as we might be terminating after another assert */
     return snprintf(buf, size, "_ustats failed with %d (%d)\n", rc, errno);
   }
+
+  size_t num_procs = 0;
+  size_t num_files = 0;
+  size_t num_shared_files = 0;
+#ifdef STATS_ENABLED
+  num_procs = gpData->num_procs;
+  num_files = gpData->num_files;
+  num_shared_files = gpData->num_shared_files;
+#else
+  int i, j;
+
+  /* No statistics available, calculate them on the fly */
+  for (i = 0; i < PROC_DESC_HASH_SIZE; ++i)
+  {
+    ProcDesc *proc = gpData->procs[i];
+    while (proc)
+    {
+      ++num_procs;
+
+      if (proc->files)
+      {
+        for (j = 0; j < FILE_DESC_HASH_SIZE; ++j)
+        {
+          FileDesc *desc = proc->files[j];
+          while (desc)
+          {
+            ++num_files;
+            desc = desc->next;
+          }
+        }
+      }
+
+      proc = proc->next;
+    }
+  }
+
+  for (i = 0; i < FILE_DESC_HASH_SIZE; ++i)
+  {
+    SharedFileDesc *desc = gpData->files[i];
+    while (desc)
+    {
+      ++num_shared_files;
+      desc = desc->next;
+    }
+  }
+#endif
 
   return snprintf(buf, size,
                   "\n"
@@ -751,11 +1058,34 @@ static int format_stats(char *buf, int size)
 #ifdef STATS_ENABLED
                   "Heap size used max:    %d bytes\n"
 #endif
-                  ,
-                  HEAP_SIZE, gpData->size,
-                  hst._provided, hst._used
+                  "ProcDesc structs used now:       %d\n"
 #ifdef STATS_ENABLED
-                  , gpData->maxHeapUsed
+                  "ProcDesc structs used max:       %d\n"
+#endif
+                  "FileDesc structs used now:       %d\n"
+#ifdef STATS_ENABLED
+                  "FileDesc structs used max:       %d\n"
+#endif
+                  "SharedFileDesc structs used now: %d\n"
+#ifdef STATS_ENABLED
+                  "SharedFileDesc structs used max: %d\n"
+#endif
+                  , HEAP_SIZE, gpData->size
+                  , hst._provided, hst._used
+#ifdef STATS_ENABLED
+                  , gpData->max_heap_used
+#endif
+                  , num_procs
+#ifdef STATS_ENABLED
+                  , gpData->max_procs
+#endif
+                  , num_files
+#ifdef STATS_ENABLED
+                  , gpData->max_files
+#endif
+                  , num_shared_files
+#ifdef STATS_ENABLED
+                  , gpData->max_shared_files
 #endif
                   );
 }
@@ -878,7 +1208,7 @@ void libcx_trace(unsigned traceGroup, const char *file, int line, const char *fu
 
 static void *get_log_instance()
 {
-  if (gLogInstance)
+  if (gLogInstance || gLogInstanceState == 2 || gInFork)
     return gLogInstance;
 
   /* Set a flag that we're going to init a new log instance */
@@ -896,7 +1226,7 @@ static void *get_log_instance()
   void *logInstance = NULL;
   __LIBC_LOGGROUPS *logGroups = NULL;
 
-#if defined(TRACE_ENABLED) && defined(TRACE_USE_LIBC_LOG)
+#if defined(TRACE_ENABLED)
   logGroups = &gLogGroups;
   __libc_LogGroupInit(&gLogGroups, "LIBCX_TRACE");
 #endif
@@ -908,13 +1238,6 @@ static void *get_log_instance()
   }
 
   char buf[CCHMAXPATH + 128];
-
-  if (gLogInstanceOld)
-  {
-    /* Free the instance inherited from the parent after fork */
-    free(gLogInstanceOld);
-    gLogInstanceOld = NULL;
-  }
 
   if (gLogToConsole)
   {
@@ -1131,59 +1454,71 @@ void touch_pages(void *buf, size_t len)
   }
 }
 
+static void forkCompletion(void *pvArg, int rc, __LIBC_FORKCTX enmCtx)
+{
+  pid_t pidParent = (pid_t)pvArg;
+
+  /*
+   * It's safe to use LIBC again.
+   */
+  gInFork = FALSE;
+
+  if (enmCtx != __LIBC_FORK_CTX_CHILD)
+    return;
+
+  /*
+   * Reset the log instance in the child process to cause a reinit. Note that we
+   * only do it when logging to a file. For console logging it's accidentally
+   * fine to just leave it as is because the console handles in the child
+   * process are identical to the parent (even the one we create in the dirty
+   * hack in get_log_instance() with DosDupHandle as it's inherited by default).
+   */
+  if (!gLogToConsole)
+  {
+    /* Free the instance we inherit from the parent */
+    if (gLogInstance)
+      free(gLogInstance);
+
+    gLogInstanceState = 0;
+    gLogInstance = NULL;
+  }
+
+  gSeenAssertion = FALSE;
+
+  /*
+   * Initialize LIBCx in the forked child (note that for normal children this is
+   * done in _DLL_InitTerm()).
+   */
+  shared_init();
+}
+
 static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation)
 {
   int rc = 0;
 
-  switch(enmOperation)
+  if (enmOperation == __LIBC_FORK_OP_EXEC_PARENT)
   {
-    case __LIBC_FORK_OP_FORK_CHILD:
-    {
-      /*
-       * @todo We would like to free & reset the log instance to NULL *before*
-       * calling shared_init() above to to have it properly re-initialized in
-       * the child process but this crashes the child because LIBC Heap can't be
-       * used at that point. A solution would be either:
-       *
-       * - Re-init the log instance w/o allocation but __libc_LogInit doesn't support
-       * that.
-       * - Do it from the forkCompletion() callback which is called at the very end
-       * of fork(), right before returning to user code, but unfortunately we can't
-       * register a completion callback that would get called *after* LIBC own
-       * completion callbacks (where the LIBC Heap is unlocked) and hence we can't
-       * do it from there. There is a proposed fix for LIBC that makes it possible,
-       * see http://trac.netlabs.org/libc/ticket/366#comment:4.
-       *
-       * For now we just don't do anything and this effectively disables logging
-       * done in shared_init(). We could hack around this by supplying a manually
-       * open file but it's too much hassle (see __libc_LogInit implementation).
-       * It's better to fix kLIBC.
-       */
+    /*
+     * Indicate that we are in forking mode so that LIBC can't be used (see
+     * below).
+     */
+    gInFork = TRUE;
 
-      shared_init();
-
-      /*
-       * Reset the log instance in the child process to cause a reinit (note
-       * that we store the old instance to free it and a avoid memory leak).
-       * Note that we only do it when logging to a file. For console logging
-       * it's accidentally fine to just leave it as is because the console
-       * handles in the child process are identical to the parent (even the one
-       * we create with DosDupHandle as it's inherited by default).
-       */
-      if (!gLogToConsole)
-      {
-        gLogInstanceOld = gLogInstance;
-        gLogInstanceState = 0;
-        gLogInstance = NULL;
-        gLogToConsole = FALSE;
-        gSeenAssertion = FALSE;
-      }
-
-      break;
-    }
+    /*
+     * Register a completion function that will be executed in the child process
+     * right before returning from fork(), i.e. when LIBC is fully operational
+     * (as opposed to the __LIBC_FORK_OP_FORK_CHILD callback time when e.g. LIBC
+     * Heap is locked and can't be used). Note that __LIBC_FORK_CTX_FLAGS_LAST
+     * is vital for that as otherwise the completion callback will be executed
+     * before LIBC own completion callbacks that in particular unlock the Heap.
+     * Note that __LIBC_FORK_CTX_FLAGS_LAST support requires kLIBC with a patch
+     * from http://trac.netlabs.org/libc/ticket/366.
+     */
+    rc = pForkHandle->pfnCompletionCallback(pForkHandle, forkCompletion, (void *)pForkHandle->pidParent,
+                                            __LIBC_FORK_CTX_BOTH | __LIBC_FORK_CTX_FLAGS_LAST);
   }
 
   return rc;
 }
 
-_FORK_CHILD1(0xFFFFFFFF, forkParentChild);
+_FORK_PARENT1(0xFFFFFFFF, forkParentChild);

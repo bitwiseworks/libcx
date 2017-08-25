@@ -80,9 +80,32 @@ static APIRET DosMyAllocMem(PPVOID addr, ULONG size, ULONG flags)
   return arc;
 }
 
+/**
+ * Checks if there is any usage through fds for a given file description
+ * and frees it if not.
+ */
+static void maybe_free_file_desc(FileDesc *desc)
+{
+  int i;
+  for (i = 0; i < desc->size_fds; ++i)
+    if (desc->fds[i] != -1)
+      break;
+
+  if (i == desc->size_fds)
+  {
+    /* This desc is not used any more, free it */
+    size_t bucket = 0;
+    FileDesc *prev = NULL;
+    ProcDesc *proc = NULL;
+    FileDesc *fdesc = find_file_desc_ex(desc->g->path, &bucket, &prev, &proc);
+    ASSERT_MSG(fdesc == desc, "%p %p", fdesc, desc);
+    free_file_desc(fdesc, bucket, prev, proc);
+  }
+}
+
 /*
- * Frees the given file map's memory structure. Also frees the parent
- * file map if this is the last mem struct associated with it.
+ * Frees the given file handle structure. Also deassociates it
+ * from the associated file description if it's not NULL.
  */
 static void free_file_handle(FileHandle *fh)
 {
@@ -97,8 +120,11 @@ static void free_file_handle(FileHandle *fh)
 
   if (fh->desc)
   {
-    ASSERT(fh->desc->p->fh == fh);
-    fh->desc->p->fh = NULL;
+    ASSERT(fh->desc->fh == fh);
+    fh->desc->fh = NULL;
+
+    if (fh->desc->map == NULL)
+      maybe_free_file_desc(fh->desc);
   }
 
   free(fh);
@@ -144,11 +170,24 @@ static void free_file_map_mem(FileMapMem *mem)
   {
     /* No more memory objects, free the file map itself */
     TRACE("freeing file map %p\n", fmap);
-    if (fmap->desc)
+    if (fmap->flags)
     {
-      ASSERT(fmap->desc->map == fmap);
-      fmap->desc->map = NULL;
+      /* Deassociate from the appropriate file description */
+      if (fmap->flags & MAP_SHARED)
+      {
+        ASSERT(fmap->desc_g->map == fmap);
+        fmap->desc_g->map = NULL;
+      }
+      else
+      {
+        ASSERT(fmap->desc->map == fmap);
+        fmap->desc->map = NULL;
+
+        if (fmap->desc->fh == NULL)
+          maybe_free_file_desc(fmap->desc);
+      }
     }
+
     free(fmap);
   }
 }
@@ -192,8 +231,8 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   FileHandle *fh = NULL;
   FileMap *fmap = NULL;
   FileMapMem *fmem = NULL;
+  FileMap **fmap_ptr = NULL;
   FileDesc *fdesc = NULL;
-  FileDesc *proc_fdesc = NULL;
   ProcDesc *pdesc;
   ULONG dos_flags;
   int maybe_overlaps = 0;
@@ -281,7 +320,6 @@ void *mmap(void *addr, size_t len, int prot, int flags,
     TRACE_IF(arc, "DosQueryFileInfo = %lu\n", arc);
     if (arc)
     {
-      global_unlock();
       errno = EOVERFLOW;
       return MAP_FAILED;
     }
@@ -296,16 +334,9 @@ void *mmap(void *addr, size_t len, int prot, int flags,
 
     global_lock();
 
-    /* Get the associated file descriptor that stores the file handle */
-    proc_fdesc = get_proc_file_desc(getpid(), pFH->pszNativePath);
-
-    /* Get the associated file descriptor that stores the file map */
-    if (flags & MAP_SHARED)
-      fdesc = get_file_desc(pFH->pszNativePath);
-    else
-      fdesc = proc_fdesc;
-
-    if (!fdesc || !proc_fdesc)
+    /* Get the associated file description that stores the file handle */
+    fdesc = get_file_desc(fildes, pFH->pszNativePath);
+    if (!fdesc)
     {
       global_unlock();
       errno = ENOMEM;
@@ -323,7 +354,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       fmap_flags |= OBJ_MY_SHARED | OBJ_GIVEABLE | OBJ_GETTABLE;
     }
 
-    fmap = fdesc->map;
+    fmap = flags & MAP_SHARED ? fdesc->g->map : fdesc->map;
     if (!fmap)
     {
       /* Create a new file map struct and its initial mem struct */
@@ -456,7 +487,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       dirtymap_sz = DIVIDE_UP(NUM_PAGES(fmap->size), DIRTYMAP_WIDTH) * (DIRTYMAP_WIDTH / 8);
     TRACE("dirty map size %u bytes\n", dirtymap_sz);
 
-    fh = proc_fdesc->p->fh;
+    fh = fdesc->fh;
     if (!fh)
     {
       /* Create a new file handle */
@@ -470,7 +501,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       {
         if (fh)
           free(fh);
-        if (!fdesc->map)
+        if (!fmap->flags)
           free_file_map_mem(fmem);
         global_unlock();
         errno = ENOMEM;
@@ -507,7 +538,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
           if (dirtymap_sz)
             free(fh->dirtymap);
           free(fh);
-          if (!fdesc->map)
+          if (!fmap->flags)
             free_file_map_mem(fmem);
           global_unlock();
           errno = EMFILE;
@@ -535,7 +566,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
         uint32_t *dirtymap = realloc(fh->dirtymap, dirtymap_sz);
         if (!dirtymap)
         {
-          if (!fdesc->map)
+          if (!fmap->flags)
             free_file_map_mem(fmem);
           global_unlock();
           errno = ENOMEM;
@@ -558,10 +589,10 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   if (!mmap)
   {
     /* Free fh if it's not used */
-    if (fh && !proc_fdesc->p->fh)
+    if (fh && !fdesc->fh)
       free_file_handle(fh);
     /* Free fmap if it's not used */
-    if (fmap && !fdesc->map)
+    if (fmap && !fmap->flags)
       free_file_map_mem(fmem);
     global_unlock();
     errno = ENOMEM;
@@ -588,7 +619,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
     mmap->f->refcnt = 1;
     mmap->start = fmem->start + (off - fmem->off);
     mmap->end = mmap->start + len;
-    if (flags & MAP_SHARED && fdesc->map)
+    if (flags & MAP_SHARED && fmap->flags)
     {
       /* This is an existing file map, check if it's mapped in this process */
       ULONG mem_flags, mem_len = fmem->len;
@@ -627,10 +658,10 @@ void *mmap(void *addr, size_t len, int prot, int flags,
     free(mmap);
 
     /* Free fh if it's not used */
-    if (fh && !proc_fdesc->p->fh)
+    if (fh && !fdesc->fh)
       free_file_handle(fh);
     /* Free fmap if it's not used */
-    if (fmap && !fdesc->map)
+    if (fmap && !fmap->flags)
       free_file_map_mem(fmem);
 
     global_unlock();
@@ -910,35 +941,52 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   if (fmap)
   {
     /* Reference the file handle as it's used now */
-    if (!proc_fdesc->p->fh)
+    if (!fdesc->fh)
     {
       /* If it's a newly allocated fh entry, associate it with its file desc */
       fh->refcnt = 1;
-      fh->desc = proc_fdesc;
-      proc_fdesc->p->fh = fh;
+      fh->desc = fdesc;
+      fdesc->fh = fh;
     }
     else
     {
       ++(fh->refcnt);
       ASSERT(fh->refcnt);
-      ASSERT(fh->desc == proc_fdesc);
-      ASSERT(proc_fdesc->p->fh == fh);
+      ASSERT(fh->desc == fdesc);
+      ASSERT(fdesc->fh == fh);
     }
 
     /* Reference the file map's memory object as it is used now */
-    if (!fdesc->map)
+    if (!fmap->flags)
     {
       /* If it's a newly allocated fmap entry, associate it with its file desc */
       fmem->refcnt = 1;
-      fmap->desc = fdesc;
-      fdesc->map = fmap;
+      fmap->flags = mmap->flags & MAP_SHARED ? MAP_SHARED : MAP_PRIVATE;
+      if (mmap->flags & MAP_SHARED)
+      {
+        fmap->desc_g = fdesc->g;
+        fdesc->g->map = fmap;
+      }
+      else
+      {
+        fmap->desc = fdesc;
+        fdesc->map = fmap;
+      }
     }
     else
     {
       ++(fmem->refcnt);
       ASSERT(fmem->refcnt);
-      ASSERT(fmap->desc == fdesc);
-      ASSERT(fdesc->map == fmap);
+      if (mmap->flags & MAP_SHARED)
+      {
+        ASSERT(fmap->flags == MAP_SHARED);
+        ASSERT(fmap->desc_g == fdesc->g && fdesc->g->map == fmap);
+      }
+      else
+      {
+        ASSERT(fmap->flags == MAP_PRIVATE);
+        ASSERT(fmap->desc == fdesc && fdesc->map == fmap);
+      }
     }
   }
 
@@ -1171,12 +1219,24 @@ static void free_mmap(ProcDesc *desc, MemMap *m, MemMap *prev)
 
   ASSERT(m);
 
-  TRACE("%s mapping %p (%lx..%lx, refcnt %d), fmem %p (%lx, refcnt %d)\n",
+  TRACE("%s mapping %p (%lx..%lx)\n",
         m->flags & MAP_SHARED ? "shared" : "private",
         m, m->start, m->end, m->flags & MAP_ANON ? 0 : m->f->refcnt,
         m->flags & MAP_ANON ? 0 : m->f->fmem,
         m->flags & MAP_ANON ? 0 : m->f->fmem->start,
         m->flags & MAP_ANON ? 0 : m->f->fmem->refcnt);
+
+  if (!(m->flags & MAP_ANON))
+  {
+    ASSERT(m->f->fmem);
+    ASSERT(m->f->fh);
+    ASSERT(m->f->fh->desc);
+  }
+
+  TRACE_IF(!(m->flags & MAP_ANON), "file mapping: [%s], refcnt %d, fmem %p (%lx, refcnt %d), fh %p (%d, refcnt %d)\n",
+           m->f->fh->desc->g->path, m->f->refcnt,
+           m->f->fmem, m->f->fmem->start, m->f->fmem->refcnt,
+           m->f->fh, m->f->fh->fd, m->f->fh->refcnt);
 
   if (!(m->flags & MAP_ANON) && m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE)
     flush_dirty_pages(m, 0, 0);
@@ -1461,61 +1521,56 @@ static void mmap_flush_thread(void *arg)
 
 /**
  * Initializes the mmap structures.
- * Called after successfull gpData allocation and gpData->heap creation.
+ * Called upon each process startup after successfull gpData and ProcDesc struct
+ * allocation.
  */
-void mmap_init()
+void mmap_init(ProcDesc *proc)
 {
-  ProcDesc *desc;
   APIRET arc;
 
   /* Initialize our part of ProcDesc */
-  desc = get_proc_desc(getpid());
-  ASSERT(desc);
-
-  GLOBAL_NEW(desc->mmap);
-  ASSERT(desc->mmap);
-  desc->mmap->flush_tid = -1;
+  GLOBAL_NEW(proc->mmap);
+  ASSERT(proc->mmap);
+  proc->mmap->flush_tid = -1;
 
   /* Note: we need a shared semaphore for DosAsyncTimer */
-  arc = DosCreateEventSem(NULL, &desc->mmap->flush_sem, DC_SEM_SHARED | DCE_AUTORESET, FALSE);
+  arc = DosCreateEventSem(NULL, &proc->mmap->flush_sem, DC_SEM_SHARED | DCE_AUTORESET, FALSE);
   ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
 }
 
 /**
  * Uninitializes the mmap structures.
- * Called upon each process termination before gpData is uninitialized
- * or destroyed.
+ * Called upon each process termination before gpData destruction. Note that
+ * @a proc may be NULL on critical failures.
  */
-void mmap_term()
+void mmap_term(ProcDesc *proc)
 {
-  ProcDesc *desc;
   MemMap *m;
   APIRET arc;
 
   /* Free our part of ProcDesc */
-  desc = find_proc_desc(getpid());
-  if (desc)
+  if (proc)
   {
-    m = desc->mmaps;
+    m = proc->mmaps;
     while (m)
     {
       MemMap *n = m->next;
       free_mmap(NULL, m, NULL);
       m = n;
     }
-    desc->mmaps = NULL;
+    proc->mmaps = NULL;
 
-    arc = DosCloseEventSem(desc->mmap->flush_sem);
+    arc = DosCloseEventSem(proc->mmap->flush_sem);
     if (arc == ERROR_SEM_BUSY)
     {
       /* The semaphore may be owned by us, try to release it */
-      arc = DosPostEventSem(desc->mmap->flush_sem);
+      arc = DosPostEventSem(proc->mmap->flush_sem);
       TRACE("DosPostEventSem = %ld\n", arc);
-      arc = DosCloseEventSem(desc->mmap->flush_sem);
+      arc = DosCloseEventSem(proc->mmap->flush_sem);
     }
     TRACE("DosCloseEventSem = %ld\n", arc);
 
-    free(desc->mmap);
+    free(proc->mmap);
   }
 }
 
@@ -2214,22 +2269,22 @@ int ftruncate(int fildes, __off_t length)
     /* Update file size in FileMap structs */
     FileDesc *fdesc;
 
-    /* Update the shared mapping */
     fdesc = find_file_desc(pFH->pszNativePath);
-    if (fdesc && fdesc->map)
+    if (fdesc)
     {
-      TRACE("updating size for '%s' in shared fmap %p from %llu to %llu\n",
-            pFH->pszNativePath, fdesc->map, fdesc->map->size, length);
-      fdesc->map->size = length;
-    }
+      if (fdesc->g->map)
+      {
+        TRACE("updating size for [%s] in shared fmap %p from %llu to %llu\n",
+              pFH->pszNativePath, fdesc->g->map, fdesc->g->map->size, length);
+        fdesc->map->size = length;
+      }
 
-    /* Update the private mapping */
-    fdesc = find_proc_file_desc(getpid(), pFH->pszNativePath);
-    if (fdesc && fdesc->map)
-    {
-      TRACE("updating size for '%s' in private fmap %p from %llu to %llu\n",
-            pFH->pszNativePath, fdesc->map, fdesc->map->size, length);
-      fdesc->map->size = length;
+      if (fdesc->map)
+      {
+        TRACE("updating size for [%s] in private fmap %p from %llu to %llu\n",
+              pFH->pszNativePath, fdesc->map, fdesc->map->size, length);
+        fdesc->map->size = length;
+      }
     }
   }
 
@@ -2265,14 +2320,29 @@ MemMap *get_proc_mmaps(int pid)
 }
 #endif
 
+static void forkCompletion(void *pvArg, int rc, __LIBC_FORKCTX enmCtx);
+
 static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation)
 {
-  ProcDesc *desc;
-  APIRET arc;
-  MemMap *m;
+  int rc = 0;
 
-  if (enmOperation == __LIBC_FORK_OP_FORK_PARENT)
+  if (enmOperation == __LIBC_FORK_OP_EXEC_PARENT)
   {
+    /*
+     * Register a completion function that will be executed in the child process
+     * right before returning from fork(), i.e. when LIBC is fully operational
+     * (as opposed to the __LIBC_FORK_OP_FORK_CHILD callback time when e.g. LIBC
+     * Heap is locked and can't be used, see shared.c for more details).
+     */
+    rc = pForkHandle->pfnCompletionCallback(pForkHandle, forkCompletion, (void *)pForkHandle->pidParent,
+                                            __LIBC_FORK_CTX_CHILD | __LIBC_FORK_CTX_FLAGS_LAST);
+  }
+  else if (enmOperation == __LIBC_FORK_OP_FORK_PARENT)
+  {
+    ProcDesc *desc;
+    APIRET arc;
+    MemMap *m;
+
     global_lock();
 
     desc = find_proc_desc(getpid());
@@ -2312,109 +2382,127 @@ static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOper
 
     global_unlock();
   }
-  else if (enmOperation == __LIBC_FORK_OP_FORK_CHILD)
+
+  return rc;
+}
+
+_FORK_PARENT1(0, forkParentChild);
+
+static void forkCompletion(void *pvArg, int rc, __LIBC_FORKCTX enmCtx)
+{
+  ASSERT(enmCtx == __LIBC_FORK_CTX_CHILD);
+
+  pid_t pidParent = (pid_t)pvArg;
+
+  ProcDesc *desc;
+  MemMap *m;
+
+  ProcDesc *pdesc;
+  MemMap *newm;
+  BOOL ok = TRUE;
+
+  global_lock();
+
+  pdesc = find_proc_desc(pidParent);
+  ASSERT(pdesc);
+
+  desc = find_proc_desc(getpid());
+  ASSERT(desc);
+
+  /* Copy parent's shared mappings to our own list */
+  m = pdesc->mmaps;
+  while (m)
   {
-    ProcDesc *pdesc;
-    MemMap *newm;
-    BOOL ok = TRUE;
-
-    global_lock();
-
-    pdesc = find_proc_desc(pForkHandle->pidParent);
-    ASSERT(pdesc);
-
-    desc = find_proc_desc(getpid());
-    ASSERT(desc);
-
-    /* Copy parent's shared mappings to our own list */
-    m = pdesc->mmaps;
-    while (m)
+    if (m->flags & MAP_SHARED)
     {
-      if (m->flags & MAP_SHARED)
+      TRACE_IF(m->flags & MAP_ANON, "restoring mapping %p (start %lx)\n", m, m->start);
+      TRACE_IF(!(m->flags & MAP_ANON), "restoring mapping %p (start %lx, fmem %p, fmem->start %lx)\n",
+               m, m->start, m->f->fmem, m->f->fmem->start);
+      GLOBAL_NEW_PLUS(newm, m->flags & MAP_ANON ? 0 : sizeof(*newm->f));
+      if (!newm)
       {
-        TRACE_IF(m->flags & MAP_ANON, "restoring mapping %p (start %lx)\n", m, m->start);
-        TRACE_IF(!(m->flags & MAP_ANON), "restoring mapping %p (start %lx, fmem %p, fmem->start %lx)\n",
-                 m, m->start, m->f->fmem, m->f->fmem->start);
-        GLOBAL_NEW_PLUS(newm, m->flags & MAP_ANON ? 0 : sizeof(*newm->f));
-        if (!newm)
+        ok = FALSE;
+        break;
+      }
+
+      /*
+       * Copy the fields. Note that the dirty map, if any, will remain reset
+       * in the copy as it won't be copied over - this is because dirty maps
+       * are per process (as well as memory protection flags).
+       */
+      TRACE("new mmap %p\n", newm);
+      COPY_STRUCT_PLUS(newm, m, m->flags & MAP_ANON ? 0 : sizeof(*newm->f));
+
+      if (!(newm->flags & MAP_ANON))
+      {
+        const char *path = newm->f->fmem->map->desc_g->path;
+        TRACE("new file mapping for [%s]\n", path);
+
+        int dirtymap_sz = 0;
+        FileHandle *fh;
+        FileDesc *fdesc;
+
+        if (m->dos_flags & PAG_WRITE)
+          dirtymap_sz = DIVIDE_UP(NUM_PAGES(newm->f->fmem->map->size), DIRTYMAP_WIDTH) * (DIRTYMAP_WIDTH / 8);
+
+        /* Get a file descrition for this process (will create a new one if needed) */
+        fdesc = get_file_desc(-1, path);
+        if (!fdesc)
         {
           ok = FALSE;
           break;
         }
 
-        /*
-         * Copy the fields. Note that the dirty map, if any, will remain reset
-         * in the copy as it won't be copied over - this is because dirty maps
-         * are per process (as well as memory protection flags).
-         */
-        TRACE("new mmap %p\n", newm);
-        COPY_STRUCT_PLUS(newm, m, m->flags & MAP_ANON ? 0 : sizeof(*newm->f));
-
-        if (!(newm->flags & MAP_ANON))
+        fh = fdesc->fh;
+        if (!fh)
         {
-          FileDesc *fdesc = newm->f->fmem->map->desc;
-          int dirtymap_sz = 0;
-          FileHandle *fh;
-          FileDesc *proc_fdesc;
-
-          if (m->dos_flags & PAG_WRITE)
-            dirtymap_sz = DIVIDE_UP(NUM_PAGES(newm->f->fmem->map->size), DIRTYMAP_WIDTH) * (DIRTYMAP_WIDTH / 8);
-
-          ASSERT(fdesc);
-          proc_fdesc = get_proc_file_desc(getpid(), fdesc->path);
-          if (!proc_fdesc)
+          /* Create a new file handle for this process */
+          GLOBAL_NEW(fh);
+          if (fh && dirtymap_sz)
           {
+            fh->dirtymap_sz = dirtymap_sz;
+            fh->dirtymap = global_alloc(dirtymap_sz);
+          }
+          if (!fh || (dirtymap_sz && !fh->dirtymap))
+          {
+            if (fh)
+              free(fh);
             ok = FALSE;
             break;
           }
 
-          fh = proc_fdesc->p->fh;
-          if (!fh)
-          {
-            /* Create a new file handle for this process */
-            TRACE("new file handle (fd %ld, dirty map size %u bytes)\n", newm->f->fh->fd, dirtymap_sz);
-            GLOBAL_NEW(fh);
-            if (fh && dirtymap_sz)
-            {
-              fh->dirtymap_sz = dirtymap_sz;
-              fh->dirtymap = global_alloc(dirtymap_sz);
-            }
-            if (!fh || (dirtymap_sz && !fh->dirtymap))
-            {
-              ok = FALSE;
-              break;
-            }
+          fh->fd = newm->f->fh->fd;
 
-            fh->fd = newm->f->fh->fd;
-          }
+          /* Associate the new file handle with the description */
+          fh->desc = fdesc;
+          fdesc->fh = fh;
 
-          newm->f->fh = fh;
-
-          /* Reference file handle */
-          ++(newm->f->fh->refcnt);
-          ASSERT(newm->f->fh->refcnt);
-
-          /* Reference file map */
-          ++(newm->f->fmem->refcnt);
-          ASSERT(newm->f->fmem->refcnt);
+          TRACE("new file handle %p (fd %ld, dirty map size %u bytes)\n", fh, fh->fd, dirtymap_sz);
         }
 
-        /* Add the new entry the list */
-        newm->next = desc->mmaps;
-        desc->mmaps = newm;
+        newm->f->fh = fh;
+
+        /* Reference file handle */
+        ++(newm->f->fh->refcnt);
+        ASSERT(newm->f->fh->refcnt);
+
+        /* Reference file map */
+        ++(newm->f->fmem->refcnt);
+        ASSERT(newm->f->fmem->refcnt);
       }
-      m = m->next;
+
+      /* Add the new entry the list */
+      newm->next = desc->mmaps;
+      desc->mmaps = newm;
     }
-
-    global_unlock();
-
-    /* We have to abort fork() if copying or aliasing some mapping fails */
-    if (!ok)
-      return -ENOMEM;
+    m = m->next;
   }
 
-  return 0;
-}
+  global_unlock();
 
-_FORK_PARENT1(0, forkParentChild);
-_FORK_CHILD1(0, forkParentChild);
+  /*
+   * A failure here means out of memory when copying mappings so we have to
+   * abort the process as there is no way to recover from this.
+   */
+  ASSERT(ok);
+}

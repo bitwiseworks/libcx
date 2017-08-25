@@ -130,27 +130,35 @@ void libcx_assert(const char *string, const char *fname, unsigned int line, cons
 #define PROC_DESC_HASH_SIZE 17 /* Prime */
 
 /**
- * File descriptor (hash map entry).
+ * Global system-wide file description (hash map entry).
+ */
+typedef struct SharedFileDesc
+{
+  struct SharedFileDesc *next;
+
+  int refcnt; /* Number of FileDesc sturcts using us */
+
+  char *path; /* File name with full path (follows the struct) */
+  struct FileMap *map; /* Per-file mmap data */
+  struct FcntlLock *fcntl_locks; /* Active fcntl file locks */
+  unsigned long pwrite_lock; /* Mutex used in pwrite/pread */
+} SharedFileDesc;
+
+/**
+ * Process-specific file description (hash map entry).
  */
 typedef struct FileDesc
 {
   struct FileDesc *next;
 
-  char *path; /* File name with full path */
+  SharedFileDesc *g; /* Global file description */
+
   struct FileMap *map; /* Per-file mmap data */
+  struct FileHandle *fh; /* File handle for mmap */
 
-  /* Process-specific file descripion data (must be last!) */
-  struct Proc
-  {
-    struct FileHandle *fh; /* File handle for mmap */
-  } p[0];
+  int *fds; /* Open FDs for this file (-1 for free entry) */
+  size_t size_fds; /* Current size of fds array */
 
-  /* Global file descripor data (must be last!) */
-  struct Global
-  {
-    struct FcntlLock *fcntl_locks; /* Active fcntl file locks */
-    unsigned long pwrite_lock; /* Mutex used in pwrite/pread */
-  } g[0];
 } FileDesc;
 
 /**
@@ -161,24 +169,32 @@ typedef struct ProcDesc
   struct ProcDesc *next;
 
   pid_t pid;
-  FileDesc **files; /* process-specific file descriptor hash map of FILE_DESC_HASH_SIZE */
-  struct ProcMemMap *mmap; /* process-specific data for mmap */
-  struct MemMap *mmaps; /* process-visible memory mapings */
+  FileDesc **files; /* Process-specific file descrition hash map of FILE_DESC_HASH_SIZE */
+  struct ProcMemMap *mmap; /* Process-specific data for mmap */
+  struct MemMap *mmaps; /* Process-visible memory mapings */
 } ProcDesc;
 
 /**
- * Global shared data structure (header).
+ * Global system-wide data structure (header).
  */
 typedef struct SharedData
 {
-  size_t size; /* committed size */
-  Heap_t heap; /* shared heap */
-  int refcnt; /* number of processes using us */
-  size_t maxHeapUsed; /* max size of used heap space */
-  ProcDesc **procs; /* process descriptor hash map of PROC_INFO_HASH_SIZE */
-  FileDesc **files; /* file descriptor hash map of FILE_DESC_HASH_SIZE */
+  size_t size; /* Committed size */
+  Heap_t heap; /* Shared heap */
+  int refcnt; /* Number of processes using us */
+  ProcDesc **procs; /* Process description hash map of PROC_INFO_HASH_SIZE */
+  SharedFileDesc **files; /* File description hash map of FILE_DESC_HASH_SIZE */
   struct FcntlLocking *fcntl_locking; /* Shared data for fcntl locking */
-  /* heap memory follows here */
+#ifdef STATS_ENABLED
+  size_t max_heap_used; /* Max size of used heap space */
+  size_t num_procs; /* Number of ProcDesc structs */
+  size_t max_procs; /* Max number of ProcDesc structs */
+  size_t num_files; /* Number of FileDesc structs (all processes) */
+  size_t max_files; /* Max number of FileDesc structs (all processes) */
+  size_t num_shared_files; /* Number of SharedFileDesc structs */
+  size_t max_shared_files; /* Max number of SharedFileDesc structs */
+#endif
+  /* Heap memory follows here */
 } SharedData;
 
 /**
@@ -204,43 +220,42 @@ void *global_alloc(size_t size);
 #define NEW_PLUS(ptr, more) (ptr) = (__typeof(ptr))calloc(1, sizeof(*ptr) + (more))
 #define NEW_ARRAY(ptr, sz) (ptr) = (__typeof(ptr))calloc((sz), sizeof(*ptr))
 
-#define RENEW_ARRAY(ptr, sz) (ptr) = (__typeof(ptr))realloc(ptr, sizeof(*ptr) * (sz))
+#define RENEW_ARRAY(ptr, sz) ((__typeof(ptr))realloc(ptr, sizeof(*ptr) * (sz)))
 
 #define COPY_STRUCT(to, from) memcpy((to), (from), sizeof(*from))
 #define COPY_STRUCT_PLUS(to, from, more) memcpy((to), (from), sizeof(*from) + (more))
+#define COPY_ARRAY(to, from, sz) memcpy((to), (from), sizeof(*from) * (sz))
 
 enum HashMapOpt
 {
   HashMapOpt_None = 0,
   HashMapOpt_New = 1,
-  HashMapOpt_Take = 2,
 };
 
-ProcDesc *get_proc_desc_ex(pid_t pid, enum HashMapOpt opt);
-static inline ProcDesc *get_proc_desc(pid_t pid) { return get_proc_desc_ex(pid, HashMapOpt_New); }
-static inline ProcDesc *find_proc_desc(pid_t pid) { return get_proc_desc_ex(pid, HashMapOpt_None); }
-static inline ProcDesc *take_proc_desc(pid_t pid) { return get_proc_desc_ex(pid, HashMapOpt_Take); }
+ProcDesc *get_proc_desc_ex(pid_t pid, enum HashMapOpt opt, size_t *o_bucket, ProcDesc **o_prev);
+static inline ProcDesc *get_proc_desc(pid_t pid) { return get_proc_desc_ex(pid, HashMapOpt_New, NULL, NULL); }
+static inline ProcDesc *find_proc_desc(pid_t pid) { return get_proc_desc_ex(pid, HashMapOpt_None, NULL, NULL); }
+static inline ProcDesc *find_proc_desc_ex(pid_t pid, size_t *o_bucket, ProcDesc **o_prev) { return get_proc_desc_ex(pid, HashMapOpt_None, o_bucket, o_prev); }
+void free_proc_desc(ProcDesc *desc, size_t bucket, ProcDesc *prev);
 
-FileDesc *get_proc_file_desc_ex(pid_t pid, const char *path, enum HashMapOpt opt);
-static inline FileDesc *get_proc_file_desc(pid_t pid, const char *path) { return get_proc_file_desc_ex(pid, path, HashMapOpt_New); }
-static inline FileDesc *find_proc_file_desc(pid_t pid, const char *path) { return get_proc_file_desc_ex(pid, path, HashMapOpt_None); }
-static inline FileDesc *take_proc_file_desc(pid_t pid, const char *path) { return get_proc_file_desc_ex(pid, path, HashMapOpt_Take); }
-static inline FileDesc *get_file_desc(const char *path) { return get_proc_file_desc_ex(0, path, HashMapOpt_New); }
-static inline FileDesc *find_file_desc(const char *path) { return get_proc_file_desc_ex(0, path, HashMapOpt_None); }
-static inline FileDesc *take_file_desc(const char *path) { return get_proc_file_desc_ex(0, path, HashMapOpt_Take); }
+FileDesc *get_file_desc_ex(pid_t pid, int fd, const char *path, enum HashMapOpt opt, size_t *o_bucket, FileDesc **o_prev, ProcDesc **o_proc);
+static inline FileDesc *get_file_desc(int fd, const char *path) { return get_file_desc_ex(-1, fd, path, HashMapOpt_New, NULL, NULL, NULL); }
+static inline FileDesc *find_file_desc(const char *path) { return get_file_desc_ex(-1, -1, path, HashMapOpt_None, NULL, NULL, NULL); }
+static inline FileDesc *find_file_desc_ex(const char *path, size_t *o_bucket, FileDesc **o_prev, ProcDesc **o_proc) { return get_file_desc_ex(-1, -1, path, HashMapOpt_None, o_bucket, o_prev, o_proc); }
+void free_file_desc(FileDesc *desc, size_t bucket, FileDesc *prev, ProcDesc *proc);
 
-void fcntl_locking_init();
-void fcntl_locking_term();
-int fcntl_locking_filedesc_init(ProcDesc *proc, FileDesc *desc);
-void fcntl_locking_filedesc_term(ProcDesc *proc, FileDesc *desc);
+void fcntl_locking_init(ProcDesc *proc);
+void fcntl_locking_term(ProcDesc *proc);
+int fcntl_locking_filedesc_init(FileDesc *desc);
+void fcntl_locking_filedesc_term(FileDesc *desc);
 
-int fcntl_locking_close(int fildes);
+int fcntl_locking_close(FileDesc *desc);
 
-int pwrite_filedesc_init(ProcDesc *proc, FileDesc *desc);
-void pwrite_filedesc_term(ProcDesc *proc, FileDesc *desc);
+int pwrite_filedesc_init(FileDesc *desc);
+void pwrite_filedesc_term(FileDesc *desc);
 
-void mmap_init();
-void mmap_term();
+void mmap_init(ProcDesc *proc);
+void mmap_term(ProcDesc *proc);
 int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
                    struct _EXCEPTIONREGISTRATIONRECORD *reg,
                    struct _CONTEXT *ctx);

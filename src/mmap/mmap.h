@@ -27,7 +27,7 @@
 #include "../shared.h"
 
 /* Width of a dirty map entry in bits */
-#define DIRTYMAP_WIDTH (sizeof(*((struct FileDesc*)0)->p->fh->dirtymap) * 8)
+#define DIRTYMAP_WIDTH (sizeof(*((struct FileDesc*)0)->fh->dirtymap) * 8)
 
 /* Flush operation start delay (ms) */
 #define FLUSH_DELAY 1000
@@ -57,11 +57,17 @@ typedef struct FileMapMem
 } FileMapMem;
 
 /**
- * File map.
+ * File map data.
  */
 typedef struct FileMap
 {
-  FileDesc *desc; /* associated file desc */
+//  FileDesc *desc; /* associated file desc */
+  int flags; /* Currently, MAP_SHARED or MAP_PRIVATE or 0 if not associated */
+  union
+  {
+    SharedFileDesc *desc_g; /* associated file desc for MAP_SHARED */
+    FileDesc *desc; /* associated file desc for MAP_PRIVATE */
+  };
   FileMapMem *mems; /* list of memory objects of this file */
   off_t size; /* file size */
 } FileMap;
