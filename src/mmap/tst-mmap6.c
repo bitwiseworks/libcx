@@ -110,7 +110,7 @@ do_test (void)
 
   printf("Test 1\n");
 
-  if (fork() == 0)
+  if ((rc = fork()) == 0)
   {
 #ifdef __OS2__
     arc = DosOpenMutexSem(NULL, &hmtx);
@@ -160,6 +160,12 @@ do_test (void)
     printf("child: after writing test value\n");
 
     return 0;
+  }
+
+  if (rc < 0)
+  {
+    perror("fork");
+    return 1;
   }
 
 #ifdef __OS2__

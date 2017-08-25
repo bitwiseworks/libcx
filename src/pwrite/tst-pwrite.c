@@ -83,7 +83,7 @@ do_test (void)
           {
             if (TEMP_FAILURE_RETRY ((n = pread(fd, buf, FILE_SIZE, 0))) != FILE_SIZE)
               {
-                printf ("pread failed (read %d bytes instead of %d)\n", n, FILE_SIZE);
+                printf ("pread failed (read %d bytes instead of %d, errno %d)\n", n, FILE_SIZE, errno);
                 rc = 1;
                 break;
               }
@@ -170,7 +170,7 @@ do_test (void)
       {
         if (TEMP_FAILURE_RETRY (n = pwrite(fd, buf + start, len, start)) != len)
           {
-            printf ("pwrite failed in child %d (wrote %d bytes instead of %d)\n", !!pid1, n, len);
+            printf ("pwrite failed in child %d (wrote %d bytes instead of %d, errno %d)\n", !!pid1, n, len, errno);
             return 1;
           }
       }

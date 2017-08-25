@@ -182,15 +182,17 @@ do_test (void)
   force_libcx_term();
 #endif
 
+  rc = 0;
+
   if (wait(&status) == -1)
   {
     perror("wait failed");
-    return 1;
+    rc = 1;
   }
   if (!WIFEXITED(status) || WEXITSTATUS(status))
   {
     printf("child crashed or returned non-zero (status %x)\n", status);
-    return 1;
+    rc = 1;
   }
 
 #ifdef DEBUG
@@ -201,5 +203,5 @@ do_test (void)
   force_libcx_init();
 #endif
 
-  return 0;
+  return rc;
 }

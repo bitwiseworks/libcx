@@ -221,29 +221,6 @@ do_test (void)
   TEST_FORK_END();
 
   /*
-   * Test 5: create a PROT_READ private anon mapping, try to write to it
-   * (should fail).
-   */
-
-  printf("Test 5\n");
-
-  TEST_FORK_BEGIN("child 5", 0, SIGSEGV);
-  {
-    addr = mmap(NULL, FILE_SIZE, PROT_READ, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (addr == MAP_FAILED)
-    {
-      TEST_FORK_PERROR("mmap failed");
-      return 1;
-    }
-
-    /* Should crash here */
-    *addr = 1;
-
-    return 1;
-  }
-  TEST_FORK_END();
-
-  /*
    * Test 6: create a PROT_READ private anon mapping, change it to
    * PROT_READ | PROT_WRITE, try to write to it (should succeed).
    */
