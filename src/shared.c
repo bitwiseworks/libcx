@@ -73,6 +73,7 @@ static __LIBC_LOGGROUP  gLogGroup[] =
   { 1, "mmap" },              /*  4 */
   { 1, "dosreadbugfix" },     /*  5 */
   { 1, "exeinfo" },           /*  6 */
+  { 1, "close" },             /*  7 */
 };
 
 static __LIBC_LOGGROUPS gLogGroups =
@@ -715,7 +716,7 @@ FileDesc *get_proc_file_desc_ex(pid_t pid, const char *path, enum HashMapOpt opt
  */
 int close(int fildes)
 {
-  TRACE("fildes %d\n", fildes);
+  TRACE_TO(TRACE_GROUP_CLOSE, "fildes %d\n", fildes);
 
   if (fcntl_locking_close(fildes) == -1)
     return -1;

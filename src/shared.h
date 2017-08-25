@@ -44,6 +44,7 @@
 #define TRACE_GROUP_MMAP 4
 #define TRACE_GROUP_DOSREADBUGFIX 5
 #define TRACE_GROUP_EXEINFO 6
+#define TRACE_GROUP_CLOSE 7
 #endif
 
 #ifndef TRACE_MORE
@@ -55,6 +56,7 @@ void libcx_trace(unsigned traceGroup, const char *file, int line, const char *fu
 #define TRACE_FLUSH() do {} while (0)
 #define TRACE_RAW(msg, ...) libcx_trace(TRACE_GROUP, __FILE__, __LINE__, __FUNCTION__, msg, ## __VA_ARGS__)
 #define TRACE_CONT(msg, ...) libcx_trace(TRACE_GROUP, NULL, -1, NULL, msg, ## __VA_ARGS__)
+#define TRACE_TO(grp, msg, ...) libcx_trace(TRACE_GROUP, __FILE__, __LINE__, __FUNCTION__, msg, ## __VA_ARGS__)
 #else
 #define TRACE_FLUSH() fflush(stdout)
 #define TRACE_RAW(msg, ...) printf("*** [%d:%d] %s:%d:%s: " msg, getpid(), _gettid(), __FILE__, __LINE__, __FUNCTION__, ## __VA_ARGS__)
@@ -77,6 +79,7 @@ void libcx_trace(unsigned traceGroup, const char *file, int line, const char *fu
 #define TRACE_MORE 0
 #define TRACE_FLUSH() do {} while (0)
 #define TRACE_RAW(msg, ...) do {} while (0)
+#define TRACE_TO(grp, msg, ...) do {} while (0)
 #define TRACE(msg, ...) do {} while (0)
 #define TRACE_BEGIN(msg, ...) if (0) { do {} while(0)
 #define TRACE_CONT(msg, ...) do {} while (0)
