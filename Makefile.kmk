@@ -18,6 +18,17 @@ include $(PATH_SUB_CURRENT)/src/Makefile.kmk
 $(foreach test, $(ALL_TESTS), $(evalvalctx def_test))
 
 #
+# Special target to clean test results
+#
+
+testclean:
+	%$(call MSG_L1,Cleaning test products...)
+	$(QUIET)$(RM) -f -- $(wildcard *.TRP) $(wildcard test*.log)
+	$(QUIET)$(RM) -f -- $(wildcard /@unixroot/var/log/libcx/TST-*.log)
+
+test:: testclean
+
+#
 # Special target to clean install results
 # (kbuild doesn't do that from clean).
 #
