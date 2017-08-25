@@ -41,16 +41,22 @@
 #include <InnoTekLIBC/fork.h>
 
 /*
- * Debug builds are hardly compatible with release builds so
- * use a separat mutex and LIBCx shared memory block.
+ * Debug builds are hardly compatible with release builds so use a separate
+ * mutex and LIBCx shared memory block. Also use a separate mutex and memory
+ * block for development builds to avoid interfering with the release build.
  */
 #ifdef DEBUG
-#define MUTEX_LIBCX "\\SEM32\\LIBCX_MUTEX_V" VERSION_MAJ_MIN "_debug"
-#define SHAREDMEM_LIBCX "\\SHAREMEM\\LIBCX_DATA_V" VERSION_MAJ_MIN "_debug"
+#define LIBCX_DEBUG_SUFFIX "_debug"
 #else
-#define MUTEX_LIBCX "\\SEM32\\LIBCX_MUTEX_V" VERSION_MAJ_MIN
-#define SHAREDMEM_LIBCX "\\SHAREMEM\\LIBCX_DATA_V" VERSION_MAJ_MIN
+#define LIBCX_DEBUG_SUFFIX ""
 #endif
+#ifdef LIBCX_DEV_BUILD
+#define LIBCX_DEV_SUFFIX "_dev"
+#else
+#define LIBCX_DEV_SUFFIX ""
+#endif
+#define MUTEX_LIBCX "\\SEM32\\LIBCX_MUTEX_V" VERSION_MAJ_MIN LIBCX_DEBUG_SUFFIX LIBCX_DEV_SUFFIX
+#define SHAREDMEM_LIBCX "\\SHAREMEM\\LIBCX_DATA_V" VERSION_MAJ_MIN LIBCX_DEBUG_SUFFIX LIBCX_DEV_SUFFIX
 
 #define HEAP_SIZE (1024 * 1024 * 2) /* 2MB - total shared data area size */
 #define HEAP_INIT_SIZE 65536 /* Initial size of committed memory */
@@ -761,7 +767,7 @@ void print_stats()
   int rc;
   _HEAPSTATS hst;
 
-  printf("LIBCx version: %d.%d.%d\n", VERSION_MAJOR, VERSION_MINOR, VERSION_BUILD);
+  printf("LIBCx version: " VERSION_MAJ_MIN_BLD LIBCX_DEBUG_SUFFIX LIBCX_DEV_SUFFIX "\n");
 
   {
     char name[CCHMAXPATH] = {0};
@@ -991,7 +997,7 @@ static void *get_log_instance()
   if (!gLogToConsole)
   {
     // Write out LIBCx info
-    strcpy(buf, "LIBCx version : " VERSION_MAJ_MIN_BLD "\n");
+    strcpy(buf, "LIBCx version : " VERSION_MAJ_MIN_BLD LIBCX_DEBUG_SUFFIX LIBCX_DEV_SUFFIX "\n");
     strcat(buf, "LIBCx module  : ");
     APIRET arc = DosQueryModuleName(ghModule, CCHMAXPATH, buf + strlen(buf));
     if (arc == NO_ERROR)
