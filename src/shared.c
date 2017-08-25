@@ -314,7 +314,7 @@ static void shared_term()
     char *buf = alloca(StatsBufSize);
     if (buf)
     {
-      format_stats(buf, sizeof(buf));
+      format_stats(buf, StatsBufSize);
       __libc_LogRaw(gLogInstance, __LIBC_LOG_MSGF_FLUSH, buf, StatsBufSize);
     }
   }
