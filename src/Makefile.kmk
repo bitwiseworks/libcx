@@ -36,6 +36,9 @@ $(PATH_OBJ)/libcx-debug.def: $(PATH_SUB_CURRENT)/libcx.def | $(call DIRDEP,$(PAT
 	$(call MSG_L1,Generating $@)
 	$(QUIET)sed -e 's/  ;ddd /  /' < $< > $@
 
+# Make sure tests inherit libcx debug defs
+TEMPLATE_Test_DEFS.debug += $(libcx_DEFS.debug)
+
 #
 # Utilities
 #

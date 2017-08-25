@@ -140,6 +140,30 @@ static inline const char *_getname (const char *path)
 #define OPT_DIRECT 1000
 #define OPT_TESTDIR 1001
 
+#ifdef __EMX__
+static int fork_count = 0;
+
+/* Override LIBC fork to count forked children (used in print_libcx_stats) */
+int fork (void)
+{
+  int rc = _std_fork ();
+  if (rc == 0)
+    fork_count ++;
+  return rc;
+}
+
+static void
+print_libcx_stats (void)
+{
+  /* Only print stats when tracing disabled as tracing does that anyway */
+#ifndef TRACE_ENABLED
+  void print_stats();
+  if (fork_count == 0)
+    print_stats();
+#endif
+}
+#endif
+
 static struct option options[] =
 {
 #ifdef CMDLINE_OPTIONS
@@ -464,6 +488,10 @@ main (int argc, char *argv[])
 
   /* Make sure we see all message, even those on stdout.  */
   setvbuf (stdout, NULL, _IONBF, 0);
+
+#ifdef __EMX__
+  atexit (print_libcx_stats);
+#endif
 
   /* Make sure temporary files are deleted.  */
   atexit (delete_temp_files);
