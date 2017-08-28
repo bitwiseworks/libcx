@@ -705,8 +705,8 @@ FileDesc *get_file_desc_ex(pid_t pid, int fd, const char *path, enum HashMapOpt 
     ASSERT(desc->g);
     if (strcmp(desc->g->path, path) == 0)
       break;
-    desc = desc->next;
     prev = desc;
+    desc = desc->next;
   }
 
   if (!desc && opt == HashMapOpt_New)
@@ -742,6 +742,8 @@ FileDesc *get_file_desc_ex(pid_t pid, int fd, const char *path, enum HashMapOpt 
             desc->g->path = ((char *)(desc->g + 1));
             strcpy(desc->g->path, path);
           }
+
+          TRACE("new global file desc %p for [%s]\n", desc->g, desc->g->path);
         }
         else
         {
@@ -796,6 +798,9 @@ FileDesc *get_file_desc_ex(pid_t pid, int fd, const char *path, enum HashMapOpt 
             free(desc);
             desc = NULL;
           }
+
+          TRACE("new file desc %p for g %p [%s] (refcnt %d)\n",
+                desc, desc->g, desc->g->path, desc->g->refcnt);
         }
         else
         {
@@ -862,7 +867,8 @@ void free_file_desc(FileDesc *desc, size_t bucket, FileDesc *prev, ProcDesc *pro
   ASSERT(desc);
   ASSERT(desc->g);
 
-  TRACE("Will free file desc for [%s] (refcnt %d)\n", desc->g->path, desc->g->refcnt);
+  TRACE("Will free file desc %p for %p [%s] (refcnt %d)\n",
+        desc, desc->g, desc->g->path, desc->g->refcnt);
 
   ASSERT_MSG(!desc->fh, "%p", desc->fh);
   ASSERT_MSG(!desc->map, "%p", desc->map);
