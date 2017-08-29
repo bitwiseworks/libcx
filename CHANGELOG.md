@@ -1,5 +1,13 @@
 # History of changes for LIBCx
 
+#### Version 0.6.0 (2017-08-29)
+
+* Implement the `exeinfo` API that allows to examine an executable or a DLL without actually loading it for execution by the OS/2 kernel.
+* Write LIBCx assert messages to a per-process log file in `/@unixroot/var/log/libcx` to simplify tracking of critical bugs at runtime.
+* mmap: Increase the file handle limit to avoid premature ENOMEM errors when mapping many files at the same time  (like `git` is used to do).
+* Implement tracking LIBC file descriptors in LIBCx to free LIBCx resources when respective files are closed by LIBC. This drops memory usage dramatically (200 times and more) in heavy usage scenraios like reading tens thousand files over an OS/2 Samba share.
+* libcx-stats: Print internal LIBCx structure usage information.
+
 #### Version 0.5.3 (2017-06-02)
 
 * Add workaround for another `DosRead` bug that leads to hard system freezes on JFS when reading big files at once.
