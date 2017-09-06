@@ -61,6 +61,7 @@ TESTS += \
 
 TESTS += \
   fcntl/tst-flock2.c \
+  fcntl/tst-flock3.c \
   fcntl/tst-flock-sj.c \
   fcntl/tst-deadlk.c
 
