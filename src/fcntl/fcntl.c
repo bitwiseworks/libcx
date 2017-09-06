@@ -582,7 +582,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
   APIRET arc;
   int rc, bSeenOtherPid, bNoMem = 0, bNeededMark = 0;
   off_t start, end;
-  FileDesc *desc = NULL;
+  SharedFileDesc *desc_g = NULL;
   struct FcntlLock *lpb = NULL, *lb = NULL, *le = NULL;
   struct FcntlLock *blocker = NULL;
   ProcBlock *blocked = NULL;
@@ -682,8 +682,18 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
 
   while (1)
   {
-    desc = cmd == F_GETLK ? find_file_desc(pFH->pszNativePath) : get_file_desc(fildes, pFH->pszNativePath);
-    if (!desc)
+    if (cmd == F_GETLK)
+    {
+      find_file_desc(pFH->pszNativePath, &desc_g);
+    }
+    else
+    {
+      FileDesc *desc = get_file_desc(fildes, pFH->pszNativePath);
+      if (desc)
+        desc_g = desc->g;
+    }
+
+    if (!desc_g)
     {
       if (cmd == F_GETLK)
       {
@@ -710,7 +720,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
                    "Locks before:\n");
     {
       struct FcntlLock *l;
-      for (l = desc->g->fcntl_locks; l; l = l->next)
+      for (l = desc_g->fcntl_locks; l; l = l->next)
       {
         TRACE_CONT("- type '%c', start %lld, ", l->type ? l->type : ' ', (uint64_t)l->start);
         if (l->type == 'r')
@@ -729,10 +739,10 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
     TRACE_END();
 
     /* Search for the first overlapping region */
-    ASSERT(desc->g->fcntl_locks);
-    ASSERT(desc->g->fcntl_locks->start == 0);
+    ASSERT(desc_g->fcntl_locks);
+    ASSERT(desc_g->fcntl_locks->start == 0);
     lpb = NULL; /* prev to lb or NULL */
-    lb = desc->g->fcntl_locks;
+    lb = desc_g->fcntl_locks;
     while (lb->next && lb->next->start <= start)
     {
       lpb = lb;
@@ -1078,7 +1088,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
         if (rc == -1)
           bNoMem = 1;
         else
-          optimize_locks(desc->g, lpb, lb, le);
+          optimize_locks(desc_g, lpb, lb, le);
       }
     }
 
@@ -1127,7 +1137,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
   TRACE_BEGIN_IF(TRACE_MORE && cmd != F_GETLK, "Locks after:\n");
   {
     struct FcntlLock *l;
-    for (l = desc->g->fcntl_locks; l; l = l->next)
+    for (l = desc_g->fcntl_locks; l; l = l->next)
     {
       TRACE_CONT("- type '%c', start %lld, ", l->type ? l->type : ' ', (uint64_t)l->start);
       if (l->type == 'r')

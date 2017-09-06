@@ -231,7 +231,6 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   FileHandle *fh = NULL;
   FileMap *fmap = NULL;
   FileMapMem *fmem = NULL;
-  FileMap **fmap_ptr = NULL;
   FileDesc *fdesc = NULL;
   ProcDesc *pdesc;
   ULONG dos_flags;
@@ -2268,23 +2267,21 @@ int ftruncate(int fildes, __off_t length)
   {
     /* Update file size in FileMap structs */
     FileDesc *fdesc;
+    SharedFileDesc *fdesc_g;
 
-    fdesc = find_file_desc(pFH->pszNativePath);
-    if (fdesc)
+    fdesc = find_file_desc(pFH->pszNativePath, &fdesc_g);
+
+    if (fdesc_g && fdesc_g->map)
     {
-      if (fdesc->g->map)
-      {
-        TRACE("updating size for [%s] in shared fmap %p from %llu to %llu\n",
-              pFH->pszNativePath, fdesc->g->map, fdesc->g->map->size, length);
-        fdesc->map->size = length;
-      }
+      TRACE("updating size for [%s] in shared fmap %p from %llu to %llu\n",
+            pFH->pszNativePath, fdesc_g->map, fdesc_g->map->size, length);
+      fdesc_g->map->size = length;
+    }
 
-      if (fdesc->map)
-      {
-        TRACE("updating size for [%s] in private fmap %p from %llu to %llu\n",
-              pFH->pszNativePath, fdesc->map, fdesc->map->size, length);
-        fdesc->map->size = length;
-      }
+    if (fdesc && fdesc->map) {
+      TRACE("updating size for [%s] in private fmap %p from %llu to %llu\n",
+            pFH->pszNativePath, fdesc->map, fdesc->map->size, length);
+      fdesc->map->size = length;
     }
   }
 

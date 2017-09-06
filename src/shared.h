@@ -238,10 +238,10 @@ static inline ProcDesc *find_proc_desc(pid_t pid) { return get_proc_desc_ex(pid,
 static inline ProcDesc *find_proc_desc_ex(pid_t pid, size_t *o_bucket, ProcDesc **o_prev) { return get_proc_desc_ex(pid, HashMapOpt_None, o_bucket, o_prev); }
 void free_proc_desc(ProcDesc *desc, size_t bucket, ProcDesc *prev);
 
-FileDesc *get_file_desc_ex(pid_t pid, int fd, const char *path, enum HashMapOpt opt, size_t *o_bucket, FileDesc **o_prev, ProcDesc **o_proc);
-static inline FileDesc *get_file_desc(int fd, const char *path) { return get_file_desc_ex(-1, fd, path, HashMapOpt_New, NULL, NULL, NULL); }
-static inline FileDesc *find_file_desc(const char *path) { return get_file_desc_ex(-1, -1, path, HashMapOpt_None, NULL, NULL, NULL); }
-static inline FileDesc *find_file_desc_ex(const char *path, size_t *o_bucket, FileDesc **o_prev, ProcDesc **o_proc) { return get_file_desc_ex(-1, -1, path, HashMapOpt_None, o_bucket, o_prev, o_proc); }
+FileDesc *get_file_desc_ex(pid_t pid, int fd, const char *path, enum HashMapOpt opt, size_t *o_bucket, FileDesc **o_prev, ProcDesc **o_proc, SharedFileDesc **o_desc_g);
+static inline FileDesc *get_file_desc(int fd, const char *path) { return get_file_desc_ex(-1, fd, path, HashMapOpt_New, NULL, NULL, NULL, NULL); }
+static inline FileDesc *find_file_desc(const char *path, SharedFileDesc **o_desc_g) { return get_file_desc_ex(-1, -1, path, HashMapOpt_None, NULL, NULL, NULL, o_desc_g); }
+static inline FileDesc *find_file_desc_ex(const char *path, size_t *o_bucket, FileDesc **o_prev, ProcDesc **o_proc) { return get_file_desc_ex(-1, -1, path, HashMapOpt_None, o_bucket, o_prev, o_proc, NULL); }
 void free_file_desc(FileDesc *desc, size_t bucket, FileDesc *prev, ProcDesc *proc);
 
 void fcntl_locking_init(ProcDesc *proc);

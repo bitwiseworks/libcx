@@ -663,13 +663,16 @@ void free_proc_desc(ProcDesc *desc, size_t bucket, ProcDesc *prev)
  * cause the desc deletion if there is no other use of it). Optional o_bucket,
  * o_prev and o_proc arguments will receive the appropriate values for the
  * returned file description when they are not NULL (and may be later used in
- * e.g. a free_file_desc_ex() call).
+ * e.g. a free_file_desc_ex() call). Optional o_desc_g, when not NULL, will
+ * receive a global (shared) file description - this is the only way to get it
+ * when no process-specific file description exists and opt is HashMapOpt_None.
  * Returns NULL when opt is HashMapOpt_New and there is not enough memory
  * to allocate a new sctructure, or when opt is not HashMapOpt_New and there
  * is no descriptor for the given file.
  */
 FileDesc *get_file_desc_ex(pid_t pid, int fd, const char *path, enum HashMapOpt opt,
-                           size_t *o_bucket, FileDesc **o_prev, ProcDesc **o_proc)
+                           size_t *o_bucket, FileDesc **o_prev, ProcDesc **o_proc,
+                           SharedFileDesc **o_desc_g)
 {
   size_t bucket;
   FileDesc *desc, *prev;
@@ -844,6 +847,30 @@ FileDesc *get_file_desc_ex(pid_t pid, int fd, const char *path, enum HashMapOpt 
         desc = NULL;
     }
   }
+  else if (opt == HashMapOpt_None)
+  {
+    if (o_desc_g)
+    {
+      if (!desc)
+      {
+        /* Return a global description if there is any */
+        SharedFileDesc *desc_g = gpData->files[bucket];
+
+        while (desc_g)
+        {
+          if (strcmp(desc_g->path, path) == 0)
+            break;
+          desc_g = desc_g->next;
+        }
+
+        *o_desc_g = desc_g;
+      }
+      else
+      {
+        *o_desc_g = desc->g;
+      }
+    }
+  }
 
   if (o_bucket)
     *o_bucket = bucket;
@@ -867,7 +894,7 @@ void free_file_desc(FileDesc *desc, size_t bucket, FileDesc *prev, ProcDesc *pro
   ASSERT(desc);
   ASSERT(desc->g);
 
-  TRACE("Will free file desc %p for %p [%s] (refcnt %d)\n",
+  TRACE("Will free file desc %p for g %p [%s] (refcnt %d)\n",
         desc, desc->g, desc->g->path, desc->g->refcnt);
 
   ASSERT_MSG(!desc->fh, "%p", desc->fh);
@@ -882,6 +909,8 @@ void free_file_desc(FileDesc *desc, size_t bucket, FileDesc *prev, ProcDesc *pro
   --desc->g->refcnt;
   if (desc->g->refcnt == 0)
   {
+    TRACE("Will free global file desc %p\n", desc->g);
+
     /* Remove from the hash map (shared part) */
     SharedFileDesc *prev_g = gpData->files[bucket];
     if (prev_g == desc->g)
