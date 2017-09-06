@@ -618,6 +618,12 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
 
   TRACE("pszNativePath %s, fFlags %x\n", pFH->pszNativePath, pFH->fFlags);
 
+  /*
+   * Disable the below check because there are Linux/BSD distros violating
+   * POSIX docs and even Linux own man pages and allowing for write locks
+   * on readonly files.
+   */
+#if 0
   /* Check for proper file access */
   if ((fl->l_type == F_WRLCK && (pFH->fFlags & O_ACCMODE) == O_RDONLY) ||
       (fl->l_type == F_RDLCK && (pFH->fFlags & O_ACCMODE) == O_WRONLY))
@@ -625,6 +631,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
     errno = EBADF;
     return -1;
   }
+#endif
 
   /* Normalize & check start and length */
   switch (fl->l_whence)
