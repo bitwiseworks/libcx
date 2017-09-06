@@ -51,3 +51,17 @@ Note that LIBCx doesn't statically link to any of the EXCEPTQ DLLs. It loads the
 The key difference of the `exeinfo` API from the "traditional" OS/2 `DosGetResource` API is that it doesn't require to load the executable file with `DosLoadModule` first in order to read its resources — instead, file contents is read and parsed directly by LIBCx. Besides saving some resources that would otherwise be alocated by OS/2 for loading the executable file into system memory for execution, such a direct approach also eliminates a call to `_DLL_InitTerm` in the loaded DLL that could execute arbitrary and potentially dangerous code, as well as it eliminates searching for and loading all dependend DLLs. This is both faster and much more secure.
 
 The `exeinfo` API is defined in the `libcx/exeinfo.h` header and currently allows to query the executable file format and read OS/2 resource objects embedded in such a file. More functionality is planned for future versions.
+
+## Build instructions
+
+### Using LIBCx in your applications
+
+The easiest and the only officially supported way to use LIBCx in your application is to use a binary build provided by bitwise. In the RPM/YUM environment (see the next section) this may be easily achieved by running `yum install libcx-devel` from the command line and then adding `-lcx` to your linker options. If you take a ZIP version from [bitwise ZIP archives](http://rpm.netlabs.org/release/00/zip), you will have to resolve all possible dependencies yourself, set proper include paths and link to `libcx.a` by full name.
+
+### Building LIBCx
+
+The development of LIBCx, as well as all other projects maintained by bitwise, relies on the [RPM/YUM environment for OS/2](http://trac.netlabs.org/rpm/wiki) (also maintained by us). This environment, in particular, builds up a UNIXROOT environment on the OS/2 machine and provides recent versions of the Unix tool chain (including the GCC 4.x.x compiler) ported to OS/2, as well as a great number of open-source libraries and a set of OS/2-specific tools needed for the development process. So, in order to build LIBCx, you will need to do the following:
+
+ 1. Install [RPM/YUM](http://trac.netlabs.org/rpm/wiki/RpmInstall) on your existing OS/2 system or upgrade it to [ArcaOS](https://www.arcanoae.com/arcaos/) which comes with RPM/YUM pre-installed.
+ 2. Install the basic tool chain with `yum install gcc gcc-wlink gcc-wrc libc-devel kbuild kbuild-make rpm-build`.
+ 3. Inspect [libcx.spec](http://trac.netlabs.org/rpm/browser/spec/trunk/SPECS/libcx.spec) for specific build requirements and build steps which you can either complete automatically with `rpmbuild libcx.spec -bb` or manually from the command line.
