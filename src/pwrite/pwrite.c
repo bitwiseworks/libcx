@@ -71,6 +71,9 @@ void pwrite_filedesc_term(FileDesc *desc)
   }
 }
 
+ssize_t _std_pread(int fildes, void *buf, size_t nbyte, off_t offset);
+ssize_t _std_pwrite(int fildes, const void *buf, size_t nbyte, off_t offset);
+
 static ssize_t pread_pwrite(int bWrite, int fildes, void *buf,
                             size_t nbyte, off_t offset)
 {
@@ -101,7 +104,7 @@ static ssize_t pread_pwrite(int bWrite, int fildes, void *buf,
       {
         /* Lazily create a mutex for pread/pwrite serialization */
         arc = DosCreateMutexSem(NULL, &desc->g->pwrite_lock, DC_SEM_SHARED, FALSE);
-        TRACE("DosCreateMutexSem = %d\n", arc);
+        TRACE("DosCreateMutexSem = %lu\n", arc);
       }
       mutex = desc->g->pwrite_lock;
     }
@@ -122,7 +125,7 @@ static ssize_t pread_pwrite(int bWrite, int fildes, void *buf,
   {
     /* Try to open the mutex for this process */
     arc = DosOpenMutexSem(NULL, &mutex);
-    TRACE("DosOpenMutexSem = %d\n", arc);
+    TRACE("DosOpenMutexSem = %lu\n", arc);
     if (arc == NO_ERROR)
       arc = DosRequestMutexSem(mutex, SEM_INDEFINITE_WAIT);
   }
@@ -178,6 +181,8 @@ ssize_t pwrite(int fildes, const void *buf, size_t nbyte, off_t offset)
  */
 #define DOS_READ_MAX_CHUNK (32U * 1024U * 1024U) /* 32 MB */
 
+ssize_t _std_read(int fd, void *buf, size_t nbyte);
+
 /**
  * LIBC read replacement.
  * Override to fix DosRead bug, see touch_pages docs.
@@ -212,6 +217,8 @@ ssize_t read(int fd, void *buf, size_t nbyte)
 
   return final_rc;
 }
+
+int _libc__read(int handle, void *buf, size_t nbyte);
 
 /**
  * LIBC __read replacement.
@@ -248,6 +255,8 @@ int __read(int handle, void *buf, size_t nbyte)
   return final_rc;
 }
 
+int _libc_stream_read(int fd, void *buf, size_t nbyte);
+
 /**
  * LIBC _stream_read replacement.
  * Override to fix DosRead bug, see touch_pages docs.
@@ -282,6 +291,8 @@ int _stream_read(int fd, void *buf, size_t nbyte)
 
   return final_rc;
 }
+
+size_t _std_fread(void *buf, size_t size, size_t count, FILE *stream);
 
 /**
  * LIBC fread replacement.
@@ -328,7 +339,7 @@ size_t fread(void *buf, size_t size, size_t count, FILE *stream)
 ULONG APIENTRY DosRead(HFILE hFile, PVOID pBuffer, ULONG ulLength,
                        PULONG pulBytesRead)
 {
-  TRACE("hFile %d, pBuffer %p, ulLength %lu, pulBytesRead %p\n",
+  TRACE("hFile %lu, pBuffer %p, ulLength %lu, pulBytesRead %p\n",
         hFile, pBuffer, ulLength, pulBytesRead);
 
   touch_pages(pBuffer, ulLength);

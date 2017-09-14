@@ -124,6 +124,7 @@ static inline const char *_getname (const char *path)
    with argc and argv as the arguments.  We nevertheless provide the
    possibility to overwrite this name.  */
 #ifndef TEST_FUNCTION
+void do_test (int argc, const char *const *argv);
 # define TEST_FUNCTION do_test (argc, argv)
 #endif
 
@@ -142,6 +143,8 @@ static inline const char *_getname (const char *path)
 
 #ifdef __EMX__
 static int fork_count = 0;
+
+int _std_fork (void);
 
 /* Override LIBC fork to count forked children (used in print_libcx_stats) */
 int fork (void)

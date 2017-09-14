@@ -34,6 +34,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <limits.h>
+#include <io.h>
 #include <emx/io.h>
 
 #undef fcntl
@@ -410,7 +411,7 @@ void fcntl_locking_filedesc_term(FileDesc *desc)
     {
       TRACE_BEGIN_IF(l->type, "WARNING! Forgotten lock: type '%c' start %lld, len %lld, ",
                      l->type ? l->type : ' ', (uint64_t)l->start,
-                     (uint64_t)lock_len(l), l->pid);
+                     (uint64_t)lock_len(l));
       if (l->type == 'r')
       {
         int i;
@@ -539,7 +540,7 @@ void fcntl_locking_term(ProcDesc *proc)
     {
       /* We unblocked something and there are blocked threads, release them */
       arc = DosPostEventSem(gpData->fcntl_locking->hEvSem);
-      TRACE("DosPostEventSem = %d\n", arc);
+      TRACE("DosPostEventSem = %lu\n", arc);
       /* Invalidate the blocked list (see the other DosPostEventSem call) */
       gpData->fcntl_locking->blocked = NULL;
     }
@@ -568,10 +569,10 @@ void fcntl_locking_term(ProcDesc *proc)
     {
       /* The semaphore may be owned by us, try to release it */
       arc = DosPostEventSem(gpData->fcntl_locking->hEvSem);
-      TRACE("DosPostEventSem = %d\n", arc);
+      TRACE("DosPostEventSem = %lu\n", arc);
       arc = DosCloseEventSem(gpData->fcntl_locking->hEvSem);
     }
-    TRACE("DosCloseEventSem = %d\n", arc);
+    TRACE("DosCloseEventSem = %lu\n", arc);
 
     free(gpData->fcntl_locking);
   }
@@ -804,7 +805,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
 
     TRACE_BEGIN_IF(blocker, "Would block on type '%c', start %lld, len %lld, ",
                    blocker->type, (uint64_t)blocker->start,
-                   (uint64_t)lock_len(blocker), blocker->pid);
+                   (uint64_t)lock_len(blocker));
     if (blocker->type == 'r')
     {
       int i;
@@ -905,7 +906,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
           global_unlock();
 
           arc = DosWaitEventSem(gpData->fcntl_locking->hEvSem, SEM_INDEFINITE_WAIT);
-          TRACE("DosWaitEventSem = %d\n", arc);
+          TRACE("DosWaitEventSem = %lu\n", arc);
 
           ASSERT(arc == NO_ERROR || arc == ERROR_INTERRUPT);
 
@@ -1123,7 +1124,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
      * release them to let recheck regions.
      */
     arc = DosPostEventSem(gpData->fcntl_locking->hEvSem);
-    TRACE("DosPostEventSem = %d\n", arc);
+    TRACE("DosPostEventSem = %lu\n", arc);
     /*
      * Let woken up threads run. W/o this call this thread will continue to run
      * till the end of the time slice and may lock the same region again w/o
@@ -1171,6 +1172,8 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
 
   return rc;
 }
+
+int _std_fcntl(int fildes, int cmd, intptr_t *arg);
 
 /**
  * LIBC fcntl replacement. It will handle locking by calling fcntl_locking
@@ -1228,7 +1231,7 @@ int fcntl_locking_close(FileDesc *desc)
     {
       /* We unblocked something and there are blocked threads, release them */
       APIRET arc = DosPostEventSem(gpData->fcntl_locking->hEvSem);
-      TRACE("DosPostEventSem = %d\n", arc);
+      TRACE("DosPostEventSem = %lu\n", arc);
       /* Invalidate the blocked list (see the other DosPostEventSem call) */
       gpData->fcntl_locking->blocked = NULL;
     }

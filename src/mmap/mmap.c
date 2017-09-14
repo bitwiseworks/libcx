@@ -1220,10 +1220,7 @@ static void free_mmap(ProcDesc *desc, MemMap *m, MemMap *prev)
 
   TRACE("%s mapping %p (%lx..%lx)\n",
         m->flags & MAP_SHARED ? "shared" : "private",
-        m, m->start, m->end, m->flags & MAP_ANON ? 0 : m->f->refcnt,
-        m->flags & MAP_ANON ? 0 : m->f->fmem,
-        m->flags & MAP_ANON ? 0 : m->f->fmem->start,
-        m->flags & MAP_ANON ? 0 : m->f->fmem->refcnt);
+        m, m->start, m->end);
 
   if (!(m->flags & MAP_ANON))
   {
@@ -1232,7 +1229,7 @@ static void free_mmap(ProcDesc *desc, MemMap *m, MemMap *prev)
     ASSERT(m->f->fh->desc);
   }
 
-  TRACE_IF(!(m->flags & MAP_ANON), "file mapping: [%s], refcnt %d, fmem %p (%lx, refcnt %d), fh %p (%d, refcnt %d)\n",
+  TRACE_IF(!(m->flags & MAP_ANON), "file mapping: [%s], refcnt %d, fmem %p (%lx, refcnt %d), fh %p (%lu, refcnt %d)\n",
            m->f->fh->desc->g->path, m->f->refcnt,
            m->f->fmem, m->f->fmem->start, m->f->fmem->refcnt,
            m->f->fh, m->f->fh->fd, m->f->fh->refcnt);
@@ -2085,6 +2082,8 @@ static int protect_map(ProcDesc *desc, MemMap *m, ULONG addr, size_t len, ULONG 
   return 0;
 }
 
+int _std_mprotect(const void *addr, size_t len, int prot);
+
 int mprotect(const void *addr, size_t len, int prot)
 {
   ProcDesc *desc;
@@ -2237,6 +2236,8 @@ int mprotect(const void *addr, size_t len, int prot)
 
   return rc;
 }
+
+int _std_ftruncate(int fildes, __off_t length);
 
 /**
  * LIBC fcntl replacement. Changes the recorded file size in mmap structures

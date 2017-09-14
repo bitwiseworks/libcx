@@ -20,6 +20,7 @@
  */
 
 #include <errno.h>
+#include <string.h>
 #include <sys/select.h>
 #include <sys/stat.h>
 
@@ -29,6 +30,9 @@
 #ifndef MAX
 #define MAX(a,b)	((a) > (b) ? (a) : (b))
 #endif
+
+int _std_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
+                struct timeval *timeout);
 
 int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
            struct timeval *timeout)

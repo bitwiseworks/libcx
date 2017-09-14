@@ -300,9 +300,9 @@ static void shared_term()
   APIRET arc;
   int rc;
 
-  TRACE("gMutex %lx, gpData %p (heap %p, refcnt %d)\n",
+  TRACE("gMutex %lx, gpData %p (heap %p, refcnt %d), gSeenAssertion %lu\n",
         gMutex, gpData, gpData ? gpData->heap : 0,
-        gpData ? gpData->refcnt : 0);
+        gpData ? gpData->refcnt : 0, gSeenAssertion);
 
 #if !defined(TRACE_ENABLED)
   if (gSeenAssertion && get_log_instance())
@@ -387,7 +387,7 @@ static void shared_term()
         if (buf)
         {
           format_stats(buf, StatsBufSize);
-          TRACE(buf);
+          TRACE("%s", buf);
         }
       }
 #endif
@@ -947,6 +947,8 @@ void free_file_desc(FileDesc *desc, size_t bucket, FileDesc *prev, ProcDesc *pro
 #endif
 }
 
+int _std_close(int fildes);
+
 /**
  * LIBC close replacement. Used for performing extra processing on file
  * close.
@@ -971,7 +973,7 @@ int close(int fildes)
     FileDesc *desc = find_file_desc_ex(pFH->pszNativePath, &bucket, &prev, &proc);
     if (desc)
     {
-      TRACE_TO(TRACE_GROUP_CLOSE, "Found file desc %x for [%s]\n", desc, desc->g->path);
+      TRACE_TO(TRACE_GROUP_CLOSE, "Found file desc %p for [%s]\n", desc, desc->g->path);
 
       rc = fcntl_locking_close(desc);
 
