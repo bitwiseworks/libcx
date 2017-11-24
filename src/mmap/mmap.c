@@ -1196,8 +1196,17 @@ static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
            * Reset PAG_WRITE (to cause another exception upon a new write)
            * and the dirty bit on success.
            */
-          arc = DosSetMem((PVOID)page, PAGE_SIZE, m->dos_flags & ~PAG_WRITE);
-          ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
+          ULONG dos_flags = m->dos_flags & ~PAG_WRITE;
+
+          /*
+           * Use PAG_READ if the above results in 0 since DosSetMem doesn't
+           * support no protection mode.
+           */
+          if (dos_flags == 0)
+            dos_flags |= PAG_READ;
+
+          arc = DosSetMem((PVOID)page, PAGE_SIZE, dos_flags);
+          ASSERT_MSG(arc == NO_ERROR, "%ld 0x%lx 0x%lx", arc, page, dos_flags);
 
           m->f->fh->dirtymap[i] &= ~bit;
 
@@ -1743,8 +1752,18 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
               if (revoke_write)
               {
                 TRACE("Revoking PAG_WRITE\n");
-                arc = DosSetMem((PVOID)page_addr, len, m->dos_flags & ~PAG_WRITE);
-                TRACE_IF(arc, "DosSetMem = %ld\n", arc);
+                dos_flags = m->dos_flags & ~PAG_WRITE;
+
+                /*
+                 * Use PAG_READ if the above results in 0 since DosSetMem doesn't
+                 * support no protection mode.
+                 */
+                if (dos_flags == 0)
+                  dos_flags |= PAG_READ;
+
+                arc = DosSetMem((PVOID)page_addr, len, dos_flags);
+                TRACE_IF(arc, "DosSetMem = %ld page_addr = 0x%lx dos_flags = 0x%lx\n",
+                         arc, page_addr, dos_flags);
               }
               if (!arc)
               {

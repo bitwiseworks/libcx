@@ -84,12 +84,13 @@ do_test (void)
 
   /*
    * Test 1: create shared mmap, modify it, msync it synchronously and make sure
-   * that changes are flushed to disk.
+   * that changes are flushed to disk. Note that we only use PROT_WRITE to also
+   * test how it behaves without PAG_READ (which is implied in such a case).
    */
 
   printf("Test 1\n");
 
-  addr = mmap(NULL, FILE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  addr = mmap(NULL, FILE_SIZE, PROT_WRITE, MAP_SHARED, fd, 0);
   if (addr == MAP_FAILED)
   {
     perror("mmap failed");
