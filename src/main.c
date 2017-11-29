@@ -32,6 +32,9 @@
 #include <unistd.h>
 #include <pwd.h>
 
+#include <stdlib.h>
+#include <emx/umalloc.h>
+
 #include "shared.h"
 
 /**
@@ -130,6 +133,47 @@ void __main_hook(struct mainstack *stack)
       if (pw)
         setuid(pw->pw_uid);
     }
+  }
+
+  /*
+   * Below we force high memory for the default C heap by default and also
+   * allow a bunch of other modes via an environment variable. See #48 for
+   * details. Note that there is one side effect (unless LIBCX_HIGHMEM=2) - the
+   * heap initialization will happen here immediately rather than on demand
+   * upon the first malloc. This is minor, however, since it's usually the case
+   * anyway due to _CRT_init and other pre-main callbacks after we return.
+   */
+
+  static const char *highmem_var = "LIBCX_HIGHMEM";
+  int highmem = 1;
+  _getenv_int(highmem_var, &highmem);
+
+  switch (highmem)
+  {
+    case 0:
+      /* Force low memory for the default C heap */
+      _um_regular_heap = _linitheap();
+      _udefault (_um_regular_heap);
+      break;
+    case 3:
+      /* Safety mode; abort if not all DLLs voted for high memory */
+      if (__libc_HeapGetResult() == 0)
+      {
+        printf ("libcx: this EXE or some DLL is built without -Zhigh-mem, "
+                "aborting due to %s=%d!\n",
+                highmem_var, highmem);
+        abort();
+      }
+      /* Fall through (to force high mem if all DLLs are safe) */
+    case 1:
+    default:
+      /* Force high memory for the default C heap */
+      _um_regular_heap = _hinitheap();
+      _udefault (_um_regular_heap);
+      break;
+    case 2:
+      /* Normal kLIBC voting procedure: do nothing */
+      break;
   }
 
   __main_hook_return(&newstack);
