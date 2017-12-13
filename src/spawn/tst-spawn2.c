@@ -41,6 +41,27 @@ int wait_pid(const char *msg, int pid, int exit_code)
   return 0;
 }
 
+char *suppress_logging()
+{
+  char *logging = getenv("LIBCX_TRACE");
+  if (logging)
+    logging = strdup(logging);
+  setenv("LIBCX_TRACE", "-all", 1);
+  return logging;
+}
+
+void restore_logging(char *logging)
+{
+  if (logging)
+  {
+    setenv("LIBCX_TRACE", logging, 1);
+    free(logging);
+  }
+  else
+    unsetenv("LIBCX_TRACE");
+}
+
+
 int do_test(int argc, const char *const *argv)
 {
   int rc;
@@ -90,6 +111,42 @@ int do_test(int argc, const char *const *argv)
       case 9:
       {
         fprintf(stderr, "CHILD TEST 9");
+        break;
+      }
+
+      case 10:
+      {
+        char buf[1024];
+        rc = read(0, buf, sizeof(buf) - 1);
+        if (rc == -1)
+          perrno_and(return 100, "fread");
+
+        buf[rc] = 0;
+
+        write(2, buf, strlen(buf));
+        break;
+      }
+
+      case 11:
+      {
+        if (argc < 3)
+          return 100;
+
+        const char *s = argv[2];
+        char *se = NULL;
+        int i;
+        for (i = 0; i < 10; ++i)
+        {
+          int fd = strtol(s, &se, 10);
+          if (s == se)
+            return 101;
+          s = se;
+
+          int f = fcntl(fd, F_GETFD);
+          if (f != -1)
+            return 102;
+        }
+
         break;
       }
 
@@ -187,10 +244,7 @@ int do_test(int argc, const char *const *argv)
   printf ("test 7\n");
   {
     // forbid our own logging as we catch stdout
-    char *logging = getenv("LIBCX_TRACE");
-    if (logging)
-      logging = strdup(logging);
-    setenv("LIBCX_TRACE", "-all", 1);
+    char *logging = suppress_logging();
 
     int p[2];
     rc = pipe(p);
@@ -223,14 +277,7 @@ int do_test(int argc, const char *const *argv)
 
     close(p[0]);
 
-    // restore logging
-    if (logging)
-    {
-      setenv("LIBCX_TRACE", logging, 1);
-      free(logging);
-    }
-    else
-      unsetenv("LIBCX_TRACE");
+    restore_logging(logging);
   }
 
   // stderr pipe check, should succeed
@@ -272,10 +319,7 @@ int do_test(int argc, const char *const *argv)
   printf ("test 9\n");
   {
     // forbid our own logging as we catch stdout
-    char *logging = getenv("LIBCX_TRACE");
-    if (logging)
-      logging = strdup(logging);
-    setenv("LIBCX_TRACE", "-all", 1);
+    char *logging = suppress_logging();
 
     int p[2];
     rc = pipe(p);
@@ -308,14 +352,86 @@ int do_test(int argc, const char *const *argv)
 
     close(p[0]);
 
-    // restore logging
-    if (logging)
+    restore_logging(logging);
+  }
+
+  // stdin+stderr pipe check, should succeed
+  printf ("test 10\n");
+  {
+    int pi[2];
+    rc = pipe(pi);
+    if (rc == -1)
+      perrno_and(return 1, "test 10: pipe in");
+
+    int po[2];
+    rc = pipe(po);
+    if (rc == -1)
+      perrno_and(return 1, "test 10: pipe out");
+
+    int stdfds[3] = { pi[0], 0, po[1] };
+
+    const char *args[] = { exename, "--direct", "10", NULL };
+    int pid = spawn2(P_NOWAIT, exename, args, NULL, NULL, stdfds);
+    if (pid == -1)
+      perrno_and(return 1, "test 10: spawn2");
+
+    rc = close(po[1]);
+    if (rc == -1)
+      perrno_and(return 1, "test 10: close out");
+
+    rc = close(pi[0]);
+    if (rc == -1)
+      perrno_and(return 1, "test 10: close in");
+
+    const char *test_str = "CHILD 10 TEST PING";
+    rc = write(pi[1], test_str, strlen(test_str));
+    if (rc == -1)
+      perrno_and(return 1, "test 10: write");
+
+    char buf[1024] = {0};
+    rc = read(po[0], buf, sizeof(buf) - 1);
+    if (rc == -1)
+      perrno_and(return 1, "test 10: read");
+
+    buf[rc] = 0;
+
+    if (wait_pid("test 10", pid, 0))
+      return 1;
+
+    if (strcmp(buf, test_str) != 0)
+      perr_and(return 1, "test 10: expected [%s] got [%s]", test_str, buf);
+
+    close(po[0]);
+    close(pi[1]);
+  }
+
+  // P_2_NOINHERIT check, should succeed
+  printf ("test 11\n");
+  {
+    int fds[10] = {0};
+    char fds_str[10*5] = {0};
+    char *s = fds_str;
+    int i;
+    for (i = 0; i < 10; ++i)
     {
-      setenv("LIBCX_TRACE", logging, 1);
-      free(logging);
+      fds[i] = open(exename, O_RDONLY);
+      if (fds[i] == -1)
+        perrno_and(return 1, "open %d", i);
+      _itoa (fds[i], s, 10);
+      strcat(s, " ");
+      s += strlen(s);
     }
-    else
-      unsetenv("LIBCX_TRACE");
+
+    const char *args[] = { exename, "--direct", "11", fds_str, NULL };
+    int pid = spawn2(P_NOWAIT | P_2_NOINHERIT, exename, args, NULL, NULL, NULL);
+    if (pid == -1)
+      perrno_and(return 1, "test 11: spawn2");
+
+    if (wait_pid("test 11", pid, 0))
+      return 1;
+
+    for (i = 0; i < 10; ++i)
+      close(fds[i]);
   }
 
   return 0;
