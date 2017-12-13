@@ -161,8 +161,8 @@ int spawn2 (int mode, const char *name, const char * const argv[],
           int fd;
           for (fd = 3; fd < OPEN_MAX; ++fd)
           {
-            int f = rc = fcntl(fd, F_GETFD);
-            if (rc != -1)
+            int f = fcntl(fd, F_GETFD);
+            if (f != -1)
             {
               if (!(f & FD_CLOEXEC))
               {
@@ -170,7 +170,7 @@ int spawn2 (int mode, const char *name, const char * const argv[],
                   FD_SET(fd, clofds);
               }
             }
-            else
+            if (rc == -1)
             {
               rc_errno = errno;
               break;
@@ -235,7 +235,7 @@ int spawn2 (int mode, const char *name, const char * const argv[],
   if (rc_errno)
     errno = rc_errno;
 
-  TRACE_ERRNO_IF(rc == -1, "return\n");
+  TRACE_ERRNO_IF(rc == -1, "return");
   TRACE("return %x\n", rc);
 
   return rc;
