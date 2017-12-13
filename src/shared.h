@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <process.h>
 #include <umalloc.h>
+#include <string.h> /* for TRACE_ERRNO */
 #include <sys/param.h> /* PAGE_SIZE */
 
 /** Executes statement(s) syntactically wrapped as a func call. */
@@ -45,6 +46,7 @@
 #define TRACE_GROUP_DOSREADBUGFIX 5
 #define TRACE_GROUP_EXEINFO 6
 #define TRACE_GROUP_CLOSE 7
+#define TRACE_GROUP_SPAWN 8
 #endif
 
 #ifndef TRACE_MORE
@@ -70,6 +72,7 @@ void libcx_trace(unsigned traceGroup, const char *file, int line, const char *fu
 #define TRACE_BEGIN_IF(cond, msg, ...) if (cond) TRACE_BEGIN(msg, ## __VA_ARGS__)
 
 #define TRACE_ERRNO(msg, ...) TRACE(msg ": %s\n", ##__VA_ARGS__, strerror(errno))
+#define TRACE_ERRNO_IF(cond, msg, ...) if (cond) TRACE_ERRNO(msg, ## __VA_ARGS__)
 
 #define TRACE_AND(stmt, msg, ...) do_(TRACE(msg, ##__VA_ARGS__); stmt)
 #define TRACE_ERRNO_AND(stmt, msg, ...) do_(TRACE_ERRNO(msg, ##__VA_ARGS__); stmt)
@@ -87,6 +90,7 @@ void libcx_trace(unsigned traceGroup, const char *file, int line, const char *fu
 #define TRACE_IF(cond, msg, ...) do {} while (0)
 #define TRACE_BEGIN_IF(cond, msg, ...) if (0) { do {} while(0)
 #define TRACE_ERRNO(msg, ...) do {} while (0)
+#define TRACE_ERRNO_IF(msg, ...) do {} while (0)
 #define TRACE_AND(stmt, msg, ...) do_(stmt)
 #define TRACE_ERRNO_AND(stmt, msg, ...) do_(stmt)
 
@@ -107,7 +111,7 @@ void libcx_assert(const char *string, const char *fname, unsigned int line, cons
 #endif
 
 /** Set errno and execute the given statement (does tracing in debug builds). */
-#define SET_ERRNO_AND(stmt, code) do_(TRACE("setting errno to %d", (code)); errno = (code); stmt)
+#define SET_ERRNO_AND(stmt, code) do_(TRACE("setting errno to %d\n", (code)); errno = (code); stmt)
 /** Set errno (does tracing in debug builds). */
 #define SET_ERRNO(code) SET_ERRNO_AND(code, (void)0)
 

@@ -75,6 +75,7 @@ static __LIBC_LOGGROUP  gLogGroup[] =
   { 1, "dosreadbugfix" },     /*  5 */
   { 1, "exeinfo" },           /*  6 */
   { 1, "close" },             /*  7 */
+  { 1, "spawn" },             /*  8 */
 };
 
 static __LIBC_LOGGROUPS gLogGroups =

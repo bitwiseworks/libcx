@@ -124,8 +124,8 @@ static inline const char *_getname (const char *path)
    with argc and argv as the arguments.  We nevertheless provide the
    possibility to overwrite this name.  */
 #ifndef TEST_FUNCTION
-void do_test (int argc, const char *const *argv);
-# define TEST_FUNCTION do_test (argc, argv)
+int do_test (int argc, const char *const *argv);
+# define TEST_FUNCTION do_test (argc, (const char *const *)argv)
 #endif
 
 #ifndef TEST_DATA_LIMIT

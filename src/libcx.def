@@ -25,6 +25,7 @@ EXPORTS
   "_exeinfo_get_format"
   "_exeinfo_get_resource_data"
   "_exeinfo_close"
+  "_spawn2"
   ; private symbols
   _print_stats @60000 NONAME
   ; debug symbols (absent from release builds)

@@ -22,6 +22,7 @@ libcx_SOURCES = \
   mmap/mmap.c \
   exeinfo/exeinfo.c \
   beginthread.c \
+  spawn/spawn2.c \
   main.c \
   main.s \
   shared.c
@@ -92,6 +93,8 @@ TESTS += \
 
 TESTS += exeinfo/tst-exeinfo.c
 exeinfo/tst-exeinfo.c_SOURCES = exeinfo/tst-exeinfo.rc
+
+TESTS += spawn/tst-spawn2.c
 
 PROGRAMS += tst-exeinfo-packed-1
 tst-exeinfo-packed-1_TEMPLATE = Test
