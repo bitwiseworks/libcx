@@ -67,8 +67,8 @@ int spawn2 (int mode, const char *name, const char * const argv[],
 
   if (stdfds)
   {
-    if ((stdfds[0] == 1 && stdfds[0] == 2) ||
-        (stdfds[1] == 1 && stdfds[0] == 2) ||
+    if ((stdfds[0] == 1 || stdfds[0] == 2) ||
+        (stdfds[1] == 1 || stdfds[1] == 2) ||
         (stdfds[2] == 2))
       SET_ERRNO_AND(return -1, EINVAL);
   }
