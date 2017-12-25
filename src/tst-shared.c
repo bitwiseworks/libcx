@@ -98,9 +98,9 @@ static int do_test(void)
 
   void *data3 = global_alloc(5000);
 
-  check_mem(4, hdr_size, 65536 * 2);
+  check_mem(4, hdr_size, 65536);
 
-  void *data4 = global_alloc(5000);
+  void *data4 = global_alloc(50000);
 
   check_mem(5, hdr_size, 65536 * 2);
 
