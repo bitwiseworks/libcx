@@ -28,7 +28,10 @@
 
 __BEGIN_DECLS
 
-#define P_2_NOINHERIT 0xF0000000
+#define P_2_NOINHERIT 0x80000000
+#define P_2_THREADSAFE 0x40000000
+
+#define P_2_MODE_MASK 0xFF
 
 /**
  * Starts a child process using the executable specified in @a name.
@@ -71,19 +74,40 @@ __BEGIN_DECLS
  * specific file descrptors to prevent their inheritance. Note that file
  * descriptors 0, 1 and 2 are always inherited by the child process.
  *
- * Note that to guarantee full thread safety, only one thread may execute
- * `spawn2` at a time, all other threads of the calling process will be blocked
- * for the duration of the call. For this reason using the P_WAIT, P_OVERLAY or
- * P_DETACH modes is not allowed with `spawn2` and will immediately result in
- * an error with `errno` set to E_INVAL.
+ * - P_2_THREADSAFE causes `spawn2` to use an intermediate process for starting
+ * the child process. This allows to avoid race conditions in multithreaded
+ * applications when `spawn2` manipulates global process properties such as the
+ * current working directory or file descriptors (by changing their inheritance
+ * and association with an actual device) because the starting process remains
+ * unaffected by such manipulations. Although it's not enforced, using this
+ * flag makes sense only when at least one of the following is true:
+ * P_2_NOINHERIT is used, @a cwd is not NULL, @a stdfds is not NULL and
+ * contains at least one non-zero file descriptor. In other cases `spawn2`
+ * should be thread-safe without using P_2_THREADSAFE. P_2_THREADSAFE can only
+ * be used with P_WAIT or P_NOWAIT and will result in a failure with EINVAL
+ * otherwise.
  *
- * The function returns the process ID of the child process (P_NOWAIT, P_DEBUG,
- * P_SESSION and P_PM), or zero (P_UNRELATED) if successful. On error it
- * returns -1 and sets `errno` to the respective error code.
+ * Note that if you issue a thread-unsafe `spawn2` call without P_2_THREADSAFE,
+ * then you should provide thread safety on your own (by using syncnrhonization
+ * primitives etc). Otherwise it may result in unexpected behavior.
+ *
+ * This function returns the return value of the child process (P_WAIT), or the
+ * process ID of the child process (P_NOWAIT, P_DEBUG, P_SESSION and P_PM), or
+ * zero (P_UNRELATED) if successful. On error it returns -1 and sets `errno` to
+ * the respective error code.
+ *
+ * Note that if P_2_THREADSAFE is specified, the process ID of the intermediate
+ * wrapper process is returned, not the process ID of the target executable
+ * (which will be a child of that intermediate process). In most cases it
+ * should not matter as the intermediate process redirects the execution result
+ * of the final executable (including signals) to the starting process in a
+ * transparent way. The only known drawback is that it's impossible to use the
+ * DosGiveSharedMem (and similar) API that requires an actual PID of the
+ * target process to operate. This may be changed in the future.
  *
  * Except for what is described above, the `spawn2` function behaves
  * essentially the same as the standard `spawnvpe` LIBC function. Please
- * consult the `spawnvpe` manual for more information
+ * consult the `spawnvpe` manual for more information.
  */
 int spawn2(int mode, const char *name, const char * const argv[],
            const char *cwd, const char * const envp[], int stdfds[3]);

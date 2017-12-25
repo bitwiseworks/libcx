@@ -19,29 +19,43 @@
  * <http://www.gnu.org/licenses/>.
  */
 
+#define INCL_BASE
+#include <os2.h>
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/fmutex.h>
 
 #include "libcx/spawn2.h"
 
 #include "../test-skeleton.c"
 
-int wait_pid(const char *msg, int pid, int exit_code)
+static int wait_pid(const char *msg, int pid, int exit_code, int exit_signal)
 {
   int status;
   int rc = waitpid(pid, &status, 0);
   if (rc == -1)
     perrno_and(return 1, "%s: waitpid %x", msg, pid);
-  if (!WIFEXITED(status) || WEXITSTATUS(status) != exit_code)
-    perr_and(return 1, "%s: waitpid %x status %x (expected exit code %d, got %d)",
-             msg, pid, status, exit_code, WEXITSTATUS(status));
+
+  if (exit_signal)
+  {
+    if (!WIFSIGNALED(status) || WTERMSIG(status) != exit_signal)
+      perr_and(return 1, "%s: waitpid %x status %x (expected signal %d, got %d)",
+               msg, pid, status, exit_signal, WTERMSIG(status));
+  }
+  else
+  {
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != exit_code)
+      perr_and(return 1, "%s: waitpid %x status %x (expected exit code %d, got %d)",
+               msg, pid, status, exit_code, WEXITSTATUS(status));
+  }
 
   return 0;
 }
 
-char *suppress_logging()
+static char *suppress_logging()
 {
   char *logging = getenv("LIBCX_TRACE");
   if (logging)
@@ -50,7 +64,7 @@ char *suppress_logging()
   return logging;
 }
 
-void restore_logging(char *logging)
+static void restore_logging(char *logging)
 {
   if (logging)
   {
@@ -61,6 +75,10 @@ void restore_logging(char *logging)
     unsetenv("LIBCX_TRACE");
 }
 
+static void test12_thread(void *arg);
+static volatile unsigned int test12_done = 0;
+
+static char exename[PATH_MAX] = {0};
 
 int do_test(int argc, const char *const *argv)
 {
@@ -75,7 +93,12 @@ int do_test(int argc, const char *const *argv)
     switch (n)
     {
       case 5:
+      {
+        int crash = argc > 2 ? atoi(argv[2]) : 0;
+        if (crash)
+          __builtin_trap(); // generates SIGILL
         return 123;
+      }
 
       case 6:
       {
@@ -119,7 +142,7 @@ int do_test(int argc, const char *const *argv)
         char buf[1024];
         rc = read(0, buf, sizeof(buf) - 1);
         if (rc == -1)
-          perrno_and(return 100, "fread");
+          return 100;
 
         buf[rc] = 0;
 
@@ -150,6 +173,25 @@ int do_test(int argc, const char *const *argv)
         break;
       }
 
+      case 12:
+      {
+        char buf[1024];
+        rc = read(0, buf, sizeof(buf) - 1);
+        if (rc == -1)
+          return 100;
+
+        buf[rc] = 0;
+
+        // process numbers mismatch due to P_2_THREADSAFE
+#if 0
+        strcat(buf, " ");
+        _itoa(_getpid(), buf + strlen(buf), 16);
+#endif
+
+        write(2, buf, strlen(buf));
+        break;
+      }
+
       default:
         return 127;
     }
@@ -157,23 +199,22 @@ int do_test(int argc, const char *const *argv)
     return 0;
   }
 
-  char exename[PATH_MAX];
   _execname(exename, PATH_MAX);
 
   // args check, should fail
-  printf ("test 1\n");
+  printf("test 1\n");
   rc = spawn2(P_NOWAIT, NULL, NULL, NULL, NULL, NULL);
   if (rc != -1 || errno != EINVAL)
     perr_and(return 1, "test 1: rc %d, not 0; or errno %d, not EINVAL", rc, errno);
 
   // args check, should fail
-  printf ("test 2\n");
+  printf("test 2\n");
   rc = spawn2(P_NOWAIT, argv[0], NULL, NULL, NULL, NULL);
   if (rc != -1 || errno != EINVAL)
     perr_and(return 1, "test 2: rc %d, not 0; or errno %d, not EINVAL", rc, errno);
 
   // args check, should fail
-  printf ("test 3\n");
+  printf("test 3\n");
   {
     const char *args[] = { NULL };
     rc = spawn2(P_NOWAIT, "something|non|existent", args, NULL, NULL, NULL);
@@ -182,7 +223,7 @@ int do_test(int argc, const char *const *argv)
   }
 
   // program presence check, should fail
-  printf ("test 4\n");
+  printf("test 4\n");
   {
     const char *args[] = { "blah", NULL };
     rc = spawn2(P_NOWAIT, "something|non|existent", args, NULL, NULL, NULL);
@@ -190,249 +231,382 @@ int do_test(int argc, const char *const *argv)
       perr_and(return 1, "test 4: rc %d, not 0; or errno %d, not ENOENT", rc, errno);
   }
 
-  // simple spawn, should succeed
-  printf ("test 5.1\n");
+  int iter = 1;
+  for (; iter <= 2; ++iter)
   {
-    const char *args[] = { exename, "--direct", "5", NULL };
-    int pid = spawn2(P_NOWAIT, exename, args, NULL, NULL, NULL);
-    if (pid == -1)
-      perrno_and(return 1, "test 5: spawn2");
+    int flags = iter == 1 ? 0 : P_2_THREADSAFE;
 
-    if (wait_pid("test 5.1", pid, 123))
-      return 1;
+    // simple spawn, should succeed
+    printf("test 5.1 (iter %d)\n", iter);
+    {
+      const char *args[] = { exename, "--direct", "5", NULL };
+      int pid = spawn2(P_NOWAIT | flags, exename, args, NULL, NULL, NULL);
+      if (pid == -1)
+        perrno_and(return 1, "test 5.1: spawn2");
+
+      if (wait_pid("test 5.1", pid, 123, 0))
+        return 1;
+    }
+
+    // simple spawn (P_WAIT), should succeed
+    printf("test 5.2 (iter %d)\n", iter);
+    {
+      const char *args[] = { exename, "--direct", "5", NULL };
+      int rc = spawn2(P_WAIT | flags, exename, args, NULL, NULL, NULL);
+      if (rc != 123)
+        perr_and(return 1, "test 5.2: rc %d not 123 (errno %d)", rc, errno);
+    }
+
+    // simple spawn, should trap
+    printf("test 5.3 (iter %d)\n", iter);
+    {
+      const char *args[] = { exename, "--direct", "5", "1", NULL };
+      int pid = spawn2(P_NOWAIT | flags, exename, args, NULL, NULL, NULL);
+      if (pid == -1)
+        perrno_and(return 1, "test 5.3: spawn2");
+
+      if (wait_pid("test 5.3", pid, 0, SIGILL))
+        return 1;
+    }
+
+    // cwd check, should succeed
+    printf ("test 6 (iter %d)\n", iter);
+    {
+      char *curdir = getcwd(NULL, 0);
+      if (curdir == NULL)
+        perrno_and(return 1, "test 6: getcwd");
+
+      char *tmpdir = getenv("TEMP");
+      if (tmpdir == NULL)
+        tmpdir = getenv("TMPDIR");
+      if (tmpdir == NULL)
+        perr_and(return 1, "test 6: no TEMP/TMPDIR");
+
+      const char *args[] = { exename, "--direct", "6", tmpdir, NULL };
+      int pid = spawn2(P_NOWAIT | flags, exename, args, tmpdir, NULL, NULL);
+      if (pid == -1)
+        perrno_and(return 1, "test 6: spawn2");
+
+      if (wait_pid("test 6", pid, 0, 0))
+        return 1;
+
+      char *curdir2 = getcwd(NULL, 0);
+      if (strcmp(curdir, curdir2) != 0)
+        perr_and(return 1, "test 6: curdir: [%s] != [%s]", curdir, curdir2);
+
+      free(curdir2);
+      free(curdir);
+    }
+
+    // stdout pipe check, should succeed
+    printf ("test 7 (iter %d)\n", iter);
+    {
+      // forbid our own logging as we catch stdout
+      char *logging = suppress_logging();
+
+      int p[2];
+      rc = pipe(p);
+      if (rc == -1)
+        perrno_and(return 1, "test 7: pipe");
+
+      int stdfds[3] = { 0, p[1], 0 };
+
+      const char *args[] = { exename, "--direct", "7", NULL };
+      int pid = spawn2(P_NOWAIT | flags, exename, args, NULL, NULL, stdfds);
+      if (pid == -1)
+        perrno_and(return 1, "test 7: spawn2");
+
+      rc = close(p[1]);
+      if (rc == -1)
+        perrno_and(return 1, "test 7: close");
+
+      char buf[1024] = {0};
+      rc = read(p[0], buf, sizeof(buf) - 1);
+      if (rc == -1)
+        perrno_and(return 1, "test 7: read");
+
+      buf[rc] = 0;
+
+      if (wait_pid("test 7", pid, 0, 0))
+        return 1;
+
+      if (strcmp(buf, "CHILD TEST 7") != 0)
+        perr_and(return 1, "test 7: expected [CHILD TEST 7] got [%s]", buf);
+
+      close(p[0]);
+
+      restore_logging(logging);
+    }
+
+    // stderr pipe check, should succeed
+    printf ("test 8 (iter %d)\n", iter);
+    {
+      int p[2];
+      rc = pipe(p);
+      if (rc == -1)
+        perrno_and(return 1, "test 8: pipe");
+
+      int stdfds[3] = { 0, 0, p[1] };
+
+      const char *args[] = { exename, "--direct", "8", NULL };
+      int pid = spawn2(P_NOWAIT | flags, exename, args, NULL, NULL, stdfds);
+      if (pid == -1)
+        perrno_and(return 1, "test 8: spawn2");
+
+      rc = close(p[1]);
+      if (rc == -1)
+        perrno_and(return 1, "test 8: close");
+
+      char buf[1024] = {0};
+      rc = read(p[0], buf, sizeof(buf) - 1);
+      if (rc == -1)
+        perrno_and(return 1, "test 8: read");
+
+      buf[rc] = 0;
+
+      if (wait_pid("test 8", pid, 0, 0))
+        return 1;
+
+      if (strcmp(buf, "CHILD TEST 8") != 0)
+        perr_and(return 1, "test 8: expected [CHILD TEST 8] got [%s]", buf);
+
+      close(p[0]);
+    }
+
+    // stderr->stdout pipe check, should succeed
+    printf ("test 9 (iter %d)\n", iter);
+    {
+      // forbid our own logging as we catch stdout
+      char *logging = suppress_logging();
+
+      int p[2];
+      rc = pipe(p);
+      if (rc == -1)
+        perrno_and(return 1, "test 9: pipe");
+
+      int stdfds[3] = { 0, p[1], 1 };
+
+      const char *args[] = { exename, "--direct", "9", NULL };
+      int pid = spawn2(P_NOWAIT | flags, exename, args, NULL, NULL, stdfds);
+      if (pid == -1)
+        perrno_and(return 1, "test 9: spawn2");
+
+      rc = close(p[1]);
+      if (rc == -1)
+        perrno_and(return 1, "test 9: close");
+
+      char buf[1024] = {0};
+      rc = read(p[0], buf, sizeof(buf) - 1);
+      if (rc == -1)
+        perrno_and(return 1, "test 9: read");
+
+      buf[rc] = 0;
+
+      if (wait_pid("test 9", pid, 0, 0))
+        return 1;
+
+      if (strcmp(buf, "CHILD TEST 9") != 0)
+        perr_and(return 1, "test 9: expected [CHILD TEST 9] got [%s]", buf);
+
+      close(p[0]);
+
+      restore_logging(logging);
+    }
+
+    // stdin+stderr pipe check, should succeed
+    printf ("test 10 (iter %d)\n", iter);
+    {
+      int pi[2];
+      rc = pipe(pi);
+      if (rc == -1)
+        perrno_and(return 1, "test 10: pipe in");
+
+      int po[2];
+      rc = pipe(po);
+      if (rc == -1)
+        perrno_and(return 1, "test 10: pipe out");
+
+      int stdfds[3] = { pi[0], 0, po[1] };
+
+      const char *args[] = { exename, "--direct", "10", NULL };
+      int pid = spawn2(P_NOWAIT | flags, exename, args, NULL, NULL, stdfds);
+      if (pid == -1)
+        perrno_and(return 1, "test 10: spawn2");
+
+      rc = close(po[1]);
+      if (rc == -1)
+        perrno_and(return 1, "test 10: close out");
+
+      rc = close(pi[0]);
+      if (rc == -1)
+        perrno_and(return 1, "test 10: close in");
+
+      const char *test_str = "CHILD 10 TEST PING";
+      rc = write(pi[1], test_str, strlen(test_str));
+      if (rc == -1)
+        perrno_and(return 1, "test 10: write");
+
+      char buf[1024] = {0};
+      rc = read(po[0], buf, sizeof(buf) - 1);
+      if (rc == -1)
+        perrno_and(return 1, "test 10: read");
+
+      buf[rc] = 0;
+
+      if (wait_pid("test 10", pid, 0, 0))
+        return 1;
+
+      if (strcmp(buf, test_str) != 0)
+        perr_and(return 1, "test 10: expected [%s] got [%s]", test_str, buf);
+
+      close(po[0]);
+      close(pi[1]);
+    }
+
+    // P_2_NOINHERIT check, should succeed
+    printf ("test 11 (iter %d)\n", iter);
+    {
+      enum { fds_num = 50, fds_num_child = 10 };
+      int fds[fds_num] = {0};
+      char fds_str[fds_num_child * 5] = {0};
+      char *s = fds_str;
+      int i;
+      for (i = 0; i < fds_num; ++i)
+      {
+        fds[i] = open(exename, O_RDONLY);
+        if (fds[i] == -1)
+          perrno_and(return 1, "open %d", i);
+
+        // pass only last 10 fds to the child (to protect from child's own fds
+        // due to logging etc)
+        if (i >= fds_num - fds_num_child)
+        {
+          _itoa (fds[i], s, 10);
+          strcat(s, " ");
+          s += strlen(s);
+        }
+      }
+
+      const char *args[] = { exename, "--direct", "11", fds_str, NULL };
+      int pid = spawn2(P_NOWAIT | P_2_NOINHERIT | flags, exename, args, NULL, NULL, NULL);
+      if (pid == -1)
+        perrno_and(return 1, "test 11: spawn2");
+
+      if (wait_pid("test 11", pid, 0, 0))
+        return 1;
+
+      for (i = 0; i < fds_num; ++i)
+        close(fds[i]);
+    }
   }
 
-  // simple spawn, should fail due to P_WAIT
-  printf ("test 5.2\n");
+  // multithreaded access to spawn2, should succeed
+  printf ("test 12\n");
   {
-    const char *args[] = { exename, "--direct", "5", NULL };
-    int pid = spawn2(P_WAIT, exename, args, NULL, NULL, NULL);
-    if (rc != -1 || errno != EINVAL)
-      perr_and(return 1, "test 5.2: rc %d, not 0; or errno %d, not EINVAL", rc, errno);
+    enum { tid_cnt = 25 };
+
+    int tids[tid_cnt];
+    int i;
+
+    for (i = 0; i < tid_cnt; ++i)
+    {
+      tids[i] = _beginthread(test12_thread, NULL, 0, (void *)i);
+      if (tids[i] == -1)
+        perrno_and(return 1, "test 12.%d: _beginthread", i);
+    }
+
+    for (i = 0; i < tid_cnt; ++i)
+    {
+      TID tid = tids[i];
+      DosWaitThread(&tid, DCWW_WAIT);
+    }
+
+    if (test12_done != tid_cnt)
+      perr_and(return 1, "test 12: done threads %d, not %d", test12_done, tid_cnt);
   }
 
-  // cwd check, should succeed
-  printf ("test 6\n");
+  return 0;
+}
+
+static void test12_thread(void *arg)
+{
+  int i = (int)arg;
+  char i_str[5] = {0};
+  _itoa(i, i_str, 10);
+
+  int rc;
+
+  int pi[2] = {-1};
+  int po[2] = {-1};
+
+  do
   {
-    char *curdir = getcwd(NULL, 0);
-    if (curdir == NULL)
-      perrno_and(return 1, "test 6: getcwd");
-
-    char *tmpdir = getenv("TEMP");
-    if (tmpdir == NULL)
-      tmpdir = getenv("TMPDIR");
-    if (tmpdir == NULL)
-      perr_and(return 1, "test 6: no TEMP/TMPDIR");
-
-    const char *args[] = { exename, "--direct", "6", tmpdir, NULL };
-    int pid = spawn2(P_NOWAIT, exename, args, tmpdir, NULL, NULL);
-    if (pid == -1)
-      perrno_and(return 1, "test 6: spawn2");
-
-    if (wait_pid("test 6", pid, 0))
-      return 1;
-
-    char *curdir2 = getcwd(NULL, 0);
-    if (strcmp(curdir, curdir2) != 0)
-      perr_and(return 1, "test 6: curdir: [%s] != [%s]", curdir, curdir2);
-
-    free(curdir2);
-    free(curdir);
-  }
-
-  // stdout pipe check, should succeed
-  printf ("test 7\n");
-  {
-    // forbid our own logging as we catch stdout
-    char *logging = suppress_logging();
-
-    int p[2];
-    rc = pipe(p);
-    if (rc == -1)
-      perrno_and(return 1, "test 7: pipe");
-
-    int stdfds[3] = { 0, p[1], 0 };
-
-    const char *args[] = { exename, "--direct", "7", NULL };
-    int pid = spawn2(P_NOWAIT, exename, args, NULL, NULL, stdfds);
-    if (pid == -1)
-      perrno_and(return 1, "test 7: spawn2");
-
-    rc = close(p[1]);
-    if (rc == -1)
-      perrno_and(return 1, "test 7: close");
-
-    char buf[1024] = {0};
-    rc = read(p[0], buf, sizeof(buf) - 1);
-    if (rc == -1)
-      perrno_and(return 1, "test 7: read");
-
-    buf[rc] = 0;
-
-    if (wait_pid("test 7", pid, 0))
-      return 1;
-
-    if (strcmp(buf, "CHILD TEST 7") != 0)
-      perr_and(return 1, "test 7: expected [CHILD TEST 7] got [%s]", buf);
-
-    close(p[0]);
-
-    restore_logging(logging);
-  }
-
-  // stderr pipe check, should succeed
-  printf ("test 8\n");
-  {
-    int p[2];
-    rc = pipe(p);
-    if (rc == -1)
-      perrno_and(return 1, "test 8: pipe");
-
-    int stdfds[3] = { 0, 0, p[1] };
-
-    const char *args[] = { exename, "--direct", "8", NULL };
-    int pid = spawn2(P_NOWAIT, exename, args, NULL, NULL, stdfds);
-    if (pid == -1)
-      perrno_and(return 1, "test 8: spawn2");
-
-    rc = close(p[1]);
-    if (rc == -1)
-      perrno_and(return 1, "test 8: close");
-
-    char buf[1024] = {0};
-    rc = read(p[0], buf, sizeof(buf) - 1);
-    if (rc == -1)
-      perrno_and(return 1, "test 8: read");
-
-    buf[rc] = 0;
-
-    if (wait_pid("test 8", pid, 0))
-      return 1;
-
-    if (strcmp(buf, "CHILD TEST 8") != 0)
-      perr_and(return 1, "test 8: expected [CHILD TEST 8] got [%s]", buf);
-
-    close(p[0]);
-  }
-
-  // stderr->stdout pipe check, should succeed
-  printf ("test 9\n");
-  {
-    // forbid our own logging as we catch stdout
-    char *logging = suppress_logging();
-
-    int p[2];
-    rc = pipe(p);
-    if (rc == -1)
-      perrno_and(return 1, "test 9: pipe");
-
-    int stdfds[3] = { 0, p[1], 1 };
-
-    const char *args[] = { exename, "--direct", "9", NULL };
-    int pid = spawn2(P_NOWAIT, exename, args, NULL, NULL, stdfds);
-    if (pid == -1)
-      perrno_and(return 1, "test 9: spawn2");
-
-    rc = close(p[1]);
-    if (rc == -1)
-      perrno_and(return 1, "test 9: close");
-
-    char buf[1024] = {0};
-    rc = read(p[0], buf, sizeof(buf) - 1);
-    if (rc == -1)
-      perrno_and(return 1, "test 9: read");
-
-    buf[rc] = 0;
-
-    if (wait_pid("test 9", pid, 0))
-      return 1;
-
-    if (strcmp(buf, "CHILD TEST 9") != 0)
-      perr_and(return 1, "test 9: expected [CHILD TEST 9] got [%s]", buf);
-
-    close(p[0]);
-
-    restore_logging(logging);
-  }
-
-  // stdin+stderr pipe check, should succeed
-  printf ("test 10\n");
-  {
-    int pi[2];
     rc = pipe(pi);
     if (rc == -1)
-      perrno_and(return 1, "test 10: pipe in");
+      perrno_and(return, "test 12.%d: pipe in", i);
 
-    int po[2];
     rc = pipe(po);
     if (rc == -1)
-      perrno_and(return 1, "test 10: pipe out");
+      perrno_and(break, "test 12.%d: pipe out", i);
+
+    rc = fcntl(pi[1], F_GETFD);
+    if (rc == -1)
+      perrno_and(break, "test 12.%d: fcntl get in", i);
+    rc = fcntl(pi[1], F_SETFD, rc | FD_CLOEXEC);
+    if (rc == -1)
+      perrno_and(break, "test 12.%d: fcntl set in", i);
+
+    rc = fcntl(po[0], F_GETFD);
+    if (rc == -1)
+      perrno_and(break, "test 12.%d: fcntl get out", i);
+    rc = fcntl(po[0], F_SETFD, rc | FD_CLOEXEC);
+    if (rc == -1)
+      perrno_and(break, "test 12.%d: fcntl set out", i);
 
     int stdfds[3] = { pi[0], 0, po[1] };
 
-    const char *args[] = { exename, "--direct", "10", NULL };
-    int pid = spawn2(P_NOWAIT, exename, args, NULL, NULL, stdfds);
+    const char *args[] = { exename, "--direct", "12", NULL };
+    int pid = spawn2(P_NOWAIT | P_2_THREADSAFE /*| P_2_NOINHERIT*/, exename, args, NULL, NULL, stdfds);
     if (pid == -1)
-      perrno_and(return 1, "test 10: spawn2");
+      perrno_and(break, "test 12.%d: spawn2", i);
 
     rc = close(po[1]);
     if (rc == -1)
-      perrno_and(return 1, "test 10: close out");
+      perrno_and(break, "test 12.%d: close out", i);
+    po[1] = -1;
 
     rc = close(pi[0]);
     if (rc == -1)
-      perrno_and(return 1, "test 10: close in");
+      perrno_and(break, "test 12.%d: close in", i);
+    pi[0] = -1;
 
-    const char *test_str = "CHILD 10 TEST PING";
-    rc = write(pi[1], test_str, strlen(test_str));
+    char test_buf[1024] = "CHILD 12 TEST PING ";
+    strcat(test_buf, i_str);
+
+    rc = write(pi[1], test_buf, strlen(test_buf));
     if (rc == -1)
-      perrno_and(return 1, "test 10: write");
+      perrno_and(break, "test 12.%d: write", i);
 
     char buf[1024] = {0};
     rc = read(po[0], buf, sizeof(buf) - 1);
     if (rc == -1)
-      perrno_and(return 1, "test 10: read");
+      perrno_and(break, "test 12.%d: read", i);
 
     buf[rc] = 0;
 
-    if (wait_pid("test 10", pid, 0))
-      return 1;
+    // process numbers mismatch due to P_2_THREADSAFE
+#if 0
+    strcat(test_buf, " ");
+    _itoa(pid + 1, test_buf + strlen(test_buf), 16);
+#endif
 
-    if (strcmp(buf, test_str) != 0)
-      perr_and(return 1, "test 10: expected [%s] got [%s]", test_str, buf);
+    if (strcmp(buf, test_buf) != 0)
+      perr_and(break, "test 12.%d: expected [%s] got [%s]", i, test_buf, buf);
 
-    close(po[0]);
-    close(pi[1]);
+    if (wait_pid("test 12", pid, 0, 0))
+      break;
+
+    __atomic_increment(&test12_done);
   }
-
-  // P_2_NOINHERIT check, should succeed
-  printf ("test 11\n");
-  {
-    int fds[10] = {0};
-    char fds_str[10*5] = {0};
-    char *s = fds_str;
-    int i;
-    for (i = 0; i < 10; ++i)
-    {
-      fds[i] = open(exename, O_RDONLY);
-      if (fds[i] == -1)
-        perrno_and(return 1, "open %d", i);
-      _itoa (fds[i], s, 10);
-      strcat(s, " ");
-      s += strlen(s);
-    }
-
-    const char *args[] = { exename, "--direct", "11", fds_str, NULL };
-    int pid = spawn2(P_NOWAIT | P_2_NOINHERIT, exename, args, NULL, NULL, NULL);
-    if (pid == -1)
-      perrno_and(return 1, "test 11: spawn2");
-
-    if (wait_pid("test 11", pid, 0))
-      return 1;
-
-    for (i = 0; i < 10; ++i)
-      close(fds[i]);
-  }
-
-  return 0;
+  while (0);
 }

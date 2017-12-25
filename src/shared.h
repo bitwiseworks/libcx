@@ -166,6 +166,14 @@ typedef struct FileDesc
 } FileDesc;
 
 /**
+ * Enums for ProcDesc::flags.
+ */
+enum
+{
+  Proc_Spawn2Wrapper = 0x01, /* Process is a spawn2 wrapper */
+};
+
+/**
  * Process descriptor (hash map entry).
  */
 typedef struct ProcDesc
@@ -176,9 +184,13 @@ typedef struct ProcDesc
   FileDesc **files; /* Process-specific file descrition hash map of FILE_DESC_HASH_SIZE */
   struct ProcMemMap *mmap; /* Process-specific data for mmap */
   struct MemMap *mmaps; /* Process-visible memory mapings */
+  int flags; /* Process-specific flags */
+  unsigned long spawn2_sem; /* Global spawn2_sem if open in this process */
+  pid_t child_pid; /* spawn2 wrapper child for Proc_Spawn2Wrapper */
 } ProcDesc;
 
 /**
+
  * Global system-wide data structure (header).
  */
 typedef struct SharedData
@@ -189,6 +201,8 @@ typedef struct SharedData
   ProcDesc **procs; /* Process description hash map of PROC_INFO_HASH_SIZE */
   SharedFileDesc **files; /* File description hash map of FILE_DESC_HASH_SIZE */
   struct FcntlLocking *fcntl_locking; /* Shared data for fcntl locking */
+  unsigned long spawn2_sem; /* Signals spawn2 wrapper events */
+  int spawn2_sem_refcnt; /* Number of processes using it */
 #ifdef STATS_ENABLED
   size_t max_heap_used; /* Max size of used heap space */
   size_t num_procs; /* Number of ProcDesc structs */
@@ -213,6 +227,8 @@ struct _CONTEXT;
 
 void global_lock();
 void global_unlock();
+
+unsigned long global_spawn2_sem(ProcDesc *proc);
 
 void *global_alloc(size_t size);
 
@@ -267,6 +283,8 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
 void print_stats();
 
 void touch_pages(void *buf, size_t len);
+
+char *get_module_name(char *buf, size_t len);
 
 #ifdef APIENTRY /* <os2.h> included? */
 

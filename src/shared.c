@@ -36,10 +36,13 @@
 #include "shared.h"
 #include "version.h"
 
+#include "spawn/spawn2-internal.h"
+
 #define __LIBC_LOG_GROUP TRACE_GROUP
 #include <InnoTekLIBC/logstrict.h>
 
 #include <InnoTekLIBC/fork.h>
+#include <InnoTekLIBC/FastInfoBlocks.h>
 
 /*
  * Debug builds are hardly compatible with release builds so use a separate
@@ -201,6 +204,10 @@ static void shared_init()
           continue;
         }
 
+        /*
+         * It's an ordinary LIBCx process. Increase coutners.
+         */
+
         TRACE("gpData->heap = %p\n", gpData->heap);
         ASSERT(gpData->heap);
 
@@ -209,7 +216,6 @@ static void shared_init()
 
         ASSERT(gpData->refcnt);
         gpData->refcnt++;
-
         TRACE("gpData->refcnt = %d\n", gpData->refcnt);
       }
 
@@ -232,9 +238,9 @@ static void shared_init()
     ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
 
     /*
-     * We are the process that successfully created the main mutex.
-     * Proceed with the initial setup by allocating shared memory and
-     * heap.
+     * It's a process that successfully created the main mutex, i.e. the first
+     * LIBCx process. Proceed with the initial setup by allocating shared
+     * memory and heap.
      */
 
     /* Allocate shared memory */
@@ -276,12 +282,17 @@ static void shared_init()
     GLOBAL_NEW_ARRAY(gpData->procs, PROC_DESC_HASH_SIZE);
     TRACE("gpData->procs = %p\n", gpData->procs);
     ASSERT(gpData->procs);
+
     GLOBAL_NEW_ARRAY(gpData->files, FILE_DESC_HASH_SIZE);
     TRACE("gpData->files = %p\n", gpData->files);
     ASSERT(gpData->files);
 
     break;
   }
+
+  /*
+   * Perform common initialization (both for the first and ordinary processes).
+   */
 
   /* Make sure a process description for this process is created */
   ProcDesc *proc = get_proc_desc(getpid());
@@ -290,6 +301,26 @@ static void shared_init()
   /* Initialize individual components */
   mmap_init(proc);
   fcntl_locking_init(proc);
+
+  /* Check if it's a spawn2 wrapper (e.g. spawn2-wrapper.c) */
+  {
+    char dll[CCHMAXPATH + sizeof(SPAWN2_WRAPPERNAME) + 1];
+    if (get_module_name(dll, sizeof(dll)))
+    {
+      strcpy(_getname(dll), SPAWN2_WRAPPERNAME);
+
+      char exe[CCHMAXPATH + 1];
+      if (_execname(exe, sizeof(exe)) == 0 && stricmp(dll, exe) == 0)
+      {
+        proc->flags |= Proc_Spawn2Wrapper;
+        TRACE("spawn2 wrapper\n");
+
+        /* Make sure the semaphore is available (needed for spawn2-wrapper.c) */
+        ASSERT(gpData->spawn2_sem);
+        global_spawn2_sem(proc);
+      }
+    }
+  }
 
   DosReleaseMutexSem(gMutex);
 
@@ -346,6 +377,20 @@ static void shared_term()
 
       if (proc)
       {
+        if (proc->spawn2_sem)
+        {
+          TRACE("proc->spawn2_sem %lx (refcnt %d)\n", proc->spawn2_sem, gpData->spawn2_sem_refcnt);
+
+          ASSERT(proc->spawn2_sem == gpData->spawn2_sem);
+          DosCloseEventSem(gpData->spawn2_sem);
+
+          ASSERT(gpData->spawn2_sem_refcnt != 0);
+          --gpData->spawn2_sem_refcnt;
+
+          if (gpData->spawn2_sem_refcnt == 0)
+            gpData->spawn2_sem = NULLHANDLE;
+        }
+
         /* Free common per-process structures */
         TRACE("proc->files %p\n", proc->files);
         if (proc->files)
@@ -513,7 +558,7 @@ void global_lock()
 }
 
 /**
- * Releases the global mutex requested by mutex_lock().
+ * Releases the global mutex requested by global_lock().
  */
 void global_unlock()
 {
@@ -524,6 +569,49 @@ void global_unlock()
   arc = DosReleaseMutexSem(gMutex);
 
   ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
+}
+
+/**
+ * Returns the spawn2 semaphore lazily creating it or making sure it's
+ * available in the given process (the current process if NULL). Will return
+ * NULLHANDLE if lazy creation fails. Must be called under global_lock().
+ */
+unsigned long global_spawn2_sem(ProcDesc *proc)
+{
+  APIRET arc;
+
+  if (!proc)
+    proc = find_proc_desc(getpid());
+
+  ASSERT(proc);
+
+  if (gpData->spawn2_sem == NULLHANDLE)
+  {
+    ASSERT(proc->spawn2_sem == NULLHANDLE);
+
+    arc = DosCreateEventSem(NULL, &gpData->spawn2_sem, DC_SEM_SHARED | DCE_AUTORESET, FALSE);
+    if (arc != NO_ERROR)
+      return NULLHANDLE;
+
+    ASSERT(gpData->spawn2_sem_refcnt == 0);
+    gpData->spawn2_sem_refcnt = 1;
+
+    proc->spawn2_sem = gpData->spawn2_sem;
+  }
+  else if (proc->spawn2_sem == NULLHANDLE)
+  {
+    arc = DosOpenEventSem(NULL, &gpData->spawn2_sem);
+    ASSERT_MSG(arc == NO_ERROR, "%ld %lx", arc, gpData->spawn2_sem);
+
+    ASSERT(gpData->spawn2_sem_refcnt != 0);
+    ++gpData->spawn2_sem_refcnt;
+
+    proc->spawn2_sem = gpData->spawn2_sem;
+  }
+
+  TRACE("spawn2_sem %lx (refcnt %d)\n", proc->spawn2_sem, gpData->spawn2_sem_refcnt);
+
+  return proc->spawn2_sem;
 }
 
 /**
@@ -1140,13 +1228,7 @@ void print_stats()
 
   {
     char name[CCHMAXPATH] = {0};
-    HMODULE hmod;
-    ULONG obj, offset;
-    APIRET arc;
-    arc = DosQueryModFromEIP(&hmod, &obj, sizeof(name), name, &offset, (ULONG)print_stats);
-    ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
-    arc = DosQueryModuleName(hmod, sizeof(name), name);
-    ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
+    get_module_name(name, sizeof(name));
     printf("LIBCx module:  %s\n", name);
   }
 
@@ -1490,6 +1572,27 @@ void touch_pages(void *buf, size_t len)
       buf_addr += dos_len;
     }
   }
+}
+
+char *get_module_name(char *buf, size_t len)
+{
+  HMODULE hmod;
+  ULONG obj, offset;
+  APIRET arc;
+
+  arc = DosQueryModFromEIP(&hmod, &obj, len, buf, &offset, (ULONG)get_module_name);
+  TRACE_IF(arc, "DosQueryModFromEIP %ld\n", arc);
+  ASSERT_MSG(!arc || arc == ERROR_BAD_LENGTH, "%ld %d", arc, len);
+  if (arc)
+    return NULL;
+
+  arc = DosQueryModuleName(hmod, len, buf);
+  TRACE_IF(arc, "DosQueryModuleName %ld\n", arc);
+  ASSERT_MSG(!arc || arc == ERROR_BAD_LENGTH, "%ld %d", arc, len);
+  if (arc)
+    return NULL;
+
+  return buf;
 }
 
 static void forkCompletion(void *pvArg, int rc, __LIBC_FORKCTX enmCtx)

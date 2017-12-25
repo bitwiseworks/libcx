@@ -26,8 +26,9 @@ EXPORTS
   "_exeinfo_get_resource_data"
   "_exeinfo_close"
   "_spawn2"
-  ; private symbols
-  _print_stats @60000 NONAME
+  ; private symbols (may disappear w/o any notice)
+  "_print_stats" @60000 NONAME
+  "_libcx_assert" @60001 NONAME
   ; debug symbols (absent from release builds)
   ;ddd "_gpData"
   ;ddd "_global_lock"
@@ -37,6 +38,7 @@ EXPORTS
   ;ddd "_force_libcx_init"
   ;ddd "_set_mmap_full_size"
   ;ddd "_get_proc_mmaps"
+  ;ddd "_libcx_trace"
 IMPORTS
   __libc__init_app=libc066.___init_app
   __libc_beginthread=libc066.__beginthread

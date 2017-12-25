@@ -37,8 +37,9 @@ $(PATH_OBJ)/libcx-debug.def: $(PATH_SUB_CURRENT)/libcx.def | $(call DIRDEP,$(PAT
 	$(call MSG_L1,Generating $@)
 	$(QUIET)sed -e 's/  ;ddd /  /' < $< > $@
 
-# Make sure tests inherit libcx debug defs
+# Make sure tests & utils inherit libcx debug defs
 TEMPLATE_Test_DEFS.debug += $(libcx_DEFS.debug)
+TEMPLATE_Util_DEFS.debug += $(libcx_DEFS.debug)
 
 #
 # Utilities
@@ -47,6 +48,14 @@ TEMPLATE_Test_DEFS.debug += $(libcx_DEFS.debug)
 PROGRAMS += libcx-stats
 libcx-stats_TEMPLATE = Util
 libcx-stats_SOURCES = libcx-stats.c
+
+PROGRAMS += libcx-spawn2-wrapper
+libcx-spawn2-wrapper_INST = $(INST_DLL)libcx-spawn2.wrp
+libcx-spawn2-wrapper_TEMPLATE = Util
+libcx-spawn2-wrapper_SOURCES = spawn/spawn2-wrapper.c
+
+INSTALLS += libcx-spawn2-wrapper-inst
+libcx-spawn2-wrapper_inst_SOURCES = $(libcx-spawn2-wrapper_1_TARGET)
 
 #
 # Tests

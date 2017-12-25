@@ -15,6 +15,7 @@ Currently, LIBCx provides the following extensions:
  - Improved `read()`, `__read()`, `_stream_read()`, `fread()` and `DosRead()` calls with workarounds for the OS/2 `DosRead` bug that can cause it to return a weird error code resulting in EINVAL (22) in applications (see https://github.com/bitwiseworks/libcx/issues/21 for more information) and for another `DosRead` bug that can lead to system freezes when reading big files on the JFS file system (see https://github.com/bitwiseworks/libcx/issues/36 for more information).
  - Improved flushing of open streams at program termination. In particular, buffered streams bound to TCP/IP sockets are now properly flushed so that no data loss occurs on the receiving end. TCP/IP sockets are used instead of pipes in many OS/2 ports of Unix software for piping child process output to the parent (due to the limitation of kLIBC select() that doesn't support OS/2 native pipes).
  - New `exeinfo` API that allows to examine an executable or a DLL without actually loading it for execution by the OS/2 kernel.
+ - New `spawn2()` API built on top of `spawnvpe()` that provides enhanced functionality such as standard I/O redirection and thread safety.
  - Placing the regular C heap in high memory (when it's availalbe) by default. This behavior may be controlled by the `LIBCX_HIGHMEM` environment variable, see the notes below.
  - EXPERIMENTAL. Automatic setting of the Unix user ID at process startup to an ID of a user specified with the `LOGNAME` or `USER` environment variable if a match in the passwd database is found for it. This has a numbef of side effects, e.g. all files and directories created by kLIBC functions will have an UID and GID of the specified user rathar than root. Also Unix programs will see the correct user via getuid() and other APIs which in particular will make some tools (e.g. yum) complain about the lack of root priveleges. For this reason this functionality is disabled by default and can be enabled by setting `LIBCX_SETUID=1` in the environment.
 
@@ -52,6 +53,17 @@ Note that LIBCx doesn't statically link to any of the EXCEPTQ DLLs. It loads the
 The key difference of the `exeinfo` API from the "traditional" OS/2 `DosGetResource` API is that it doesn't require to load the executable file with `DosLoadModule` first in order to read its resources — instead, file contents is read and parsed directly by LIBCx. Besides saving some resources that would otherwise be alocated by OS/2 for loading the executable file into system memory for execution, such a direct approach also eliminates a call to `_DLL_InitTerm` in the loaded DLL that could execute arbitrary and potentially dangerous code, as well as it eliminates searching for and loading all dependend DLLs. This is both faster and much more secure.
 
 The `exeinfo` API is defined in the `libcx/exeinfo.h` header and currently allows to query the executable file format and read OS/2 resource objects embedded in such a file. More functionality is planned for future versions.
+
+## Notes on `spawn2` API usage.
+
+The `spawn2` API provides the following enhancements over the regular `spawnvpe` function:
+
+- Specifying an initial directory for the started executable.
+- Passing a set of file descriptors to be used as standard I/O of the started executable.
+- Disabling inheritance of all file descriptors of the parent process with a single flag.
+- Performing all the above in a completely thread-safe manner.
+
+The `exeinfo` API is defined in the `libcx/spawn2.h` header. Consult it for more details.
 
 ## Notes on C heap displacement.
 
