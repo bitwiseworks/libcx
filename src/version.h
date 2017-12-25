@@ -23,10 +23,10 @@
 #define VERSION_H
 
 /*
- * LIBCx version number is defined here. Note that the major and minor numbers
- * affect names of the global shared memory and global mutex. This is in order
- * to avoid clashes with older LIBCx versions that might be loaded into memory
- * at application runtime and assumes that at least the minor version is bumped
+ * LIBCx version number is defined here. Note that the version number affects
+ * names of the global shared memory and global mutex. This is in order to
+ * avoid clashes with older LIBCx versions that might be loaded into memory at
+ * application runtime and assumes that at least the build number is bumped
  * each time there is any change in the binary layout of the global LIBCx
  * structures located in shared memory.
  */
