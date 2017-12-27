@@ -1,5 +1,12 @@
 # History of changes for LIBCx
 
+#### Version 0.6.1 (2017-12-27)
+* Implement the `spawn2` API that provides standard I/O redirection and thread safety.
+* fcntl: Allow to place write locks on files open in r/o mode to conform with POSIX.
+* Improve tracking of open files between processes to fix fcntl lock failures in Samba4 tests and similar cases.
+* mmap: Fix assertion in msync() on PAG_WRITE-only mmap.
+* Force high memory for default C heap to make sure high memory is used even if some DLL (mistakenly) votes for low memory.
+
 #### Version 0.6.0 (2017-08-29)
 
 * Implement the `exeinfo` API that allows to examine an executable or a DLL without actually loading it for execution by the OS/2 kernel.
