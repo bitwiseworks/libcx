@@ -320,12 +320,19 @@ int do_test(int argc, const char *const *argv)
       if (rc == -1)
         perrno_and(return 1, "test 7: close");
 
-      char buf[1024] = {0};
-      rc = read(p[0], buf, sizeof(buf) - 1);
+      char buf[1024];
+      int len = 0;
+      for (;;)
+      {
+        rc = read(p[0], buf + len, sizeof(buf) - len - 1);
+        if (rc <= 0)
+          break;
+        len += rc;
+      }
       if (rc == -1)
         perrno_and(return 1, "test 7: read");
 
-      buf[rc] = 0;
+      buf[len] = 0;
 
       if (wait_pid("test 7", pid, 0, 0))
         return 1;

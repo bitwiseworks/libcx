@@ -493,7 +493,12 @@ main (int argc, char *argv[])
   setvbuf (stdout, NULL, _IONBF, 0);
 
 #ifdef __EMX__
-  atexit (print_libcx_stats);
+  {
+    /* Do not print stats when the test needs quietness */
+    char *libcx_trace = getenv("LIBCX_TRACE");
+    if (libcx_trace == NULL || strcmp(libcx_trace, "-all") != 0)
+      atexit (print_libcx_stats);
+  }
 #endif
 
   /* Make sure temporary files are deleted.  */
