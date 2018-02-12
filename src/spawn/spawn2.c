@@ -184,6 +184,9 @@ int spawn2 (int mode, const char *name, const char * const argv[],
 
     if (envp)
     {
+      req->envp = (const char * const *)payload;
+      payload += sizeof(char *) * (envc + 1);
+
       for (i = 0; i < envc; ++i)
       {
         len = strlen(envp[i]) + 1;
