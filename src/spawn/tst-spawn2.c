@@ -84,6 +84,8 @@ static char exename[PATH_MAX] = {0};
 #define SPAWN2TEST54_VAR "SPAWN2TEST54"
 #define SPAWN2TEST54_VAL "TEST54"
 
+#define SPAWN2TEST55_BLP_VAL "D:/NONEXISTENT"
+
 int do_test(int argc, const char *const *argv)
 {
   int rc;
@@ -109,8 +111,31 @@ int do_test(int argc, const char *const *argv)
           case 4: // environment test
           {
             char *val = getenv(SPAWN2TEST54_VAR);
-            if (strcmp(val, SPAWN2TEST54_VAL))
+            if (!val || strcmp(val, SPAWN2TEST54_VAL))
               perr_and(return 1, "child: test 5.4: [%s] != [%s]", val, SPAWN2TEST54_VAL);
+
+            return 0;
+          }
+
+          case 5: // BEGINLIBPATH test
+          {
+            char *val = getenv(SPAWN2TEST54_VAR);
+            if (!val || strcmp(val, SPAWN2TEST54_VAL))
+              perr_and(return 1, "child: test 5.5: [%s] != [%s]", val, SPAWN2TEST54_VAL);
+
+            val = getenv("BEGINLIBPATH");
+            if (val)
+              perr_and(return 1, "child: test 5.5: BEGINLIBPATH env var = [%s]", val);
+
+            char blp[1024];
+            APIRET arc;
+
+            arc = DosQueryExtLIBPATH(blp, BEGIN_LIBPATH);
+            if (arc != NO_ERROR)
+              perr_and(return 1, "child: test 5.5: DosQueryExtLIBPATH 1 returned %ld", arc);
+
+            if (!strstr(blp, ";" SPAWN2TEST55_BLP_VAL ";"))
+              perr_and(return 1, "child: test 5.5: [%s] doesn't contain [%s]", blp, SPAWN2TEST54_VAL);
 
             return 0;
           }
@@ -335,6 +360,39 @@ int do_test(int argc, const char *const *argv)
         return 1;
 
       unsetenv(SPAWN2TEST54_VAR);
+    }
+
+    // BEGINLIBPATH override test should succeed
+    printf ("test 5.5 (iter %d)\n", iter);
+    {
+      char blp_before[1024], blp_after[1024]; // OS/2 limit
+      char blp[1024 + 256], *blp_val;
+      APIRET arc;
+
+      arc = DosQueryExtLIBPATH(blp_before, BEGIN_LIBPATH);
+      if (arc != NO_ERROR)
+        perr_and(return 1, "test 5.4: DosQueryExtLIBPATH 1 returned %ld", arc);
+
+      strcpy(blp, "BEGINLIBPATH=");
+      blp_val = blp + strlen(blp);
+      strcpy(blp_val, blp_before);
+      strcat(blp_val, ";" SPAWN2TEST55_BLP_VAL);
+
+      const char *args[] = { exename, "--direct", "5", "5", NULL };
+      const char *envp[] = { SPAWN2TEST54_VAR "=" SPAWN2TEST54_VAL, blp, NULL };
+      int pid = spawn2(P_NOWAIT | P_2_APPENDENV | flags, exename, args, NULL, envp, NULL);
+      if (pid == -1)
+        perrno_and(return 1, "test 5.5: spawn2");
+
+      if (wait_pid("test 5.5", pid, 0, 0))
+        return 1;
+
+      arc = DosQueryExtLIBPATH(blp_after, BEGIN_LIBPATH);
+      if (arc != NO_ERROR)
+        perr_and(return 1, "test 5.5: DosQueryExtLIBPATH 2 returned %ld", arc);
+
+      if (strcmp(blp_before, blp_after) != 0)
+        perr_and(return 1, "test 5.5: [%s] != [%s]", blp_before, blp_after);
     }
 
     // cwd check, should succeed

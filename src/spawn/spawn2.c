@@ -353,6 +353,11 @@ int spawn2(int mode, const char *name, const char * const argv[],
 
   char **envp_copy = (char **)envp;
 
+  enum { PseudoEnvCnt = 3 };
+  const char *pseudo_env[PseudoEnvCnt] = { "BEGINLIBPATH", "ENDLIBPATH", "LIBPATHSTRICT" };
+  const ULONG pseudo_eid[PseudoEnvCnt] = { BEGIN_LIBPATH, END_LIBPATH, LIBPATHSTRICT };
+  char *pseudo_eold[PseudoEnvCnt] = { NULL, NULL, NULL };
+
   // Change the current directory if needed
   if (cwd)
   {
@@ -451,13 +456,83 @@ int spawn2(int mode, const char *name, const char * const argv[],
 
       if (rc != -1 && envp)
       {
-        if (mode & P_2_APPENDENV)
-        {
-          int i, environc = 0, envc = 0;
+        // Process special pseudo-env vars
 
+        int i, j, envc = 0, pseudo_cnt = 0;
+        char buf[1024]; // Documented maximum for pseudo-env vars
+
+        for (i = 0; envp[i]; ++i)
+        {
+          char *val = strchr(envp[i], '=');
+          if (val)
+          {
+            int var_len = val - envp[i];
+            ++val; // go to the value (skip '=')
+
+            for (j = 0; j < PseudoEnvCnt; ++j)
+            {
+              if (strnicmp(envp[i], pseudo_env[j], var_len) == 0 &&
+                  envp[i][var_len] == '=' && pseudo_env[j][var_len] == '\0')
+              {
+                TRACE("found special pseudo-env var [%s]\n", envp[i]);
+                ++pseudo_cnt;
+
+                // accept only the first occurence
+                if (pseudo_eold[j])
+                {
+                  TRACE("duplicate var; ignored\n");
+                  continue;
+                }
+
+                // LIBPATHSTRICT only returns T or nothing so set the zero terminator
+                if (pseudo_eid[j] == LIBPATHSTRICT)
+                  memset(buf, '\0', 4);
+
+                APIRET arc = DosQueryExtLIBPATH(buf, pseudo_eid[j]);
+                if (arc != NO_ERROR)
+                {
+                  rc = -1;
+                  rc_errno = EOVERFLOW;
+                  break;
+                }
+
+                pseudo_eold[j] = malloc(strlen(buf) + 1);
+                if (pseudo_eold[j] == NULL)
+                {
+                  rc = -1;
+                  rc_errno = ENOMEM;
+                  break;
+                }
+
+                strcpy(pseudo_eold[j], buf);
+
+                arc = DosSetExtLIBPATH(val, pseudo_eid[j]);
+                if (arc != NO_ERROR)
+                {
+                  rc = -1;
+                  rc_errno = EOVERFLOW;
+                  break;
+                }
+              }
+            }
+          }
+        }
+
+        envc = i;
+
+        TRACE("envc %d, pseudo_cnt %d\n", envc, pseudo_cnt);
+
+        if (pseudo_cnt && pseudo_cnt == envc)
+        {
+          // Ignore the given environment completely if it only contains
+          // pseudo-env vars as they could confuse programs if passed on.
+          envc = 0;
+          envp_copy = NULL;
+        }
+        else if (pseudo_cnt || (mode & P_2_APPENDENV))
+        {
+          int environc = 0;
           for (; environ[environc]; ++environc)
-            ;
-          for (; envp[envc]; ++envc)
             ;
 
           envp_copy = malloc(sizeof(char *) * (envc + environc + 1));
@@ -468,25 +543,53 @@ int spawn2(int mode, const char *name, const char * const argv[],
           }
           else
           {
-            /*
-             * Don't bother ourselves handling duplicates here, it appears that
-             * DosExecPgm does that anyway - in a manner where the first
-             * occurrence of the variable takes precedence (all other ones are
-             * ignored). So, in order for envp vars to override the current
-             * environment we put them first.
-             */
-            for (i = 0; i < envc; ++i)
-              envp_copy[i] = (char *)envp[i];
+            // Don't bother ourselves handling duplicates here, it appears that
+            // DosExecPgm does that anyway - in a manner where the first
+            // occurrence of the variable takes precedence (all other ones are
+            // ignored). So, in order for envp vars to override the current
+            // environment we put them first.
+
+            for (envc = 0, i = 0; envp[i]; ++i)
+            {
+              if (pseudo_cnt)
+              {
+                // Omit special pseudo-env vars from the environment as they
+                // could confuse programs if passed on.
+
+                char *val = strchr(envp[i], '=');
+                if (val)
+                {
+                  int var_len = val - envp[i];
+                  ++val; // go to the value (skip '=')
+
+                  for (j = 0; j < PseudoEnvCnt; ++j)
+                  {
+                    if (strnicmp(envp[i], pseudo_env[j], var_len) == 0 &&
+                        envp[i][var_len] == '=' && pseudo_env[j][var_len] == '\0')
+                      break;
+                  }
+
+                  if (j < PseudoEnvCnt)
+                    continue;
+                }
+              }
+
+              envp_copy[envc++] = (char *)envp[i];
+            }
+
             for (i = 0; i < environc; ++i)
               envp_copy[envc + i] = environ[i];
+
             envp_copy[environc + envc] = NULL;
           }
         }
+
+        TRACE("envc %d, envp_copy %p\n", envc, envp_copy);
       }
 
       if (rc != -1)
       {
-        if (envp)
+        if (envp_copy)
           rc = spawnvpe(mode, name, (char * const *)argv, envp_copy);
         else
           rc = spawnvp(mode, name, (char * const *)argv);
@@ -501,6 +604,19 @@ int spawn2(int mode, const char *name, const char * const argv[],
 
   if (envp)
   {
+    // Restore special pseudo-env vars
+    int j;
+    for (j = 0; j < PseudoEnvCnt; ++j)
+    {
+      if (pseudo_eold[j])
+      {
+        TRACE("restoring special pseudo-env var [%s=%s]\n", pseudo_env[j], pseudo_eold[j]);
+
+        DosSetExtLIBPATH(pseudo_eold[j], pseudo_eid[j]);
+        free(pseudo_eold[j]);
+      }
+    }
+
     if (envp_copy && envp_copy != (char **)envp)
       free(envp_copy);
   }
