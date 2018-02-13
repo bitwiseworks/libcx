@@ -108,8 +108,9 @@ int do_test(int argc, const char *const *argv)
 
           case 4: // environment test
           {
-            if (strcmp(getenv(SPAWN2TEST54_VAR), SPAWN2TEST54_VAL))
-              perr_and(return 1, "child: test 5.4: [%s] != [%s]", SPAWN2TEST54_VAR, SPAWN2TEST54_VAL);
+            char *val = getenv(SPAWN2TEST54_VAR);
+            if (strcmp(val, SPAWN2TEST54_VAL))
+              perr_and(return 1, "child: test 5.4: [%s] != [%s]", val, SPAWN2TEST54_VAL);
 
             return 0;
           }
@@ -289,7 +290,7 @@ int do_test(int argc, const char *const *argv)
     }
 
     // environment test, should succeed
-    printf ("test 5.4 (iter %d)\n", iter);
+    printf ("test 5.4.1 (iter %d)\n", iter);
     {
       char **e;
       const char **envp;
@@ -300,19 +301,40 @@ int do_test(int argc, const char *const *argv)
       for (e = environ; *e; ++e)
         ++envc;
 
-      envp = (const char **)alloca(sizeof(char *) * (envc + 2));
+      envp = (const char **)alloca(sizeof(char *) * (envc + 3));
       for (i = 0; i < envc; ++i)
         envp[i] = environ[i];
       envp[i++] = SPAWN2TEST54_VAR "=" SPAWN2TEST54_VAL;
+      envp[i++] = SPAWN2TEST54_VAR "=" "BLAH"; // second occurence should be ignored
       envp[i] = NULL;
 
       const char *args[] = { exename, "--direct", "5", "4", NULL };
       int pid = spawn2(P_NOWAIT | flags, exename, args, NULL, envp, NULL);
       if (pid == -1)
-        perrno_and(return 1, "test 5.4: spawn2");
+        perrno_and(return 1, "test 5.4.1: spawn2");
 
-      if (wait_pid("test 5.4", pid, 0, 0))
+      if (wait_pid("test 5.4.1", pid, 0, 0))
         return 1;
+    }
+
+    // environment test with P_2_APPENDENV, should succeed
+    printf ("test 5.4.2 (iter %d)\n", iter);
+    {
+      // Simulate another value to check for override
+      putenv(SPAWN2TEST54_VAR "=" SPAWN2TEST54_VAL SPAWN2TEST54_VAL);
+
+      const char *args[] = { exename, "--direct", "5", "4", NULL };
+      const char *envp[] = { SPAWN2TEST54_VAR "=" SPAWN2TEST54_VAL,
+                             SPAWN2TEST54_VAR "=" "BLAH", // second occurence should be ignored
+                             NULL };
+      int pid = spawn2(P_NOWAIT | P_2_APPENDENV | flags, exename, args, NULL, envp, NULL);
+      if (pid == -1)
+        perrno_and(return 1, "test 5.4.2: spawn2");
+
+      if (wait_pid("test 5.4.2", pid, 0, 0))
+        return 1;
+
+      unsetenv(SPAWN2TEST54_VAR);
     }
 
     // cwd check, should succeed

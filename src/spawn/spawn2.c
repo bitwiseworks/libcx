@@ -45,8 +45,8 @@
 
 #include "spawn2-internal.h"
 
-int spawn2 (int mode, const char *name, const char * const argv[],
-            const char *cwd, const char * const envp[], int stdfds[3])
+int spawn2(int mode, const char *name, const char * const argv[],
+           const char *cwd, const char * const envp[], int stdfds[3])
 {
   TRACE("mode %x name [%s] argv %p cwd [%s] envp %p stdfds %p\n",
         mode, name, argv, cwd, envp, stdfds);
@@ -351,6 +351,8 @@ int spawn2 (int mode, const char *name, const char * const argv[],
   int dupfds[3] = {0};
   fd_set *clofds = NULL;
 
+  char **envp_copy = (char **)envp;
+
   // Change the current directory if needed
   if (cwd)
   {
@@ -447,10 +449,45 @@ int spawn2 (int mode, const char *name, const char * const argv[],
         }
       }
 
+      if (rc != -1 && envp)
+      {
+        if (mode & P_2_APPENDENV)
+        {
+          int i, environc = 0, envc = 0;
+
+          for (; environ[environc]; ++environc)
+            ;
+          for (; envp[envc]; ++envc)
+            ;
+
+          envp_copy = malloc(sizeof(char *) * (envc + environc + 1));
+          if (envp_copy == NULL)
+          {
+            rc = -1;
+            rc_errno = ENOMEM;
+          }
+          else
+          {
+            /*
+             * Don't bother ourselves handling duplicates here, it appears that
+             * DosExecPgm does that anyway - in a manner where the first
+             * occurrence of the variable takes precedence (all other ones are
+             * ignored). So, in order for envp vars to override the current
+             * environment we put them first.
+             */
+            for (i = 0; i < envc; ++i)
+              envp_copy[i] = (char *)envp[i];
+            for (i = 0; i < environc; ++i)
+              envp_copy[envc + i] = environ[i];
+            envp_copy[environc + envc] = NULL;
+          }
+        }
+      }
+
       if (rc != -1)
       {
         if (envp)
-          rc = spawnvpe(mode, name, (char * const *)argv, (char * const *)envp);
+          rc = spawnvpe(mode, name, (char * const *)argv, envp_copy);
         else
           rc = spawnvp(mode, name, (char * const *)argv);
 
@@ -460,6 +497,12 @@ int spawn2 (int mode, const char *name, const char * const argv[],
         TRACE_ERRNO_IF(rc == -1, "spawn*");
       }
     }
+  }
+
+  if (envp)
+  {
+    if (envp_copy && envp_copy != (char **)envp)
+      free(envp_copy);
   }
 
   // Restore inheritance
