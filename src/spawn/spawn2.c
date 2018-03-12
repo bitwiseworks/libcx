@@ -65,7 +65,7 @@ int spawn2(int mode, const char *name, const char * const argv[],
     TRACE_CONT("]\n");
   TRACE_END();
 
-  TRACE_BEGIN_IF(stdfds, "stdfs [");
+  TRACE_BEGIN_IF(stdfds, "stdfds [");
     int i;
     for (i = 0; i < 3; ++i)
       TRACE_CONT("%d,", stdfds[i]);
@@ -76,15 +76,28 @@ int spawn2(int mode, const char *name, const char * const argv[],
     SET_ERRNO_AND(return -1, EINVAL);
 
   int have_stdfds = 0;
+  int stdfds_copy[3] = {0};
 
   if (stdfds)
   {
-    if ((stdfds[0] == 1 || stdfds[0] == 2) ||
-        (stdfds[1] == 1 || stdfds[1] == 2) ||
-        (stdfds[2] == 2))
+    /*
+     * We accept stdfds[1] = 1 and stdfds[2] = 2 and treat it as 0 (no
+     * redirection). This is for compatibility with apps that blindly supply
+     * standard handles for redirection (which makes no practical sense
+     * but can be explained from a programmatic POV).
+     */
+
+    if ((stdfds[0] == 1 || stdfds[0] == 2))
       SET_ERRNO_AND(return -1, EINVAL);
 
-    have_stdfds = (stdfds[0] || stdfds[1] || stdfds[2]);
+    memcpy(stdfds_copy, stdfds, sizeof(stdfds_copy));
+
+    if (stdfds_copy[1] == 1)
+      stdfds_copy[1] = 0;
+    if (stdfds_copy[2] == 2)
+      stdfds_copy[2] = 0;
+
+    have_stdfds = stdfds_copy[0] || stdfds_copy[1] || stdfds_copy[2];
   }
 
   if (mode & P_2_THREADSAFE)
@@ -125,7 +138,7 @@ int spawn2(int mode, const char *name, const char * const argv[],
     }
 
     if (have_stdfds)
-      payload_size += sizeof(*stdfds) * 3;
+      payload_size += sizeof(stdfds_copy);
 
     /* Allocate the request from LIBCx shared memory */
     size_t req_size = sizeof(Spawn2Request) + payload_size;
@@ -204,21 +217,21 @@ int spawn2(int mode, const char *name, const char * const argv[],
 
     if (have_stdfds)
     {
-      len = sizeof(*stdfds) * 3;
-      memcpy(payload, stdfds, len);
+      len = sizeof(stdfds_copy);
+      memcpy(payload, stdfds_copy, len);
       req->stdfds = (int *)payload;
       payload += len;
 
       /* Make sure stdio file handles are inherited by the wrapper */
       for (i = 0; i < 3; ++i)
       {
-        if (stdfds[i])
+        if (stdfds_copy[i])
         {
-          int f = rc = fcntl(stdfds[i], F_GETFD);
+          int f = rc = fcntl(stdfds_copy[i], F_GETFD);
           if (f != -1 && (f & FD_CLOEXEC))
           {
-            TRACE("enable inheritance for %d\n", stdfds[i]);
-            rc = fcntl(stdfds[i], F_SETFD, f & ~FD_CLOEXEC);
+            TRACE("enable inheritance for %d\n", stdfds_copy[i]);
+            rc = fcntl(stdfds_copy[i], F_SETFD, f & ~FD_CLOEXEC);
             if (rc != -1)
               inherited[i] = 1;
           }
@@ -254,9 +267,9 @@ int spawn2(int mode, const char *name, const char * const argv[],
       {
         if (inherited[i])
         {
-          int f = fcntl(stdfds[i], F_GETFD);
+          int f = fcntl(stdfds_copy[i], F_GETFD);
           if (f != -1)
-            f = fcntl(stdfds[i], F_SETFD, f | FD_CLOEXEC);
+            f = fcntl(stdfds_copy[i], F_SETFD, f | FD_CLOEXEC);
           ASSERT_MSG(f != -1, "%d %d", f, errno);
         }
       }
@@ -387,14 +400,28 @@ int spawn2(int mode, const char *name, const char * const argv[],
       int i;
       for (i = 0; i < 3; ++i)
       {
-        // Note that we don't have to handle value of 1 in stdfds[2] specially:
-        // if stdfds[1] was provided, 1 it was already redirected to it, so
-        // redirecting to 1 is equivalent to redirecting to stdfds[1]; if it
-        // was not, then we'll redirect 2 to 1 which is simply stdout in this
-        // case - still just what we need.
+        /*
+         * Note that we don't have to handle value of 1 in stdfds[2] specially:
+         * if stdfds[1] was provided, 1 was already redirected to it, so
+         * redirecting to 1 is equivalent to redirecting to stdfds[1]; if it
+         * was not, then we'll redirect 2 to 1 which is simply stdout in this
+         * case - still just what we need. We do need special handling for 2 in
+         * stdfds[1] though (by using a value of stdfds[2] as the target of
+         * redirection if it's provided).
+         */
 
-        if (stdfds[i])
+        if (stdfds_copy[i])
         {
+          /* Secially handle stdfds[1] = 2 */
+          int target = stdfds_copy[i];
+          if (i == 1 && target == 2 && stdfds_copy[2])
+          {
+            target = stdfds_copy[2];
+            /* Break cirular redirection (stdout remains itself) */
+            if (target == 1)
+              continue;
+          }
+
           int fd = rc = dup(i);
           if (rc != -1)
           {
@@ -403,7 +430,7 @@ int spawn2(int mode, const char *name, const char * const argv[],
             {
               rc = fcntl(fd, F_SETFD, f | FD_CLOEXEC);
               if (rc != -1)
-                if ((rc = dup2(stdfds[i], i)) != -1)
+                if ((rc = dup2(target, i)) != -1)
                   dupfds[i] = fd;
             }
           }

@@ -64,18 +64,20 @@ __BEGIN_DECLS
  * standard I/O handles of its parent). This array, if not NULL, must contain 3
  * elements that represent LIBC file descriptors to be used by the child's
  * stdin, stdout and stderr streams, respectively. Some integer values have a
- * special meaning when used in this array and therefore these values are never
- * interpreted as file descriptors:
+ * special meaning when used as certain array elements' values:
  *
- * - 0 indicates that the respective stream should not be redirected but
- * instead inherited from the parent.
+ * - 0 in any element indicates that the respective stream should not be
+ * redirected but instead inherited from the parent.
  *
- * - 1 indicates that the stderr stream should be redirected to the stdout
- * stream. A value of 1 can only be put in the last element of @a stdfds (with
- * an index of 2) that represents the stderr stream, and is invalid otherwise.
+ * - 1 in stdfds[2] indicates that the stderr stream should be redirected to
+ * the stdout stream (or to where stdout is redirected by stdfds[1] if it's not
+ * 0). Putting 1 in stdfds[1] is equivalent to putting 0 there (see above).
+ * Putting 1 in stdfds[0] will result in EINVAL.
  *
- * - 2 is reserved for future use and is currently interpreted as an invalid
- * value.
+ * - 2 in stdfds[1] indicates that the stdout stream should be redirected to
+ * the stderr stream (or to where stderr is redirected by stdfds[2] if it's not
+ * 0). Putting 2 in stdfds[2] is equivalent to putting 0 there (see above).
+ * Putting 2 in stdfds[0] will result in EINVAL.
  *
  * In addition to the standard `P_*` constanst for the @a mode argument, the
  * following new values are recognized:
