@@ -551,16 +551,19 @@ int spawn2(int mode, const char *name, const char * const argv[],
 
         if (pseudo_cnt && pseudo_cnt == envc)
         {
-          // Ignore the given environment completely if it only contains
-          // pseudo-env vars as they could confuse programs if passed on.
+          /*
+           * Ignore the given environment completely if it only contains
+           * pseudo-env vars as they could confuse programs if passed on.
+           */
           envc = 0;
           envp_copy = NULL;
         }
         else if (pseudo_cnt || (mode & P_2_APPENDENV))
         {
           int environc = 0;
-          for (; environ[environc]; ++environc)
-            ;
+          if (mode & P_2_APPENDENV)
+            for (; environ[environc]; ++environc)
+              ;
 
           envp_copy = malloc(sizeof(char *) * (envc + environc + 1));
           if (envp_copy == NULL)
@@ -570,24 +573,19 @@ int spawn2(int mode, const char *name, const char * const argv[],
           }
           else
           {
-            // Don't bother ourselves handling duplicates here, it appears that
-            // DosExecPgm does that anyway - in a manner where the first
-            // occurrence of the variable takes precedence (all other ones are
-            // ignored). So, in order for envp vars to override the current
-            // environment we put them first.
-
             for (envc = 0, i = 0; envp[i]; ++i)
             {
               if (pseudo_cnt)
               {
-                // Omit special pseudo-env vars from the environment as they
-                // could confuse programs if passed on.
-
+                /*
+                 * Omit special pseudo-env vars from the environment as they
+                 * could confuse programs if passed on.
+                 */
                 char *val = strchr(envp[i], '=');
                 if (val)
                 {
                   int var_len = val - envp[i];
-                  ++val; // go to the value (skip '=')
+                  ++val; /* go to the value (skip '=') */
 
                   for (j = 0; j < PseudoEnvCnt; ++j)
                   {
@@ -604,14 +602,50 @@ int spawn2(int mode, const char *name, const char * const argv[],
               envp_copy[envc++] = (char *)envp[i];
             }
 
-            for (i = 0; i < environc; ++i)
-              envp_copy[envc + i] = environ[i];
+            /*
+             * Append the existing environment on P_2_APPENDENV (and if there
+             * is any). Note that we have to skip the duplicates as although
+             * DosExecPgm does that on its own, we don't know what spawn() does
+             * to them (it might pass it to the kLIBC child process bypassing
+             * DosExecPgm which'll result in old vars overriding the new ones,
+             * see https://github.com/bitwiseworks/mozilla-os2/issues/262).
+             */
+            if (environc)
+            {
+              /*
+               * Assume that the old env doesn't contain duplicates, so only
+               * search among the new vars. If the new env contains duplicates,
+               * the behavior is "undefined", so don't check for that too.
+               */
+              int ec = envc;
+              for (i = 0; i < environc; ++i)
+              {
+                char *end = strchr(environ[i], '=');
+                int len = end ? end - environ[i] : strlen(environ[i]);
 
-            envp_copy[environc + envc] = NULL;
+                for (j = 0; j < ec; ++j)
+                  if (strnicmp(environ[i], envp_copy[j], len) == 0 &&
+                      (envp_copy[j][len] == '=' || envp_copy[j][len] == '\0'))
+                    break;
+
+                /* Add the old var if there was no match among the new ones */
+                if (j == ec)
+                  envp_copy[envc++] = environ[i];
+              }
+            }
+
+            envp_copy[envc] = NULL;
           }
         }
 
         TRACE("envc %d, envp_copy %p\n", envc, envp_copy);
+
+        TRACE_BEGIN_IF(envp_copy && (char **)envp != envp_copy, "envp_copy [");
+          char **e;
+          for (e = envp_copy; *e; ++e)
+            TRACE_CONT("[%s]", *e);
+          TRACE_CONT("]\n");
+        TRACE_END();
       }
 
       if (rc != -1)
@@ -631,7 +665,7 @@ int spawn2(int mode, const char *name, const char * const argv[],
 
   if (envp)
   {
-    // Restore special pseudo-env vars
+    /* Restore special pseudo-env vars */
     int j;
     for (j = 0; j < PseudoEnvCnt; ++j)
     {
@@ -648,7 +682,7 @@ int spawn2(int mode, const char *name, const char * const argv[],
       free(envp_copy);
   }
 
-  // Restore inheritance
+  /* Restore inheritance */
   if (clofds)
   {
     int fd;
@@ -665,7 +699,7 @@ int spawn2(int mode, const char *name, const char * const argv[],
     free(clofds);
   }
 
-  // Restore stdio (0,1,2)
+  /* Restore stdio (0,1,2) */
   if (have_stdfds)
   {
     int i;
@@ -679,7 +713,7 @@ int spawn2(int mode, const char *name, const char * const argv[],
     }
   }
 
-  // Restore the current directory
+  /* Restore the current directory */
   if (curdir)
   {
     chdir(curdir);

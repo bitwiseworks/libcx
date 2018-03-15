@@ -114,6 +114,19 @@ int do_test(int argc, const char *const *argv)
             if (!val || strcmp(val, SPAWN2TEST54_VAL))
               perr_and(return 1, "child: test 5.4: [%s] != [%s]", val, SPAWN2TEST54_VAL);
 
+            // also make sure there are no duplicates
+            int len = strlen(SPAWN2TEST54_VAR);
+            int cnt = 0;
+            char **e = environ;
+            while (*e)
+            {
+              if (strnicmp(*e, SPAWN2TEST54_VAR, len) == 0 && (*e)[len] == '=')
+                ++cnt;
+              ++e;
+            }
+            if (cnt != 1)
+              perr_and(return 1, "child: test 5.4: cnt of [%s] %d != 1", SPAWN2TEST54_VAR, cnt);
+
             return 0;
           }
 
@@ -330,7 +343,6 @@ int do_test(int argc, const char *const *argv)
       for (i = 0; i < envc; ++i)
         envp[i] = environ[i];
       envp[i++] = SPAWN2TEST54_VAR "=" SPAWN2TEST54_VAL;
-      envp[i++] = SPAWN2TEST54_VAR "=" "BLAH"; // second occurence should be ignored
       envp[i] = NULL;
 
       const char *args[] = { exename, "--direct", "5", "4", NULL };
@@ -350,7 +362,6 @@ int do_test(int argc, const char *const *argv)
 
       const char *args[] = { exename, "--direct", "5", "4", NULL };
       const char *envp[] = { SPAWN2TEST54_VAR "=" SPAWN2TEST54_VAL,
-                             SPAWN2TEST54_VAR "=" "BLAH", // second occurence should be ignored
                              NULL };
       int pid = spawn2(P_NOWAIT | P_2_APPENDENV | flags, exename, args, NULL, envp, NULL);
       if (pid == -1)

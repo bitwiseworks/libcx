@@ -46,8 +46,8 @@ __BEGIN_DECLS
  * be NULL, or inherited from the current process if @a envp is NULL.
  *
  * If @a envp is not NULL, three special pseudo-environment variables are
- * recognized and processed accordingly: BEGINLIBPATH, ENDLIBPATH and
- * LIBPATHSTRICT using the DosSetExtLIBPATH API. The previous values of these
+ * recognized and processed accordingly using the DosSetExtLIBPATH API:
+ * BEGINLIBPATH, ENDLIBPATH and LIBPATHSTRICT. The previous values of these
  * variables are saved and restored after starting the child process. Note that
  * the length limit for BEGINLIBPATH and ENDLIBPATH values is 1023 characters.
  * If this limit is exceeded (or if DosQueryExtLIBPATH or DosSetExtLIBPATH
@@ -55,8 +55,11 @@ __BEGIN_DECLS
  * pseudo-environment variables are omitted from the child environment as they
  * could confuse started programs if passed on.
  *
- * Note that if @a envp contains duplicate variables, only the first occurence
- * will be visible to the child process, all subsequent ones will be ignored.
+ * Note that it's a responsibility of the caller to make sure that @a envp does
+ * not contain duplicate variables. If it does, it's undefined which one will
+ * be seen by the child process. Also note that all variables should be given
+ * as `VAR=VAL` strings where `VAL` is optional and `=` is not, otherwise the
+ * behavior is undefined too.
  *
  * If the current process wants to redirect standard I/O streams of the child
  * process, it should specify the new handles in the @a stdfds array (which
