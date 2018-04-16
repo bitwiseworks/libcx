@@ -1,5 +1,13 @@
 # History of changes for LIBCx
 
+#### Version 0.6.2 (2018-04-17)
+
+* spawn2: Fix crash in P_2_THREADSAFE mode when envp is not NULL.
+* spawn2: Add support for P_2_APPENDENV.
+* spawn2: Support special pseudo-environment variables (BEGINLIBPATH, ENDLIBPATH, LIBPATHSTRICT).
+* spawn2: Accept 1 as stdfds[1] and 2 as stdfds[2] values.
+* spawn2: Fix unexpected override of passed envp vars with current ones.
+
 #### Version 0.6.1 (2017-12-27)
 * Implement the `spawn2` API that provides standard I/O redirection and thread safety.
 * fcntl: Allow to place write locks on files open in r/o mode to conform with POSIX.
