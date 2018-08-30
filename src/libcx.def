@@ -26,6 +26,10 @@ EXPORTS
   "_exeinfo_get_resource_data"
   "_exeinfo_close"
   "_spawn2"
+  "_getaddrinfo"
+  "_freeaddrinfo"
+  "_getnameinfo"
+  "_gai_strerror"
   ; private symbols (may disappear w/o any notice)
   "_print_stats" @60000 NONAME
   "_libcx_assert" @60001 NONAME
