@@ -106,6 +106,8 @@ exeinfo/tst-exeinfo.c_SOURCES = exeinfo/tst-exeinfo.rc
 
 TESTS += spawn/tst-spawn2.c
 
+TESTS += net/tst-getaddrinfo.c
+
 PROGRAMS += tst-exeinfo-packed-1
 tst-exeinfo-packed-1_TEMPLATE = Test
 tst-exeinfo-packed-1_SOURCES = exeinfo/tst-exeinfo.c exeinfo/tst-exeinfo.rc
