@@ -83,5 +83,24 @@ static int do_test(void)
   if (!rc)
     perr_and(return 1, "getaddrinfo returned success for [%s]", bad_hostname);
 
+  printf("Result for [%s] is %d (%s)\n", bad_hostname, rc, gai_strerror(rc));
+
+  struct sockaddr_in sa4;
+  memset(&sa4, 0, sizeof(sa4));
+  sa4.sin_family = AF_INET;
+  sa4.sin_addr.s_addr = in_addr.sin_addr.s_addr;
+  sa4.sin_port = 80;
+
+  char hostbuf[NI_MAXHOST] = "";
+  char servbuf[NI_MAXSERV] = "";
+  rc = getnameinfo((struct sockaddr *)&sa4, sizeof(sa4), hostbuf, sizeof(hostbuf), servbuf, sizeof(servbuf), 0);
+  if (rc)
+    perr_and(return 1, "getnameinfo returned %d (%s) for %x", rc, gai_strerror(rc), ntohl(in_addr.sin_addr.s_addr));
+
+  printf("host [%s] serv [%s]\n", hostbuf, servbuf);
+
+  if (hostbuf[0] == '\0' || servbuf[0] == '\0')
+    perr_and(return 1, "getnameinfo returned empty hostbuf or servbuf");
+
   return 0;
 }
