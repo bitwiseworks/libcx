@@ -26,11 +26,6 @@
  * Definitions that originally belong to <netdb.h>
  */
 
-/*
- * The following is based on getaddrinfo.h by KO Myung-Hun <komh@chollian.net>.
- * Check net/getaddrinfo.c for the copyright info.
- */
-
 #include <stddef.h>
 
 /* GAI error codes */
@@ -53,9 +48,10 @@
 #define NI_NAMEREQD    0x08
 #define NI_DGRAM       0x10
 
-#define AI_PASSIVE     1
-#define AI_CANONNAME   2
-#define AI_NUMERICHOST 4
+#define AI_PASSIVE     0x0001
+#define AI_CANONNAME   0x0002
+#define AI_NUMERICHOST 0x0004
+#define AI_NUMERICSERV 0x0400
 
 typedef int socklen_t;
 

@@ -1,36 +1,41 @@
 /*
  * getaddrinfo() implementation for OS/2 kLIBC
+ * Copyright (C) 2018 bww bitwise works GmbH.
+ * This file is part of the kLIBC Extension Library.
+ * Authored by Dmitry Kuminov <coding@dmik.org>, 2018.
  *
- * Copyright (C) 2014 KO Myung-Hun <komh@chollian.net>
+ * The kLIBC Extension Library is free software; you can redistribute it
+ * and/or modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
- * This file was modifed from src/os2/getaddrinfo.c of VLC.
+ * The kLIBC Extension Library is distributed in the hope that it will be
+ * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
  *
- * The following is the original license header.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with the GNU C Library; if not, see
+ * <http://www.gnu.org/licenses/>.
+ */
+
+/*-------------------------------------------------------------------------
  *
- *****************************************************************************
- * getaddrinfo.c: getaddrinfo/getnameinfo replacement functions
- *****************************************************************************
- * Copyright (C) 2005 the VideoLAN team
- * Copyright (C) 2002-2007 Rémi Denis-Courmont
- * Copyright (C) 2011 KO Myung-Hun
+ * getaddrinfo.c
+ *	  Support getaddrinfo() on platforms that don't have it.
  *
- * Authors: KO Myung-Hun <komh@chollian.net>
- *          Rémi Denis-Courmont <rem # videolan.org>
+ * We also supply getnameinfo() here, assuming that the platform will have
+ * it if and only if it has getaddrinfo().	If this proves false on some
+ * platform, we'll need to split this file and provide a separate configure
+ * test for getnameinfo().
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU Lesser General Public License as published by
- * the Free Software Foundation; either version 2.1 of the License, or
- * (at your option) any later version.
+ * Copyright (c) 2003-2007, PostgreSQL Global Development Group
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Lesser General Public License for more details.
+ * Copyright (C) 2007 Jeremy Allison.
+ * Modified to return multiple IPv4 addresses for Samba.
  *
- * You should have received a copy of the GNU Lesser General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
- *****************************************************************************/
+ *-------------------------------------------------------------------------
+ */
 
 #include "libcx/net.h"
 
@@ -44,332 +49,458 @@
 #include <string.h>
 #include <errno.h>
 
-#ifndef TCPV40HDRS
-#define HAVE_SA_LEN
+#define HOST_NAME_MAX NI_MAXHOST
+
+#define rep_getaddrinfo getaddrinfo
+#define rep_freeaddrinfo freeaddrinfo
+#define rep_getnameinfo getnameinfo
+#define rep_gai_strerror gai_strerror
+
+#define size_t int
+
+#ifndef SMB_MALLOC
+#define SMB_MALLOC(s) malloc(s)
 #endif
 
-static const struct
-{
-    int        code;
-    const char msg[41];
-} gai_errlist[] =
-{
-    { 0,              "Error 0" },
-    { EAI_BADFLAGS,   "Invalid flag used" },
-    { EAI_NONAME,     "Host or service not found" },
-    { EAI_AGAIN,      "Temporary name service failure" },
-    { EAI_FAIL,       "Non-recoverable name service failure" },
-    { EAI_NODATA,     "No data for host name" },
-    { EAI_FAMILY,     "Unsupported address family" },
-    { EAI_SOCKTYPE,   "Unsupported socket type" },
-    { EAI_SERVICE,    "Incompatible service for socket type" },
-    { EAI_ADDRFAMILY, "Unavailable address family for host name" },
-    { EAI_MEMORY,     "Memory allocation failure" },
-    { EAI_OVERFLOW,   "Buffer overflow" },
-    { EAI_SYSTEM,     "System error" },
-    { 0,              "" },
-};
-
-static const char gai_unknownerr[] = "Unrecognized error number";
-
-/****************************************************************************
- * Converts an EAI_* error code into human readable english text.
- ****************************************************************************/
-const char *gai_strerror (int errnum)
-{
-    unsigned i;
-
-    for (i = 0; *gai_errlist[i].msg; i++)
-        if (errnum == gai_errlist[i].code)
-            return gai_errlist[i].msg;
-
-    return gai_unknownerr;
-}
-
-#define _NI_MASK (NI_NUMERICHOST|NI_NUMERICSERV|NI_NOFQDN|NI_NAMEREQD|\
-                  NI_DGRAM)
-/*
- * getnameinfo() non-thread-safe IPv4-only implementation,
- * Address-family-independent address to hostname translation
- * (reverse DNS lookup in case of IPv4).
- *
- * This is meant for use on old IP-enabled systems that are not IPv6-aware,
- * and probably do not have getnameinfo(), but have the old gethostbyaddr()
- * function.
- */
-int
-getnameinfo (const struct sockaddr *sa, socklen_t salen,
-             char *host, int hostlen, char *serv, int servlen, int flags)
-{
-    if (((size_t)salen < sizeof (struct sockaddr_in))
-     || (sa->sa_family != AF_INET))
-        return EAI_FAMILY;
-    else if (flags & (~_NI_MASK))
-        return EAI_BADFLAGS;
-    else
-    {
-        const struct sockaddr_in *addr;
-
-        addr = (const struct sockaddr_in *)sa;
-
-        if (host != NULL)
-        {
-            /* host name resolution */
-            if (!(flags & NI_NUMERICHOST))
-            {
-                if (flags & NI_NAMEREQD)
-                    return EAI_NONAME;
-            }
-
-            /* inet_ntoa() is not thread-safe, do not use it */
-            uint32_t ipv4 = ntohl (addr->sin_addr.s_addr);
-
-            if (snprintf (host, hostlen, "%u.%u.%u.%u", ipv4 >> 24,
-                          (ipv4 >> 16) & 0xff, (ipv4 >> 8) & 0xff,
-                          ipv4 & 0xff) >= (int)hostlen)
-                return EAI_OVERFLOW;
-        }
-
-        if (serv != NULL)
-        {
-            if (snprintf (serv, servlen, "%u",
-                          (unsigned int)ntohs (addr->sin_port)) >= (int)servlen)
-                return EAI_OVERFLOW;
-        }
-    }
-    return 0;
-}
-
-#define _AI_MASK (AI_PASSIVE|AI_CANONNAME|AI_NUMERICHOST)
-/*
- * Converts the current herrno error value into an EAI_* error code.
- * That error code is normally returned by getnameinfo() or getaddrinfo().
- */
-static int
-gai_error_from_herrno (void)
-{
-    switch (h_errno)
-    {
-        case HOST_NOT_FOUND:
-            return EAI_NONAME;
-
-        case NO_ADDRESS:
-# if (NO_ADDRESS != NO_DATA)
-        case NO_DATA:
-# endif
-            return EAI_NODATA;
-
-        case NO_RECOVERY:
-            return EAI_FAIL;
-
-        case TRY_AGAIN:
-            return EAI_AGAIN;
-    }
-    return EAI_SYSTEM;
-}
-
-/*
- * This functions must be used to free the memory allocated by getaddrinfo().
- */
-void freeaddrinfo (struct addrinfo *res)
-{
-    while (res != NULL)
-    {
-        struct addrinfo *next = res->ai_next;
-
-        free (res->ai_canonname);
-        free (res->ai_addr);
-        free (res);
-        res = next;
-    }
-}
-
-/*
- * Internal function that builds an addrinfo struct.
- */
-static struct addrinfo *
-makeaddrinfo (int af, int type, int proto,
-              const struct sockaddr *addr, size_t addrlen,
-              const char *canonname)
-{
-    struct addrinfo *res;
-
-    res = (struct addrinfo *)malloc (sizeof (struct addrinfo));
-    if (res != NULL)
-    {
-        res->ai_flags = 0;
-        res->ai_family = af;
-        res->ai_socktype = type;
-        res->ai_protocol = proto;
-        res->ai_addrlen = addrlen;
-        res->ai_addr = malloc (addrlen);
-        res->ai_canonname = NULL;
-        res->ai_next = NULL;
-
-        if (res->ai_addr != NULL)
-        {
-            memcpy (res->ai_addr, addr, addrlen);
-
-            if (canonname != NULL)
-            {
-                res->ai_canonname = strdup (canonname);
-                if (res->ai_canonname != NULL)
-                    return res; /* success ! */
-            }
-            else
-                return res;
-        }
-    }
-    /* failsafe */
-    freeaddrinfo (res);
-    return NULL;
-}
-
-static struct addrinfo *
-makeipv4info (int type, int proto, u_long ip, u_short port, const char *name)
-{
-    struct sockaddr_in addr;
-
-    memset (&addr, 0, sizeof (addr));
-    addr.sin_family = AF_INET;
-#ifdef HAVE_SA_LEN
-    addr.sin_len = sizeof (addr);
+#ifndef SMB_STRDUP
+#define SMB_STRDUP(s) strdup(s)
 #endif
-    addr.sin_port = port;
-    addr.sin_addr.s_addr = ip;
 
-    return makeaddrinfo (AF_INET, type, proto,
-                         (struct sockaddr*)&addr, sizeof (addr), name);
+
+static int check_hostent_err(struct hostent *hp)
+{
+	if (!hp) {
+		switch (h_errno) {
+			case HOST_NOT_FOUND:
+			case NO_DATA:
+				return EAI_NONAME;
+			case TRY_AGAIN:
+				return EAI_AGAIN;
+			case NO_RECOVERY:
+			default:
+				return EAI_FAIL;
+		}
+	}
+	if (!hp->h_name || hp->h_addrtype != AF_INET) {
+		return EAI_FAIL;
+	}
+	return 0;
+}
+
+static char *canon_name_from_hostent(struct hostent *hp,
+				int *perr)
+{
+	char *ret = NULL;
+
+	*perr = check_hostent_err(hp);
+	if (*perr) {
+		return NULL;
+	}
+	ret = SMB_STRDUP(hp->h_name);
+	if (!ret) {
+		*perr = EAI_MEMORY;
+	}
+	return ret;
+}
+
+static char *get_my_canon_name(int *perr)
+{
+	char name[HOST_NAME_MAX+1];
+
+	if (gethostname(name, HOST_NAME_MAX) == -1) {
+		*perr = EAI_FAIL;
+		return NULL;
+	}
+	/* Ensure null termination. */
+	name[HOST_NAME_MAX] = '\0';
+	return canon_name_from_hostent(gethostbyname(name), perr);
+}
+
+static char *get_canon_name_from_addr(struct in_addr ip,
+				int *perr)
+{
+	return canon_name_from_hostent(
+			gethostbyaddr((char *)&ip, sizeof(ip), AF_INET),
+			perr);
+}
+
+static struct addrinfo *alloc_entry(const struct addrinfo *hints,
+				struct in_addr ip,
+				unsigned short port)
+{
+	struct sockaddr_in *psin = NULL;
+	struct addrinfo *ai = SMB_MALLOC(sizeof(*ai));
+
+	if (!ai) {
+		return NULL;
+	}
+	memset(ai, '\0', sizeof(*ai));
+
+	psin = SMB_MALLOC(sizeof(*psin));
+	if (!psin) {
+		free(ai);
+		return NULL;
+	}
+
+	memset(psin, '\0', sizeof(*psin));
+
+	psin->sin_family = AF_INET;
+	psin->sin_port = htons(port);
+	psin->sin_addr = ip;
+
+	ai->ai_flags = 0;
+	ai->ai_family = AF_INET;
+	ai->ai_socktype = hints->ai_socktype;
+	ai->ai_protocol = hints->ai_protocol;
+	ai->ai_addrlen = sizeof(*psin);
+	ai->ai_addr = (struct sockaddr *) psin;
+	ai->ai_canonname = NULL;
+	ai->ai_next = NULL;
+
+	return ai;
 }
 
 /*
- * getaddrinfo() non-thread-safe IPv4-only implementation
- * Address-family-independent hostname to address resolution.
+ * get address info for a single ipv4 address.
  *
- * This is meant for IPv6-unaware systems that do probably not provide
- * getaddrinfo(), but still have old function gethostbyname().
- *
- * Only UDP and TCP over IPv4 are supported here.
+ *	Bugs:	- servname can only be a number, not text.
  */
-int
-getaddrinfo (const char *node, const char *service,
-             const struct addrinfo *hints, struct addrinfo **res)
+
+static int getaddr_info_single_addr(const char *service,
+				uint32_t addr,
+				const struct addrinfo *hints,
+				struct addrinfo **res)
 {
-    struct addrinfo *info;
-    u_long ip;
-    u_short port;
-    int protocol = 0, flags = 0;
-    const char *name = NULL;
 
-    if (hints != NULL)
-    {
-        flags = hints->ai_flags;
+	struct addrinfo *ai = NULL;
+	struct in_addr ip;
+	unsigned short port = 0;
 
-        if (flags & ~_AI_MASK)
-            return EAI_BADFLAGS;
-        /* only accept AF_INET and AF_UNSPEC */
-        if (hints->ai_family && (hints->ai_family != AF_INET))
-            return EAI_FAMILY;
+	if (service) {
+		port = (unsigned short)atoi(service);
+	}
+	ip.s_addr = htonl(addr);
 
-        /* protocol sanity check */
-        switch (hints->ai_socktype)
-        {
-            case SOCK_STREAM:
-                protocol = IPPROTO_TCP;
-                break;
+	ai = alloc_entry(hints, ip, port);
+	if (!ai) {
+		return EAI_MEMORY;
+	}
 
-            case SOCK_DGRAM:
-                protocol = IPPROTO_UDP;
-                break;
+	/* If we're asked for the canonical name,
+	 * make sure it returns correctly. */
+	if (!(hints->ai_flags & AI_NUMERICSERV) &&
+			hints->ai_flags & AI_CANONNAME) {
+		int err;
+		if (addr == INADDR_LOOPBACK || addr == INADDR_ANY) {
+			ai->ai_canonname = get_my_canon_name(&err);
+		} else {
+			ai->ai_canonname =
+			get_canon_name_from_addr(ip,&err);
+		}
+		if (ai->ai_canonname == NULL) {
+			freeaddrinfo(ai);
+			return err;
+		}
+	}
 
-#ifdef SOCK_RAW
-            case SOCK_RAW:
+	*res = ai;
+	return 0;
+}
+
+/*
+ * get address info for multiple ipv4 addresses.
+ *
+ *	Bugs:	- servname can only be a number, not text.
+ */
+
+static int getaddr_info_name(const char *node,
+				const char *service,
+				const struct addrinfo *hints,
+				struct addrinfo **res)
+{
+	struct addrinfo *listp = NULL, *prevp = NULL;
+	char **pptr = NULL;
+	int err;
+	struct hostent *hp = NULL;
+	unsigned short port = 0;
+
+	if (service) {
+		port = (unsigned short)atoi(service);
+	}
+
+	hp = gethostbyname(node);
+	err = check_hostent_err(hp);
+	if (err) {
+		return err;
+	}
+
+	for(pptr = hp->h_addr_list; *pptr; pptr++) {
+		struct in_addr ip = *(struct in_addr *)*pptr;
+		struct addrinfo *ai = alloc_entry(hints, ip, port);
+
+		if (!ai) {
+			freeaddrinfo(listp);
+			return EAI_MEMORY;
+		}
+
+		if (!listp) {
+			listp = ai;
+			prevp = ai;
+			ai->ai_canonname = SMB_STRDUP(hp->h_name);
+			if (!ai->ai_canonname) {
+				freeaddrinfo(listp);
+				return EAI_MEMORY;
+			}
+		} else {
+			prevp->ai_next = ai;
+			prevp = ai;
+		}
+	}
+	*res = listp;
+	return 0;
+}
+
+/*
+ * get address info for ipv4 sockets.
+ *
+ *	Bugs:	- servname can only be a number, not text.
+ */
+
+int rep_getaddrinfo(const char *node,
+		const char *service,
+		const struct addrinfo * hintp,
+		struct addrinfo ** res)
+{
+	struct addrinfo hints;
+
+	/* Setup the hints struct. */
+	if (hintp == NULL) {
+		memset(&hints, 0, sizeof(hints));
+		hints.ai_family = AF_INET;
+		hints.ai_socktype = SOCK_STREAM;
+	} else {
+		memcpy(&hints, hintp, sizeof(hints));
+	}
+
+	if (hints.ai_family != AF_INET && hints.ai_family != AF_UNSPEC) {
+		return EAI_FAMILY;
+	}
+
+	if (hints.ai_socktype == 0) {
+		hints.ai_socktype = SOCK_STREAM;
+	}
+
+	if (!node && !service) {
+		return EAI_NONAME;
+	}
+
+	if (node) {
+		if (node[0] == '\0') {
+			return getaddr_info_single_addr(service,
+					INADDR_ANY,
+					&hints,
+					res);
+		} else if (hints.ai_flags & AI_NUMERICHOST) {
+			struct in_addr ip;
+			if (!inet_aton(node, &ip)) {
+				return EAI_FAIL;
+			}
+			return getaddr_info_single_addr(service,
+					ntohl(ip.s_addr),
+					&hints,
+					res);
+		} else {
+			return getaddr_info_name(node,
+						service,
+						&hints,
+						res);
+		}
+	} else if (hints.ai_flags & AI_PASSIVE) {
+		return getaddr_info_single_addr(service,
+					INADDR_ANY,
+					&hints,
+					res);
+	}
+	return getaddr_info_single_addr(service,
+					INADDR_LOOPBACK,
+					&hints,
+					res);
+}
+
+
+void rep_freeaddrinfo(struct addrinfo *res)
+{
+	struct addrinfo *next = NULL;
+
+	for (;res; res = next) {
+		next = res->ai_next;
+		free(res->ai_canonname);
+		free(res->ai_addr);
+		free(res);
+	}
+}
+
+
+const char *rep_gai_strerror(int errcode)
+{
+#ifdef HAVE_HSTRERROR
+	int			hcode;
+
+	switch (errcode)
+	{
+		case EAI_NONAME:
+			hcode = HOST_NOT_FOUND;
+			break;
+		case EAI_AGAIN:
+			hcode = TRY_AGAIN;
+			break;
+		case EAI_FAIL:
+		default:
+			hcode = NO_RECOVERY;
+			break;
+	}
+
+	return hstrerror(hcode);
+#else							/* !HAVE_HSTRERROR */
+
+	switch (errcode)
+	{
+		case EAI_NONAME:
+			return "Unknown host";
+		case EAI_AGAIN:
+			return "Host name lookup failure";
+#ifdef EAI_BADFLAGS
+		case EAI_BADFLAGS:
+			return "Invalid argument";
 #endif
-            case 0:
-                break;
+#ifdef EAI_FAMILY
+		case EAI_FAMILY:
+			return "Address family not supported";
+#endif
+#ifdef EAI_MEMORY
+		case EAI_MEMORY:
+			return "Not enough memory";
+#endif
+#ifdef EAI_NODATA
+		case EAI_NODATA:
+			return "No host data of that type was found";
+#endif
+#ifdef EAI_SERVICE
+		case EAI_SERVICE:
+			return "Class type not found";
+#endif
+#ifdef EAI_SOCKTYPE
+		case EAI_SOCKTYPE:
+			return "Socket type not supported";
+#endif
+		default:
+			return "Unknown server error";
+	}
+#endif   /* HAVE_HSTRERROR */
+}
 
-            default:
-                return EAI_SOCKTYPE;
-        }
-        if (hints->ai_protocol && protocol
-         && (protocol != hints->ai_protocol))
-            return EAI_SERVICE;
-    }
+static int gethostnameinfo(const struct sockaddr *sa,
+			char *node,
+			size_t nodelen,
+			int flags)
+{
+	int ret = -1;
+	char *p = NULL;
 
-    *res = NULL;
+	if (!(flags & NI_NUMERICHOST)) {
+		struct hostent *hp = gethostbyaddr(
+				(char *)&((struct sockaddr_in *)sa)->sin_addr,
+				sizeof(struct in_addr),
+				sa->sa_family);
+		ret = check_hostent_err(hp);
+		if (ret == 0) {
+			/* Name looked up successfully. */
+			ret = snprintf(node, nodelen, "%s", hp->h_name);
+			if (ret < 0 || (size_t)ret >= nodelen) {
+				return EAI_MEMORY;
+			}
+			if (flags & NI_NOFQDN) {
+				p = strchr(node,'.');
+				if (p) {
+					*p = '\0';
+				}
+			}
+			return 0;
+		}
 
-    /* default values */
-    if (node == NULL)
-    {
-        if (flags & AI_PASSIVE)
-            ip = htonl (INADDR_ANY);
-        else
-            ip = htonl (INADDR_LOOPBACK);
-    }
-    else
-    if ((ip = inet_addr (node)) == INADDR_NONE)
-    {
-        struct hostent *entry = NULL;
+		if (flags & NI_NAMEREQD) {
+			/* If we require a name and didn't get one,
+			 * automatically fail. */
+			return ret;
+		}
+		/* Otherwise just fall into the numeric host code... */
+	}
+	p = inet_ntoa(((struct sockaddr_in *)sa)->sin_addr);
+	ret = snprintf(node, nodelen, "%s", p);
+	if (ret < 0 || (size_t)ret >= nodelen) {
+		return EAI_MEMORY;
+	}
+	return 0;
+}
 
-        /* hostname resolution */
-        if (!(flags & AI_NUMERICHOST))
-            entry = gethostbyname (node);
+static int getservicenameinfo(const struct sockaddr *sa,
+			char *service,
+			size_t servicelen,
+			int flags)
+{
+	int ret = -1;
+	int port = ntohs(((struct sockaddr_in *)sa)->sin_port);
 
-        if (entry == NULL)
-            return gai_error_from_herrno ();
+	if (!(flags & NI_NUMERICSERV)) {
+		struct servent *se = getservbyport(
+				port,
+				(flags & NI_DGRAM) ? "udp" : "tcp");
+		if (se && se->s_name) {
+			/* Service name looked up successfully. */
+			ret = snprintf(service, servicelen, "%s", se->s_name);
+			if (ret < 0 || (size_t)ret >= servicelen) {
+				return EAI_MEMORY;
+			}
+			return 0;
+		}
+		/* Otherwise just fall into the numeric service code... */
+	}
+	ret = snprintf(service, servicelen, "%d", port);
+	if (ret < 0 || (size_t)ret >= servicelen) {
+		return EAI_MEMORY;
+	}
+	return 0;
+}
 
-        if ((entry->h_length != 4) || (entry->h_addrtype != AF_INET))
-            return EAI_FAMILY;
+/*
+ * Convert an ipv4 address to a hostname.
+ *
+ * Bugs:	- No IPv6 support.
+ */
+int rep_getnameinfo(const struct sockaddr *sa, socklen_t salen,
+			char *node, size_t nodelen,
+			char *service, size_t servicelen, int flags)
+{
 
-        ip = *((u_long *) entry->h_addr);
-        if (flags & AI_CANONNAME)
-            name = entry->h_name;
-    }
+	/* Invalid arguments. */
+	if (sa == NULL || (node == NULL && service == NULL)) {
+		return EAI_FAIL;
+	}
 
-    if ((flags & AI_CANONNAME) && (name == NULL))
-        name = node;
+	if (sa->sa_family != AF_INET) {
+		return EAI_FAIL;
+	}
 
-    /* service resolution */
-    if (service == NULL)
-        port = 0;
-    else
-    {
-        unsigned long d;
-        char *end;
+	if (salen < sizeof(struct sockaddr_in)) {
+		return EAI_FAIL;
+	}
 
-        d = strtoul (service, &end, 0);
-        if (end[0] || (d > 65535u))
-            return EAI_SERVICE;
+	if (node) {
+		return gethostnameinfo(sa, node, nodelen, flags);
+	}
 
-        port = htons ((u_short)d);
-    }
-
-    /* building results... */
-    if ((!protocol) || (protocol == IPPROTO_UDP))
-    {
-        info = makeipv4info (SOCK_DGRAM, IPPROTO_UDP, ip, port, name);
-        if (info == NULL)
-        {
-            errno = ENOMEM;
-            return EAI_SYSTEM;
-        }
-        if (flags & AI_PASSIVE)
-            info->ai_flags |= AI_PASSIVE;
-        *res = info;
-    }
-    if ((!protocol) || (protocol == IPPROTO_TCP))
-    {
-        info = makeipv4info (SOCK_STREAM, IPPROTO_TCP, ip, port, name);
-        if (info == NULL)
-        {
-            errno = ENOMEM;
-            return EAI_SYSTEM;
-        }
-        info->ai_next = *res;
-        if (flags & AI_PASSIVE)
-            info->ai_flags |= AI_PASSIVE;
-        *res = info;
-    }
-
-    return 0;
+	if (service) {
+		return getservicenameinfo(sa, service, servicelen, flags);
+	}
+	return 0;
 }
