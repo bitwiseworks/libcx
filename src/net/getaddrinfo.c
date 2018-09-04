@@ -495,12 +495,15 @@ int rep_getnameinfo(const struct sockaddr *sa, socklen_t salen,
 		return EAI_FAIL;
 	}
 
+	int rc = 0;
+
 	if (node) {
-		return gethostnameinfo(sa, node, nodelen, flags);
+		rc = gethostnameinfo(sa, node, nodelen, flags);
 	}
 
-	if (service) {
-		return getservicenameinfo(sa, service, servicelen, flags);
+	if (!rc && service) {
+		rc = getservicenameinfo(sa, service, servicelen, flags);
 	}
-	return 0;
+
+	return rc;
 }
