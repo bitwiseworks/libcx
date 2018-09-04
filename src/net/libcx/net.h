@@ -48,6 +48,10 @@
 #define NI_NAMEREQD    0x08
 #define NI_DGRAM       0x10
 
+/* Borrowed from glibc as needed for linux apps */
+#define NI_MAXHOST     1025
+#define NI_MAXSERV     32
+
 #define AI_PASSIVE     0x0001
 #define AI_CANONNAME   0x0002
 #define AI_NUMERICHOST 0x0004
