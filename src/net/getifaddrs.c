@@ -352,7 +352,7 @@ int rep_getifaddrs(struct ifaddrs **ifap)
 		inc = ifr->ifr_addr.sa_len;
 
 		if (ioctl(fd, SIOCGIFADDR, ifr) != 0) {
-			freeaddrinfo(*ifap);
+			freeifaddrs(*ifap);
 			return -1;
 		}
 
@@ -371,14 +371,14 @@ int rep_getifaddrs(struct ifaddrs **ifap)
 		curif->ifa_next = NULL;
 
 		if (ioctl(fd, SIOCGIFFLAGS, ifr) != 0) {
-			freeaddrinfo(*ifap);
+			freeifaddrs(*ifap);
 			return -1;
 		}
 
 		curif->ifa_flags = ifr->ifr_flags;
 
 		if (ioctl(fd, SIOCGIFNETMASK, ifr) != 0) {
-			freeaddrinfo(*ifap);
+			freeifaddrs(*ifap);
 			return -1;
 		}
 
