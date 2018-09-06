@@ -23,7 +23,9 @@
 #define LIBCX_NET_H
 
 /*
- * Definitions that originally belong to <netdb.h>
+ * Definitions that originally belong to <netdb.h>.
+ *
+ * Based on a mix of VLC and Samba headers for getaddrinfo API emulation.
  */
 
 #include <stddef.h>
@@ -61,25 +63,50 @@ typedef int socklen_t;
 
 struct addrinfo
 {
-    int ai_flags;
-    int ai_family;
-    int ai_socktype;
-    int ai_protocol;
-    size_t ai_addrlen;
-    struct sockaddr *ai_addr;
-    char *ai_canonname;
-    struct addrinfo *ai_next;
+  int ai_flags;
+  int ai_family;
+  int ai_socktype;
+  int ai_protocol;
+  size_t ai_addrlen;
+  struct sockaddr *ai_addr;
+  char *ai_canonname;
+  struct addrinfo *ai_next;
 };
 
 __BEGIN_DECLS
 
-const char *gai_strerror (int errnum);
-int getaddrinfo (const char *node, const char *service,
-                 const struct addrinfo *hints, struct addrinfo **res);
-void freeaddrinfo (struct addrinfo *res);
-int getnameinfo (const struct sockaddr *sa, socklen_t salen, char *host,
-                 int hostlen, char *serv, int servlen, int flags);
+const char *gai_strerror(int errnum);
+int getaddrinfo(const char *node, const char *service,
+                const struct addrinfo *hints, struct addrinfo **res);
+void freeaddrinfo(struct addrinfo *res);
+int getnameinfo(const struct sockaddr *sa, socklen_t salen, char *host,
+                int hostlen, char *serv, int servlen, int flags);
 
 __END_DECLS
+
+/*
+ * Definitions that originally belong to <ifaddrs.h>.
+ *
+ * Based on Samba headers for getifaddrs API emulation.
+ */
+
+struct ifaddrs {
+  struct ifaddrs   *ifa_next;         /* Pointer to next struct */
+  char             *ifa_name;         /* Interface name */
+  unsigned int     ifa_flags;         /* Interface flags */
+  struct sockaddr  *ifa_addr;         /* Interface address */
+  struct sockaddr  *ifa_netmask;      /* Interface netmask */
+#undef ifa_dstaddr
+  struct sockaddr  *ifa_dstaddr;      /* P2P interface destination */
+  void             *ifa_data;         /* Address specific data */
+};
+
+__BEGIN_DECLS
+
+int getifaddrs(struct ifaddrs **ifap);
+void freeifaddrs(struct ifaddrs *ifa);
+
+__END_DECLS
+
 
 #endif // LIBCX_NET_H

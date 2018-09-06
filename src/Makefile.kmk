@@ -24,6 +24,7 @@ libcx_SOURCES = \
   beginthread.c \
   spawn/spawn2.c \
   net/getaddrinfo.c \
+  net/getifaddrs.c \
   main.c \
   main.s \
   shared.c

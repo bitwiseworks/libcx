@@ -30,6 +30,8 @@ EXPORTS
   "_freeaddrinfo"
   "_getnameinfo"
   "_gai_strerror"
+  "_getifaddrs"
+  "_freeifaddrs"
   ; private symbols (may disappear w/o any notice)
   "_print_stats" @60000 NONAME
   "_libcx_assert" @60001 NONAME
