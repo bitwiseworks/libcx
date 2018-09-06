@@ -53,14 +53,12 @@
 
 #include <stdlib.h>
 #include <string.h>
-//#include <errno.h>
 
 #include <unistd.h>
 #include <stdio.h>
 #include <sys/types.h>
 
 #define HAVE_SOCKADDR_SA_LEN
-#define HAVE_IFACE_AIX
 #define rep_getifaddrs getifaddrs
 #define rep_freeifaddrs freeifaddrs
 
@@ -73,10 +71,6 @@
 #include <sys/sockio.h>
 #endif
 #endif
-
-#ifdef HAVE_IFACE_GETIFADDRS
-#define _FOUND_IFACE_ANY
-#else
 
 void rep_freeifaddrs(struct ifaddrs *ifp)
 {
@@ -105,215 +99,6 @@ static struct sockaddr *sockaddr_dup(struct sockaddr *sa)
 	memcpy(ret, sa, socklen);
 	return ret;
 }
-#endif
-
-#if HAVE_IFACE_IFCONF
-
-/* this works for Linux 2.2, Solaris 2.5, SunOS4, HPUX 10.20, OSF1
-   V4.0, Ultrix 4.4, SCO Unix 3.2, IRIX 6.4 and FreeBSD 3.2.
-
-   It probably also works on any BSD style system.  */
-
-int rep_getifaddrs(struct ifaddrs **ifap)
-{
-	struct ifconf ifc;
-	char buff[8192];
-	int fd, i, n;
-	struct ifreq *ifr=NULL;
-	struct ifaddrs *curif;
-	struct ifaddrs *lastif = NULL;
-
-	*ifap = NULL;
-
-	if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
-		return -1;
-	}
-
-	ifc.ifc_len = sizeof(buff);
-	ifc.ifc_buf = buff;
-
-	if (ioctl(fd, SIOCGIFCONF, &ifc) != 0) {
-		close(fd);
-		return -1;
-	}
-
-	ifr = ifc.ifc_req;
-
-	n = ifc.ifc_len / sizeof(struct ifreq);
-
-	/* Loop through interfaces, looking for given IP address */
-	for (i=n-1; i>=0; i--) {
-		if (ioctl(fd, SIOCGIFFLAGS, &ifr[i]) == -1) {
-			freeifaddrs(*ifap);
-			close(fd);
-			return -1;
-		}
-
-		curif = calloc(1, sizeof(struct ifaddrs));
-		if (curif == NULL) {
-			freeifaddrs(*ifap);
-			close(fd);
-			return -1;
-		}
-		curif->ifa_name = strdup(ifr[i].ifr_name);
-		if (curif->ifa_name == NULL) {
-			free(curif);
-			freeifaddrs(*ifap);
-			close(fd);
-			return -1;
-		}
-		curif->ifa_flags = ifr[i].ifr_flags;
-		curif->ifa_dstaddr = NULL;
-		curif->ifa_data = NULL;
-		curif->ifa_next = NULL;
-
-		curif->ifa_addr = NULL;
-		if (ioctl(fd, SIOCGIFADDR, &ifr[i]) != -1) {
-			curif->ifa_addr = sockaddr_dup(&ifr[i].ifr_addr);
-			if (curif->ifa_addr == NULL) {
-				free(curif->ifa_name);
-				free(curif);
-				freeifaddrs(*ifap);
-				close(fd);
-				return -1;
-			}
-		}
-
-		curif->ifa_netmask = NULL;
-		if (ioctl(fd, SIOCGIFNETMASK, &ifr[i]) != -1) {
-			curif->ifa_netmask = sockaddr_dup(&ifr[i].ifr_addr);
-			if (curif->ifa_netmask == NULL) {
-				if (curif->ifa_addr != NULL) {
-					free(curif->ifa_addr);
-				}
-				free(curif->ifa_name);
-				free(curif);
-				freeifaddrs(*ifap);
-				close(fd);
-				return -1;
-			}
-		}
-
-		if (lastif == NULL) {
-			*ifap = curif;
-		} else {
-			lastif->ifa_next = curif;
-		}
-		lastif = curif;
-	}
-
-	close(fd);
-
-	return 0;
-}
-
-#define _FOUND_IFACE_ANY
-#endif /* HAVE_IFACE_IFCONF */
-#ifdef HAVE_IFACE_IFREQ
-
-#ifndef I_STR
-#include <sys/stropts.h>
-#endif
-
-/****************************************************************************
-this should cover most of the streams based systems
-Thanks to Andrej.Borsenkow@mow.siemens.ru for several ideas in this code
-****************************************************************************/
-int rep_getifaddrs(struct ifaddrs **ifap)
-{
-	struct ifreq ifreq;
-	struct strioctl strioctl;
-	char buff[8192];
-	int fd, i, n;
-	struct ifreq *ifr=NULL;
-	struct ifaddrs *curif;
-	struct ifaddrs *lastif = NULL;
-
-	*ifap = NULL;
-
-	if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
-		return -1;
-	}
-
-	strioctl.ic_cmd = SIOCGIFCONF;
-	strioctl.ic_dp  = buff;
-	strioctl.ic_len = sizeof(buff);
-	if (ioctl(fd, I_STR, &strioctl) < 0) {
-		close(fd);
-		return -1;
-	}
-
-	/* we can ignore the possible sizeof(int) here as the resulting
-	   number of interface structures won't change */
-	n = strioctl.ic_len / sizeof(struct ifreq);
-
-	/* we will assume that the kernel returns the length as an int
-           at the start of the buffer if the offered size is a
-           multiple of the structure size plus an int */
-	if (n*sizeof(struct ifreq) + sizeof(int) == strioctl.ic_len) {
-		ifr = (struct ifreq *)(buff + sizeof(int));
-	} else {
-		ifr = (struct ifreq *)buff;
-	}
-
-	/* Loop through interfaces */
-
-	for (i = 0; i<n; i++) {
-		ifreq = ifr[i];
-
-		curif = calloc(1, sizeof(struct ifaddrs));
-		if (lastif == NULL) {
-			*ifap = curif;
-		} else {
-			lastif->ifa_next = curif;
-		}
-
-		strioctl.ic_cmd = SIOCGIFFLAGS;
-		strioctl.ic_dp  = (char *)&ifreq;
-		strioctl.ic_len = sizeof(struct ifreq);
-		if (ioctl(fd, I_STR, &strioctl) != 0) {
-			freeifaddrs(*ifap);
-			return -1;
-		}
-
-		curif->ifa_flags = ifreq.ifr_flags;
-		
-		strioctl.ic_cmd = SIOCGIFADDR;
-		strioctl.ic_dp  = (char *)&ifreq;
-		strioctl.ic_len = sizeof(struct ifreq);
-		if (ioctl(fd, I_STR, &strioctl) != 0) {
-			freeifaddrs(*ifap);
-			return -1;
-		}
-
-		curif->ifa_name = strdup(ifreq.ifr_name);
-		curif->ifa_addr = sockaddr_dup(&ifreq.ifr_addr);
-		curif->ifa_dstaddr = NULL;
-		curif->ifa_data = NULL;
-		curif->ifa_next = NULL;
-		curif->ifa_netmask = NULL;
-
-		strioctl.ic_cmd = SIOCGIFNETMASK;
-		strioctl.ic_dp  = (char *)&ifreq;
-		strioctl.ic_len = sizeof(struct ifreq);
-		if (ioctl(fd, I_STR, &strioctl) != 0) {
-			freeifaddrs(*ifap);
-			return -1;
-		}
-
-		curif->ifa_netmask = sockaddr_dup(&ifreq.ifr_addr);
-
-		lastif = curif;
-	}
-
-	close(fd);
-
-	return 0;
-}
-
-#define _FOUND_IFACE_ANY
-#endif /* HAVE_IFACE_IFREQ */
-#ifdef HAVE_IFACE_AIX
 
 /****************************************************************************
 this one is for AIX (tested on 4.2)
@@ -405,13 +190,3 @@ int rep_getifaddrs(struct ifaddrs **ifap)
 	close(fd);
 	return 0;
 }
-
-#define _FOUND_IFACE_ANY
-#endif /* HAVE_IFACE_AIX */
-#ifndef _FOUND_IFACE_ANY
-int rep_getifaddrs(struct ifaddrs **ifap)
-{
-	errno = ENOSYS;
-	return -1;
-}
-#endif
