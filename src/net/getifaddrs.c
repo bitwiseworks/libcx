@@ -136,11 +136,6 @@ int rep_getifaddrs(struct ifaddrs **ifap)
 
 		inc = ifr->ifr_addr.sa_len;
 
-		if (ioctl(fd, SIOCGIFADDR, ifr) != 0) {
-			freeifaddrs(*ifap);
-			return -1;
-		}
-
 		curif = calloc(1, sizeof(struct ifaddrs));
 		if (lastif == NULL) {
 			*ifap = curif;
@@ -156,22 +151,26 @@ int rep_getifaddrs(struct ifaddrs **ifap)
 		curif->ifa_next = NULL;
 
 		if (ioctl(fd, SIOCGIFFLAGS, ifr) != 0) {
-			freeifaddrs(*ifap);
-			return -1;
+			goto fail;
 		}
 
-		curif->ifa_flags = ifr->ifr_flags;
+		curif->ifa_flags = (unsigned short)ifr->ifr_flags;
 
-		if (ioctl(fd, SIOCGIFNETMASK, ifr) != 0) {
-			freeifaddrs(*ifap);
-			return -1;
+		/*
+		 * The rest is requested only for AF_INET, for portability and
+		 * compatiblilty (see e.g. https://linux.die.net/man/7/netdevice)
+		 */
+
+		if (curif->ifa_addr->sa_family == AF_INET) {
+			if (ioctl(fd, SIOCGIFNETMASK, ifr) != 0) {
+				goto fail;
+			}
+
+			curif->ifa_netmask = sockaddr_dup(&ifr->ifr_addr);
 		}
-
-		curif->ifa_netmask = sockaddr_dup(&ifr->ifr_addr);
 
 		lastif = curif;
 
-	next:
 		/*
 		 * Patch from Archie Cobbs (archie@whistle.com).  The
 		 * addresses in the SIOCGIFCONF interface list have a
@@ -189,4 +188,9 @@ int rep_getifaddrs(struct ifaddrs **ifap)
 
 	close(fd);
 	return 0;
+
+fail:
+	close(fd);
+	freeifaddrs(*ifap);
+	return -1;
 }
