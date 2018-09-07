@@ -43,7 +43,7 @@
 #endif
 
 #define perr(msg, ...) printf("ERROR: " msg "\n" , ##__VA_ARGS__)
-#define perrno(msg, ...) printf("ERROR: " msg ": %s\n", ##__VA_ARGS__, strerror (errno))
+#define perrno(msg, ...) printf("ERROR: " msg ": %s (%d)\n", ##__VA_ARGS__, strerror (errno), errno)
 
 #define perr_and(stmt, msg, ...) do_(perr (msg, ##__VA_ARGS__), stmt)
 #define perrno_and(stmt, msg, ...) do_(perrno (msg, ##__VA_ARGS__), stmt)
