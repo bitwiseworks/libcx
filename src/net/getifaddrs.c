@@ -78,7 +78,10 @@ void rep_freeifaddrs(struct ifaddrs *ifp)
 		free(ifp->ifa_name);
 		free(ifp->ifa_addr);
 		free(ifp->ifa_netmask);
-		free(ifp->ifa_dstaddr);
+		if (ifp->ifa_flags & IFF_BROADCAST)
+			free(ifp->ifa_broadaddr);
+		else if (ifp->ifa_flags & IFF_POINTOPOINT)
+			free(ifp->ifa_dstaddr);
 		freeifaddrs(ifp->ifa_next);
 		free(ifp);
 	}
@@ -165,8 +168,37 @@ int rep_getifaddrs(struct ifaddrs **ifap)
 			if (ioctl(fd, SIOCGIFNETMASK, ifr) != 0) {
 				goto fail;
 			}
-
 			curif->ifa_netmask = sockaddr_dup(&ifr->ifr_addr);
+
+			if (curif->ifa_flags & IFF_BROADCAST) {
+				if (ioctl(fd, SIOCGIFBRDADDR, ifr) != 0) {
+					goto fail;
+				}
+				/*
+				 * OS/2 TCP/IP 4.21 is known to leave this field zeroed but return the
+				 * correct address. We assume that it's so if ioctl succeeds and family
+				 * matches what it should be.
+				 */
+				if (ifr->ifr_broadaddr.sa_len == 0 &&
+						ifr->ifr_broadaddr.sa_family == curif->ifa_addr->sa_family) {
+					ifr->ifr_broadaddr.sa_len = sizeof(struct sockaddr_in);
+				}
+				curif->ifa_broadaddr = sockaddr_dup(&ifr->ifr_broadaddr);
+			} else if (curif->ifa_flags & IFF_POINTOPOINT) {
+				if (ioctl(fd, SIOCGIFDSTADDR, ifr) != 0) {
+					goto fail;
+				}
+				/*
+				 * OS/2 TCP/IP 4.21 is known to leave this field zeroed but return the
+				 * correct address. We assume that it's so if ioctl succeeds and family
+				 * matches what it should be.
+				 */
+				if (ifr->ifr_dstaddr.sa_len == 0 &&
+						ifr->ifr_dstaddr.sa_family == curif->ifa_addr->sa_family) {
+					ifr->ifr_dstaddr.sa_len = sizeof(struct sockaddr_in);
+				}
+				curif->ifa_dstaddr = sockaddr_dup(&ifr->ifr_dstaddr);
+			}
 		}
 
 		lastif = curif;

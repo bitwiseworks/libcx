@@ -89,6 +89,25 @@ static int do_test(void)
               exit(EXIT_FAILURE);
           }
           printf("\t\tnetmask: <%s>\n", host);
+          if (ifa->ifa_flags & IFF_BROADCAST) {
+            s = getnameinfo(ifa->ifa_broadaddr, sizeof(struct sockaddr_in),
+                    host, NI_MAXHOST,
+                    NULL, 0, NI_NUMERICHOST);
+            if (s != 0) {
+                printf("getnameinfo() failed: %s\n", gai_strerror(s));
+                exit(EXIT_FAILURE);
+            }
+            printf("\t\tbroadcast address: <%s>\n", host);
+          } else if (ifa->ifa_flags & IFF_POINTOPOINT) {
+            s = getnameinfo(ifa->ifa_dstaddr, sizeof(struct sockaddr_in),
+                    host, NI_MAXHOST,
+                    NULL, 0, NI_NUMERICHOST);
+            if (s != 0) {
+                printf("getnameinfo() failed: %s\n", gai_strerror(s));
+                exit(EXIT_FAILURE);
+            }
+            printf("\t\tP2P address: <%s>\n", host);
+          }
       } else if (family == AF_LINK) {
           struct sockaddr_dl * dl = (struct sockaddr_dl *)ifa->ifa_addr;
           printf("\t\tinterface index: <%d>\n", dl->sdl_index);
