@@ -32,6 +32,7 @@
 #include <os2.h>
 
 #include "libcx/net.h"
+#include "ifaddrs.h"
 
 static int do_test(void);
 #define TEST_FUNCTION do_test()

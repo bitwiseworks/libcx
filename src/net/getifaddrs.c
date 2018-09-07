@@ -45,6 +45,7 @@
 */
 
 #include "libcx/net.h"
+#include "ifaddrs.h"
 
 #include <sys/types.h>
 #include <sys/socket.h>

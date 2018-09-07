@@ -84,33 +84,4 @@ int getnameinfo(const struct sockaddr *sa, socklen_t salen, char *host,
 
 __END_DECLS
 
-/*
- * Definitions that originally belong to <ifaddrs.h>.
- *
- * Based on Samba headers for getifaddrs API emulation.
- */
-
-struct ifaddrs {
-  struct ifaddrs   *ifa_next;         /* Pointer to next struct */
-  char             *ifa_name;         /* Interface name */
-  unsigned int     ifa_flags;         /* Interface flags */
-  struct sockaddr  *ifa_addr;         /* Interface address */
-  struct sockaddr  *ifa_netmask;      /* Interface netmask */
-  union {
-    struct sockaddr *ifu_broadaddr;   /* Broadcast address of interface */
-    struct sockaddr *ifu_dstaddr;     /* Point-to-point destination address */
-  } ifa_ifu;
-#define              ifa_broadaddr ifa_ifu.ifu_broadaddr
-#define              ifa_dstaddr   ifa_ifu.ifu_dstaddr
-  void             *ifa_data;         /* Address specific data */
-};
-
-__BEGIN_DECLS
-
-int getifaddrs(struct ifaddrs **ifap);
-void freeifaddrs(struct ifaddrs *ifa);
-
-__END_DECLS
-
-
-#endif // LIBCX_NET_H
+#endif /* LIBCX_NET_H */
