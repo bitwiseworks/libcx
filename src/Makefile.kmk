@@ -110,7 +110,8 @@ TESTS += spawn/tst-spawn2.c
 
 TESTS += \
   net/tst-getaddrinfo.c \
-  net/tst-getifaddrs.c
+  net/tst-getifaddrs.c \
+  net/tst-nameindex.c
 
 PROGRAMS += tst-exeinfo-packed-1
 tst-exeinfo-packed-1_TEMPLATE = Test
