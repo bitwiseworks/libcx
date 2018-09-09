@@ -112,7 +112,7 @@ void if_freenameindex( struct if_nameindex *ptr )
 {
     int i;
 
-    if( ptr == NULL );
+    if( ptr == NULL )
         return;
 
     for( i = 0; ptr[ i ].if_index != 0; i++ )
