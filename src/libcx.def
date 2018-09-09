@@ -32,6 +32,10 @@ EXPORTS
   "_gai_strerror"
   "_getifaddrs"
   "_freeifaddrs"
+  "_if_nameindex"
+  "_if_freenameindex"
+  "_if_indextoname"
+  "_if_nametoindex"
   ; private symbols (may disappear w/o any notice)
   "_print_stats" @60000 NONAME
   "_libcx_assert" @60001 NONAME

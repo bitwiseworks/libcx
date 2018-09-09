@@ -84,4 +84,27 @@ int getnameinfo(const struct sockaddr *sa, socklen_t salen, char *host,
 
 __END_DECLS
 
+/*
+ * Definitions that originally belong to <net/if.h>.
+ *
+ * Based on if_nameindex.h by KO Myung-Hun <komh@chollian.net>.
+ */
+
+struct if_nameindex
+{
+  /* Note: if_index may be different from ifmib.iftable.iftIndex */
+  unsigned int if_index;
+  char        *if_name;
+};
+
+
+__BEGIN_DECLS
+
+struct if_nameindex *if_nameindex(void);
+void if_freenameindex(struct if_nameindex *ptr);
+char *if_indextoname(unsigned ifindex, char *ifname);
+unsigned if_nametoindex(const char *ifname);
+
+__END_DECLS
+
 #endif /* LIBCX_NET_H */
