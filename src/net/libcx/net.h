@@ -29,6 +29,7 @@
  */
 
 #include <stddef.h>
+#include <net/if.h> /* for IFNAMSIZ */
 
 /* GAI error codes */
 #define EAI_BADFLAGS    -1
@@ -89,6 +90,8 @@ __END_DECLS
  *
  * Based on if_nameindex.h by KO Myung-Hun <komh@chollian.net>.
  */
+
+#define IF_NAMESIZE IFNAMSIZ
 
 struct if_nameindex
 {
