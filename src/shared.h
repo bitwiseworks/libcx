@@ -24,6 +24,7 @@
 #include <umalloc.h>
 #include <string.h> /* for TRACE_ERRNO */
 #include <sys/param.h> /* PAGE_SIZE */
+#include <sys/fmutex.h>
 
 /** Executes statement(s) syntactically wrapped as a func call. */
 #define do_(stmt) if (1) { stmt; } else do {} while (0)
@@ -187,6 +188,7 @@ typedef struct ProcDesc
   int flags; /* Process-specific flags */
   unsigned long spawn2_sem; /* Global spawn2_sem if open in this process */
   pid_t child_pid; /* spawn2 wrapper child for Proc_Spawn2Wrapper */
+  _fmutex tcpip_fsem; /* Mutex for making thread-safe TCP/IP DLL calls */
 } ProcDesc;
 
 /**
@@ -229,6 +231,7 @@ void global_lock();
 void global_unlock();
 
 unsigned long global_spawn2_sem(ProcDesc *proc);
+_fmutex *global_tcpip_sem();
 
 void *global_alloc(size_t size);
 

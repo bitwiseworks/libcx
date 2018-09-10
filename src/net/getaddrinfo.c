@@ -39,6 +39,8 @@
 
 #include "libcx/net.h"
 
+#include "../shared.h"
+
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
@@ -107,21 +109,36 @@ static char *get_my_canon_name(int *perr)
 {
 	char name[HOST_NAME_MAX+1];
 
+	_fmutex *fsem = global_tcpip_sem();
+	ASSERT(_fmutex_request(fsem, _FMR_IGNINT) == 0);
+
 	if (gethostname(name, HOST_NAME_MAX) == -1) {
+		_fmutex_release(fsem);
 		*perr = EAI_FAIL;
 		return NULL;
 	}
 	/* Ensure null termination. */
 	name[HOST_NAME_MAX] = '\0';
-	return canon_name_from_hostent(gethostbyname(name), perr);
+	char *ret = canon_name_from_hostent(gethostbyname(name), perr);
+
+	_fmutex_release(fsem);
+
+	return ret;
 }
 
 static char *get_canon_name_from_addr(struct in_addr ip,
 				int *perr)
 {
-	return canon_name_from_hostent(
+	_fmutex *fsem = global_tcpip_sem();
+	ASSERT(_fmutex_request(fsem, _FMR_IGNINT) == 0);
+
+	char *ret = canon_name_from_hostent(
 			gethostbyaddr((char *)&ip, sizeof(ip), AF_INET),
 			perr);
+
+	_fmutex_release(fsem);
+
+	return ret;
 }
 
 static struct addrinfo *alloc_entry(const struct addrinfo *hints,
@@ -228,7 +245,13 @@ static int getaddr_info_name(const char *node,
 		port = (unsigned short)atoi(service);
 	}
 
+	_fmutex *fsem = global_tcpip_sem();
+	ASSERT(_fmutex_request(fsem, _FMR_IGNINT) == 0);
+
 	hp = gethostbyname(node);
+
+	_fmutex_release(fsem);
+
 	err = check_hostent_err(hp);
 	if (err) {
 		return err;
@@ -385,10 +408,16 @@ static int gethostnameinfo(const struct sockaddr *sa,
 	char *p = NULL;
 
 	if (!(flags & NI_NUMERICHOST)) {
+		_fmutex *fsem = global_tcpip_sem();
+		ASSERT(_fmutex_request(fsem, _FMR_IGNINT) == 0);
+
 		struct hostent *hp = gethostbyaddr(
 				(char *)&((struct sockaddr_in *)sa)->sin_addr,
 				sizeof(struct in_addr),
 				sa->sa_family);
+
+		_fmutex_release(fsem);
+
 		ret = check_hostent_err(hp);
 		if (ret == 0) {
 			/* Name looked up successfully. */
@@ -429,9 +458,15 @@ static int getservicenameinfo(const struct sockaddr *sa,
 	int port = ntohs(((struct sockaddr_in *)sa)->sin_port);
 
 	if (!(flags & NI_NUMERICSERV)) {
+		_fmutex *fsem = global_tcpip_sem();
+		ASSERT(_fmutex_request(fsem, _FMR_IGNINT) == 0);
+
 		struct servent *se = getservbyport(
 				port,
 				(flags & NI_DGRAM) ? "udp" : "tcp");
+
+		_fmutex_release(fsem);
+
 		if (se && se->s_name) {
 			/* Service name looked up successfully. */
 			ret = snprintf(service, servicelen, "%s", se->s_name);

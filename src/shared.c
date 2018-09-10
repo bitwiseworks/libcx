@@ -615,6 +615,40 @@ unsigned long global_spawn2_sem(ProcDesc *proc)
 }
 
 /**
+ * Returns a process-specific fmutex used to guard OS/2 TCP/IP DLL calls.
+ * This mutex must be used to provide thread safety where it (or reentrancy)
+ * is guaranteed by the respective API. Note that we assume that TCP/IP DLL
+ * calls are process safe and process-reentrant and thus only guarantee thread
+ * safety within a single process.
+ */
+_fmutex *global_tcpip_sem()
+{
+  _fmutex *fsem = NULL;
+
+  global_lock();
+
+  ProcDesc *proc = find_proc_desc(getpid());
+
+  ASSERT(proc);
+
+  if (proc->tcpip_fsem.hev == NULLHANDLE)
+  {
+    /*
+     * Lazily create the mutex. Note that we never destroy it as
+     * process-specific ones will be freed automatically on process termination
+     */
+    int rc = _fmutex_create(&proc->tcpip_fsem, 0);
+    ASSERT(!rc);
+  }
+
+  fsem = &proc->tcpip_fsem;
+
+  global_unlock();
+
+  return fsem;
+}
+
+/**
  * Allocates a new block of shared LIBCX memory. Must be called under
  * global_lock().
  */
