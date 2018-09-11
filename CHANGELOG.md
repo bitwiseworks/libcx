@@ -1,5 +1,11 @@
 # History of changes for LIBCx
 
+#### Version 0.6.3 (2018-09-11)
+
+* Implement `getaddrinfo` and `getnameinfo` family APIs.
+* Implement `if_nameindex` and `if_nametointex` family APIs.
+* Implement `getifaddrs` family API.
+
 #### Version 0.6.2 (2018-04-17)
 
 * spawn2: Fix crash in P_2_THREADSAFE mode when envp is not NULL.
