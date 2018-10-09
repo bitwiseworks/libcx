@@ -263,13 +263,6 @@ void *mmap(void *addr, size_t len, int prot, int flags,
   /* Round len up to the next page boundary */
   len = PAGE_ALIGN(len + PAGE_SIZE - 1);
 
-  /* Check for technical overflow */
-  if (off + len > 0xFFFFFFFF)
-  {
-    errno = EOVERFLOW;
-    return MAP_FAILED;
-  }
-
   /* MAP_FIXED is not supported */
   if (flags & MAP_FIXED)
   {
@@ -324,12 +317,6 @@ void *mmap(void *addr, size_t len, int prot, int flags,
     }
 
     TRACE("file size %llu (%llx)\n", st.cbFile, st.cbFile);
-    if (st.cbFile > 0xFFFFFFFF)
-    {
-      /* Technical overflow */
-      errno = EOVERFLOW;
-      return MAP_FAILED;
-    }
 
     global_lock();
 
