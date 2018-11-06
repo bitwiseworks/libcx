@@ -256,7 +256,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       !PAGE_ALIGNED(off) ||
       len == 0)
   {
-    errno = EINVAL;
+    errno = !(flags & MAP_ANON) && fildes == -1 ? EBADF : EINVAL;
     return MAP_FAILED;
   }
 
