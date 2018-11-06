@@ -47,7 +47,7 @@ do_test (void)
 {
   int rc;
   int i, n;
-  unsigned char *addr;
+  unsigned char *addr, *addr2;
   char *fname;
   int status;
 
@@ -89,6 +89,13 @@ do_test (void)
     exit(-1);
   }
 
+  addr2 = mmap(NULL, FILE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  if (addr2 == MAP_FAILED)
+  {
+    perror("mmap 2 failed");
+    exit(-1);
+  }
+
   for (i = PAGE_SIZE - TEST_SIZE; i < PAGE_SIZE + TEST_SIZE; ++i)
   {
     if (addr[i] != buf[i])
@@ -101,6 +108,12 @@ do_test (void)
   if (munmap(addr, FILE_SIZE) == -1)
   {
     perror("munmap failed");
+    return 1;
+  }
+
+  if (munmap(addr2, FILE_SIZE) == -1)
+  {
+    perror("munmap 2 failed");
     return 1;
   }
 
