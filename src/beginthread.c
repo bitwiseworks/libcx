@@ -57,30 +57,33 @@ extern int _libc_beginthread(void (*start)(void *arg), void *stack,
  */
 static void threadWrapper(void *d)
 {
-  EXCEPTIONREGISTRATIONRECORD exceptqXcptRec;
+  /*
+   * Use an array of registartion records to guarantee their order on the
+   * stack: DosSetExceptionHandler requires the registration record of an inner
+   * exception handler to be located deeper on the stack (i.e. have a lower
+   * address given that the stack grows down) than the registration record of
+   * an outer one. Note that using nested scopes *does not* guarantee the order
+   * — the GCC optimizer is free to rearrange variables on the stack.
+   */
+  EXCEPTIONREGISTRATIONRECORD xcptRec[2];
 
-  /* Install the EXCEPTQ trap generator */
-  LibLoadExceptq(&exceptqXcptRec);
+  /* Install the EXCEPTQ trap generator (outer, higher address) */
+  LibLoadExceptq(&xcptRec[1]);
 
-  /* Use new block to ensure proper order on stack */
-  {
-    EXCEPTIONREGISTRATIONRECORD libcXcptRec;
+  /* Install the LIBCx own exception handler for various needs (inner, lower address) */
+  xcptRec[0].ExceptionHandler = libcxExceptionHandler;
+  xcptRec[0].prev_structure = END_OF_CHAIN;
+  DosSetExceptionHandler(&xcptRec[0]);
 
-    /* Install the LIBCx own exception handler for various needs */
-    libcXcptRec.ExceptionHandler = libcxExceptionHandler;
-    libcXcptRec.prev_structure = END_OF_CHAIN;
-    DosSetExceptionHandler(&libcXcptRec);
+  /* Thread data is on the heap, make a copy on the stack and free it */
+  struct threaddata data = *(struct threaddata *)d;
+  free(d);
 
-    /* Thread data is on heap, make a copy on stack and free it */
-    struct threaddata data = *(struct threaddata *)d;
-    free(d);
+  data.start(data.arg);
 
-    data.start(data.arg);
+  DosUnsetExceptionHandler(&xcptRec[0]);
 
-    DosUnsetExceptionHandler(&libcXcptRec);
-  }
-
-  UninstallExceptq(&exceptqXcptRec);
+  UninstallExceptq(&xcptRec[1]);
 }
 
 /**
