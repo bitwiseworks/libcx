@@ -85,7 +85,7 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
       if (fstat (fd, &st) != -1 && S_ISREG (st.st_mode))
       {
         /*
-         * Regular filres should be always immediately ready for I/O,
+         * Regular files should be always immediately ready for I/O,
          * remove this fd from the new set, no need to select.
          */
         TRACE("fd %d is regular file\n", fd);
