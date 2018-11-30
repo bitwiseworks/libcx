@@ -26,6 +26,7 @@ libcx_SOURCES = \
   net/getaddrinfo.c \
   net/getifaddrs.c \
   net/if_nameindex.c \
+  lend/ld32.c \
   main.c \
   main.s \
   shared.c
@@ -69,8 +70,9 @@ TESTS_INCS += poll mmap
 TESTS.debug += tst-shared.c
 tst-shared.c_ORDERED = 1
 
-TESTS += \
-  tst-flush-socketpair.c
+TESTS += tst-flush-socketpair.c
+
+TESTS += tst-fpucw.c
 
 TESTS += \
   fcntl/tst-flock2.c \

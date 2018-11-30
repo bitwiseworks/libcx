@@ -192,7 +192,6 @@ typedef struct ProcDesc
 } ProcDesc;
 
 /**
-
  * Global system-wide data structure (header).
  */
 typedef struct SharedData
@@ -222,6 +221,11 @@ typedef struct SharedData
  * Lazily initialized upon the first call of global_lock().
  */
 extern SharedData *gpData;
+
+/**
+ * TLS to save the FPU CW.
+ */
+extern int gFpuCwTls;
 
 struct _EXCEPTIONREPORTRECORD;
 struct _EXCEPTIONREGISTRATIONRECORD;

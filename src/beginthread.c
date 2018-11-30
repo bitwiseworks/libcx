@@ -31,6 +31,8 @@
 #include <stdlib.h>
 #include <errno.h>
 
+#include <InnoTekLIBC/thread.h>
+
 #include "shared.h"
 
 /* Defined in main.c */
@@ -49,6 +51,9 @@ struct threaddata
 /* Defined in libcx.def */
 extern int _libc_beginthread(void (*start)(void *arg), void *stack,
                              unsigned stack_size, void *arg_list);
+
+/* Defined in libcx.def */
+unsigned _libc__control87(unsigned new_cw, unsigned mask);
 
 /**
  * LIBCx thread wrapper.
@@ -78,6 +83,12 @@ static void threadWrapper(void *d)
   /* Thread data is on the heap, make a copy on the stack and free it */
   struct threaddata data = *(struct threaddata *)d;
   free(d);
+
+  /* Save the FPU control word for the exception handler */
+  {
+    unsigned cw = _libc__control87(0, 0);
+    __libc_TLSSet(gFpuCwTls, (void*)cw);
+  }
 
   data.start(data.arg);
 

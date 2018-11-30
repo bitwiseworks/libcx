@@ -54,4 +54,5 @@ IMPORTS
   __libc_beginthread=libc066.__beginthread
   __libc__read=libc066.___read
   __libc_stream_read=libc066.__stream_read
+  __libc__control87=libc066.__control87
   _doscalls_DosRead=doscalls.281
