@@ -37,8 +37,6 @@
 
 #include <InnoTekLIBC/thread.h>
 
-#include "lend/ld32.h"
-
 #include "shared.h"
 
 int gFpuCwTls = -1;
@@ -61,41 +59,6 @@ unsigned _control87(unsigned new_cw, unsigned mask)
     __libc_TLSSet(gFpuCwTls, (void *)((cw & ~mask) | (new_cw & mask)));
 
   return cw;
-}
-
-/**
- * Returns the length of the opcode preceeding the one at a given address.
- *
- * Note that this function assumes that the given address is at the instruction
- * boundary and attempts to find the longest FPU instruction that preceeds it.
- * This is based on an assumption that an FPU exception may be thrown only by
- * an FPU instruction.
- *
- * @param mem Address of the opcode to find the preceeding one for.
- * @return instruction length or 0 if no valid instruction or its length > 15.
- */
-static unsigned prevFpuOpcodeLen(ULONG mem)
-{
-  unsigned prev = 0, len;
-
-  // According to many sources, the max opcode length on x86 is 15 bytes.
-  for (len = 1; len <= 15; ++len)
-  {
-    // If the length at the current offset stops growing, it means that we
-    // found an instruction boundary at the previous step. We check if it's
-    // an FPU one, so we break.
-    if (length_disasm ((void *)(mem - len)) == len)
-    {
-      unsigned char op = * (unsigned char *)(mem - len);
-      if (op >= 0xD8 && op <= 0xDF)
-        if (len > prev)
-          prev = len;
-        else
-          break;
-    }
-  }
-
-  return prev;
 }
 
 /**
@@ -127,19 +90,20 @@ ULONG _System libcxExceptionHandler(PEXCEPTIONREPORTRECORD report,
     case XCPT_FLOAT_STACK_CHECK:
     case XCPT_FLOAT_UNDERFLOW:
     {
-      unsigned cw = ctx->ctx_env[0];
+      unsigned cw = ctx->ctx_env[0]; // FPU Control Word
       unsigned expectedCw = (unsigned)__libc_TLSGet(gFpuCwTls);
 
       if (cw != expectedCw)
       {
         // Somebody has changed the FP CW behind our back (e.g. not via
-        // _control87), restore it and retry the previous instruction if it's
-        // the FPU one (this is necessary so that FPU will correctly set
-        // the result of the operation to Inf/NaN when appropriate).
+        // _control87), restore it and retry the previous FPU instruction (this
+        // is necessary so that FPU will correctly set the result of the
+        // operation to Inf/NaN when appropriate). Do a sanity check based on
+        // the assumption that the maximum x86 instruction length is 15 bytes.
         ctx->ctx_env[0] = expectedCw;
-        ULONG prev = prevFpuOpcodeLen(ctx->ctx_RegEip);
-        if (prev)
-          ctx->ctx_RegEip -= prev;
+        ULONG ip = ctx->ctx_env [3]; // FPU Instruction Pointer
+        if (ip && ip < ctx->ctx_RegEip && ctx->ctx_RegEip - ip <= 15)
+          ctx->ctx_RegEip = ip;
         return XCPT_CONTINUE_EXECUTION;
       }
     }
