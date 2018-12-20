@@ -45,6 +45,20 @@
 
 #include "spawn2-internal.h"
 
+typedef struct Pair
+{
+  pid_t wrapper_pid;
+  pid_t child_pid;
+} Pair;
+
+typedef struct SpawnWrappers
+{
+  int size;
+  Pair pairs[0];
+} SpawnWrappers;
+
+enum { InitialPairArraySize = 10 };
+
 int spawn2(int mode, const char *name, const char * const argv[],
            const char *cwd, const char * const envp[], int stdfds[3])
 {
@@ -280,6 +294,9 @@ int spawn2(int mode, const char *name, const char * const argv[],
       APIRET arc = NO_ERROR;
       ULONG tries = 20;
 
+      int child_pid = -1;
+      int rc_errno = 0;
+
       TRACE("waiting for wrapper to kick in\n");
       do
       {
@@ -302,26 +319,70 @@ int spawn2(int mode, const char *name, const char * const argv[],
         case -1:
           TRACE("wrapper reported errno %d\n", req->err);
           rc = req->rc;
-          errno = req->err;
+          rc_errno = req->err;
           break;
 
         case 0:
           TRACE("wrapper timed out with arc %ld tries %d\n", arc, tries);
           rc = -1;
-          errno = arc == ERROR_INTERRUPT ? EINTR : ETIMEDOUT;
+          rc_errno = arc == ERROR_INTERRUPT ? EINTR : ETIMEDOUT;
           break;
 
         default:
         {
           TRACE("wrapped child pid %d (%x)\n", req->rc, req->rc);
 
+          child_pid = req->rc;
+
           /*
-           * Save the wrapped child PID (not really used so far but might be
-           * needed later to implement waiting on it).
+           * Save the wrapper->wrapped mapping in ths PID's ProcDesc. This is
+           * used in our waitpid overrides.
            */
-          ProcDesc *proc = find_proc_desc(rc);
-          if (proc)
-            proc->child_pid = rc;
+          ProcDesc *proc = find_proc_desc(getpid());
+          ASSERT(proc);
+
+          int idx = 0;
+
+          if (!proc->spawn2_wrappers)
+          {
+            GLOBAL_NEW_PLUS_ARRAY(proc->spawn2_wrappers, proc->spawn2_wrappers->pairs, InitialPairArraySize);
+            if (proc->spawn2_wrappers)
+              proc->spawn2_wrappers->size = InitialPairArraySize;
+          }
+          else
+          {
+            for (idx = 0; idx < proc->spawn2_wrappers->size; ++idx)
+            {
+              if (proc->spawn2_wrappers->pairs[idx].wrapper_pid == 0)
+                break;
+            }
+            if (idx == proc->spawn2_wrappers->size)
+            {
+              SpawnWrappers *wrappers = RENEW_PLUS_ARRAY(proc->spawn2_wrappers, proc->spawn2_wrappers->pairs,
+                                                         proc->spawn2_wrappers->size + InitialPairArraySize);
+              if (wrappers)
+              {
+                wrappers->size = proc->spawn2_wrappers->size + InitialPairArraySize;
+                proc->spawn2_wrappers = wrappers;
+              }
+            }
+          }
+
+          if (!proc->spawn2_wrappers || idx >= proc->spawn2_wrappers->size)
+          {
+            TRACE("No memory for spawn2_wrappers\n");
+            rc = -1;
+            rc_errno = ENOMEM;
+          }
+          else
+          {
+            ASSERT_MSG(!proc->spawn2_wrappers->pairs[idx].wrapper_pid && !proc->spawn2_wrappers->pairs[idx].child_pid,
+                       "%d %d", proc->spawn2_wrappers->pairs[idx].wrapper_pid, proc->spawn2_wrappers->pairs[idx].child_pid);
+            proc->spawn2_wrappers->pairs[idx].wrapper_pid = rc;
+            proc->spawn2_wrappers->pairs[idx].child_pid = child_pid;
+
+            TRACE("Added wrapper->wrapped pair %d->%d\n", rc, child_pid);
+          }
 
           break;
         }
@@ -345,6 +406,16 @@ int spawn2(int mode, const char *name, const char * const argv[],
 
           rc = WEXITSTATUS(status);
         }
+        else
+        {
+          /* Always return the PID of the wrapped child, not the wrapper! */
+          ASSERT (child_pid != -1);
+          rc = child_pid;
+        }
+      }
+      else
+      {
+        errno = rc_errno;
       }
     }
     else
@@ -727,4 +798,239 @@ int spawn2(int mode, const char *name, const char * const argv[],
   TRACE("return %d (%x)\n", rc, rc);
 
   return rc;
+}
+
+/*
+ * Override the waitpid family to replace the wrapped child with the wrapper
+ * child. This replacement is necessary as the waitpid family can only operate
+ * on direct children.
+ */
+
+pid_t _std_wait4(pid_t pid, int *piStatus, int fOptions, struct rusage *pRUsage);
+int _std_waitid(idtype_t enmIdType, id_t Id, siginfo_t *pSigInfo, int fOptions);
+int _libc___waitpid(int pid, int *status, int options);
+ULONG APIENTRY _doscalls_DosWaitChild (ULONG ulAction, ULONG ulWait, PRESULTCODES pReturnCodes, PPID ppidOut, PID pidIn);
+
+// NOTE: Must be called under global_lock
+static void lookup_wrapper_pid(pid_t pid, pid_t *wrapper_pid, pid_t *child_pid)
+{
+  ProcDesc *proc = find_proc_desc(getpid());
+  if (proc && proc->spawn2_wrappers)
+  {
+    int i;
+    for (i = 0; i < proc->spawn2_wrappers->size; ++i)
+    {
+      if (proc->spawn2_wrappers->pairs[i].wrapper_pid == pid ||
+          proc->spawn2_wrappers->pairs[i].child_pid == pid)
+      {
+        *wrapper_pid = proc->spawn2_wrappers->pairs[i].wrapper_pid;
+        *child_pid = proc->spawn2_wrappers->pairs[i].child_pid;
+        break;
+      }
+    }
+  }
+}
+
+// NOTE: Must be called under global_lock
+static void cleanup_wrapper_pid(pid_t wrapper_pid)
+{
+  ProcDesc *proc = find_proc_desc(getpid());
+  if (proc && proc->spawn2_wrappers)
+  {
+    int i;
+    for (i = 0; i < proc->spawn2_wrappers->size; ++i)
+    {
+      if (proc->spawn2_wrappers->pairs[i].wrapper_pid == wrapper_pid)
+      {
+        TRACE("Removing wrapper->wrapped pair %d->%d\n", proc->spawn2_wrappers->pairs[i].wrapper_pid, proc->spawn2_wrappers->pairs[i].child_pid);
+
+        proc->spawn2_wrappers->pairs[i].wrapper_pid = 0;
+        proc->spawn2_wrappers->pairs[i].child_pid = 0;
+        break;
+      }
+    }
+  }
+}
+
+pid_t wait4(pid_t pid, int *piStatus, int fOptions, struct rusage *pRUsage)
+{
+  TRACE("pid %d piStatus %p fOptions 0x%x pRUsage %p\n", pid, piStatus, fOptions, pRUsage);
+
+  pid_t wrapper_pid = -1, child_pid = -1;
+
+  if (pid > 0)
+  {
+    /* It could be the P_2_THRADSAFE wrapped process, look for a wrapper */
+    global_lock();
+    lookup_wrapper_pid(pid, &wrapper_pid, &child_pid);
+    global_unlock();
+    TRACE("wrapper_pid %d, child_pid %d\n", wrapper_pid, child_pid);
+
+    if (pid == child_pid)
+      pid = wrapper_pid;
+  }
+
+  pid_t rc = _std_wait4(pid, piStatus, fOptions, pRUsage);
+
+  /* Make sure the caller never sees the wrapper PID on return */
+  if (rc > 0)
+  {
+    global_lock();
+
+    if (wrapper_pid == -1)
+      lookup_wrapper_pid (rc, &wrapper_pid, &child_pid);
+
+    if (rc == wrapper_pid)
+    {
+      cleanup_wrapper_pid (wrapper_pid);
+      rc = child_pid;
+    }
+
+    global_unlock ();
+  }
+
+  return rc;
+}
+
+pid_t wait(int *piStatus)
+{
+  return wait4(-1, piStatus, 0, NULL);
+}
+
+pid_t wait3(int *piStatus, int fOptions, struct rusage *pRUsage)
+{
+  return wait4(-1, piStatus, fOptions, pRUsage);
+}
+
+pid_t waitpid(pid_t pid, int *piStatus, int fOptions)
+{
+  return wait4(pid, piStatus, fOptions, NULL);
+}
+
+int waitid(idtype_t enmIdType, id_t Id, siginfo_t *pSigInfo, int fOptions)
+{
+  TRACE("enmIdType %d Id %lld pSigInfo %p fOptions 0x%x\n", enmIdType, Id, pSigInfo, fOptions);
+
+  pid_t wrapper_pid = -1, child_pid = -1;
+
+  if (enmIdType == P_PID && Id > 0)
+  {
+    /* It could be the P_2_THRADSAFE wrapped process, look for a wrapper */
+    global_lock();
+    lookup_wrapper_pid(Id, &wrapper_pid, &child_pid);
+    global_unlock ();
+    TRACE("wrapper_pid %d, child_pid %d\n", wrapper_pid, child_pid);
+
+    if (Id == child_pid)
+      Id = wrapper_pid;
+  }
+
+  siginfo_t SigInfo = {0};
+  int rc = _std_waitid(enmIdType, Id, &SigInfo, fOptions);
+
+  /* Make sure the caller never sees the wrapper PID on return */
+  if (rc == 0)
+  {
+    global_lock();
+
+    if (wrapper_pid == -1)
+      lookup_wrapper_pid (rc, &wrapper_pid, &child_pid);
+
+    if (SigInfo.si_pid == wrapper_pid)
+    {
+      cleanup_wrapper_pid (wrapper_pid);
+      SigInfo.si_pid = child_pid;
+    }
+
+    global_unlock ();
+
+    if (pSigInfo)
+      *pSigInfo = SigInfo;
+  }
+
+  return rc;
+}
+
+int __waitpid(int pid, int *status, int options)
+{
+  TRACE("pid %d status %p options 0x%x\n", pid, status, options);
+
+  pid_t wrapper_pid = 0, child_pid = 0;
+
+  if (pid != 0)
+  {
+    /* It could be the P_2_THRADSAFE wrapped process, look for a wrapper */
+    global_lock();
+    lookup_wrapper_pid(pid, &wrapper_pid, &child_pid);
+    global_unlock ();
+    TRACE("wrapper_pid %d, child_pid %d\n", wrapper_pid, child_pid);
+
+    if (pid == child_pid)
+      pid = wrapper_pid;
+  }
+
+  int rc = _libc___waitpid(pid, status, options);
+
+  /* Make sure the caller never sees the wrapper PID on return */
+  if (rc != 0)
+  {
+    global_lock();
+
+    if (wrapper_pid == 0)
+      lookup_wrapper_pid (rc, &wrapper_pid, &child_pid);
+
+    if (rc == wrapper_pid)
+    {
+      cleanup_wrapper_pid (wrapper_pid);
+      rc = child_pid;
+    }
+
+    global_unlock ();
+  }
+
+  return rc;
+}
+
+ULONG APIENTRY DosWaitChild (ULONG ulAction, ULONG ulWait, PRESULTCODES pReturnCodes, PPID ppidOut, PID pidIn)
+{
+  TRACE("ulAction %lu ulWait %lu pReturnCodes %p ppidOut %p pidIn %ld\n", ulAction, ulWait, pReturnCodes, ppidOut, pidIn);
+
+  pid_t wrapper_pid = 0, child_pid = 0;
+
+  if (ulAction == DCWA_PROCESS && pidIn != 0)
+  {
+    /* It could be the P_2_THRADSAFE wrapped process, look for a wrapper */
+    global_lock();
+    lookup_wrapper_pid(pidIn, &wrapper_pid, &child_pid);
+    global_unlock ();
+    TRACE("wrapper_pid %d, child_pid %d\n", wrapper_pid, child_pid);
+
+    if (pidIn == child_pid)
+      pidIn = wrapper_pid;
+  }
+
+  PID pidOut = ppidOut ? *ppidOut : 0;
+  APIRET arc = _doscalls_DosWaitChild(ulAction, ulWait, pReturnCodes, &pidOut, pidIn);
+
+  /* Make sure the caller never sees the wrapper PID on return */
+  if (arc == NO_ERROR && pidOut)
+  {
+    global_lock();
+
+    if (wrapper_pid == -1)
+      lookup_wrapper_pid (pidOut, &wrapper_pid, &child_pid);
+
+    if (pidOut == wrapper_pid)
+    {
+      cleanup_wrapper_pid (wrapper_pid);
+      pidOut = child_pid;
+    }
+
+    global_unlock ();
+  }
+
+  if (ppidOut)
+    *ppidOut = pidOut;
+
+  return arc;
 }

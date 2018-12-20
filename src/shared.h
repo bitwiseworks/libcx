@@ -187,7 +187,7 @@ typedef struct ProcDesc
   struct MemMap *mmaps; /* Process-visible memory mapings */
   int flags; /* Process-specific flags */
   unsigned long spawn2_sem; /* Global spawn2_sem if open in this process */
-  pid_t child_pid; /* spawn2 wrapper child for Proc_Spawn2Wrapper */
+  struct SpawnWrappers *spawn2_wrappers; /* spawn2 wrapper->wrapped mappings */
   _fmutex tcpip_fsem; /* Mutex for making thread-safe TCP/IP DLL calls */
 } ProcDesc;
 
@@ -242,12 +242,16 @@ void *global_alloc(size_t size);
 #define GLOBAL_NEW(ptr) (ptr) = (__typeof(ptr))global_alloc(sizeof(*ptr))
 #define GLOBAL_NEW_PLUS(ptr, more) (ptr) = (__typeof(ptr))global_alloc(sizeof(*ptr) + (more))
 #define GLOBAL_NEW_ARRAY(ptr, sz) (ptr) = (__typeof(ptr))global_alloc(sizeof(*ptr) * (sz))
+#define GLOBAL_NEW_PLUS_ARRAY(ptr, arr, sz) (ptr) = (__typeof(ptr))global_alloc(sizeof(*ptr) + sizeof(*arr) * (sz))
 
 #define NEW(ptr) (ptr) = (__typeof(ptr))calloc(1, sizeof(*ptr))
 #define NEW_PLUS(ptr, more) (ptr) = (__typeof(ptr))calloc(1, sizeof(*ptr) + (more))
 #define NEW_ARRAY(ptr, sz) (ptr) = (__typeof(ptr))calloc((sz), sizeof(*ptr))
+#define NEW_PLUS_ARRAY(ptr, arr, sz) (ptr) = (__typeof(ptr))calloc(1, sizeof(*ptr) + sizeof(*arr) * (sz))
 
+#define RENEW_PLUS(ptr, more) ((__typeof(ptr))realloc(ptr, sizeof(*ptr) + (more)))
 #define RENEW_ARRAY(ptr, sz) ((__typeof(ptr))realloc(ptr, sizeof(*ptr) * (sz)))
+#define RENEW_PLUS_ARRAY(ptr, arr, sz) ((__typeof(ptr))realloc(ptr, sizeof(*ptr) + sizeof(*arr) * (sz)))
 
 #define COPY_STRUCT(to, from) memcpy((to), (from), sizeof(*from))
 #define COPY_STRUCT_PLUS(to, from, more) memcpy((to), (from), sizeof(*from) + (more))

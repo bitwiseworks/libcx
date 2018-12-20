@@ -375,8 +375,15 @@ static void shared_term()
       fcntl_locking_term(proc);
       mmap_term(proc);
 
+      TRACE("proc %p\n", proc);
       if (proc)
       {
+        if (proc->spawn2_wrappers)
+        {
+          TRACE("proc->spawn2_wrappers %p\n", proc->spawn2_wrappers);
+          free(proc->spawn2_wrappers);
+        }
+
         if (proc->spawn2_sem)
         {
           TRACE("proc->spawn2_sem %lx (refcnt %d)\n", proc->spawn2_sem, gpData->spawn2_sem_refcnt);

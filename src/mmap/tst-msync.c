@@ -177,14 +177,17 @@ do_test (void)
   /*
    * Force this process LIBCx usage termination to simulate the parent process
    * termination before the forked child. Simulation is needed because we want
-   * the child exit code so can't really terminate w/o calling wait().
+   * the child exit code so can't really terminate w/o calling wait(). Note
+   * that we use _std_wait directly as we override wait and need global_lock()
+   * there (see also below).
    */
   force_libcx_term();
 #endif
 
   rc = 0;
 
-  if (wait(&status) == -1)
+  extern pid_t _std_wait(int *);
+  if (_std_wait(&status) == -1)
   {
     perror("wait failed");
     rc = 1;

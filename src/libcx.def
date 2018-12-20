@@ -36,6 +36,13 @@ EXPORTS
   "_if_freenameindex"
   "_if_indextoname"
   "_if_nametoindex"
+  "_wait"
+  "_wait3"
+  "_wait4"
+  "_waitid"
+  "_waitpid"
+  "___waitpid"
+  "DosWaitChild"
   ; private symbols (may disappear w/o any notice)
   "_print_stats" @60000 NONAME
   "_libcx_assert" @60001 NONAME
@@ -55,4 +62,6 @@ IMPORTS
   __libc__read=libc066.___read
   __libc_stream_read=libc066.__stream_read
   __libc__control87=libc066.__control87
+  __libc___waitpid=libc066.___waitpid
   _doscalls_DosRead=doscalls.281
+  _doscalls_DosWaitChild=doscalls.280
