@@ -37,6 +37,9 @@
 #include <sys/fmutex.h>
 #include <emx/io.h>
 
+// for _lmalloc()
+#include <emx/umalloc.h>
+
 #define TRACE_GROUP TRACE_GROUP_SPAWN
 
 #include "../shared.h"
@@ -59,8 +62,10 @@ typedef struct SpawnWrappers
 
 enum { InitialPairArraySize = 10 };
 
-int spawn2(int mode, const char *name, const char * const argv[],
-           const char *cwd, const char * const envp[], int stdfds[3])
+static
+int __spawn2(int mode, const char *name, const char * const argv[],
+             const char *cwd, const char * const envp[], int stdfds[3],
+             Spawn2Request *req)
 {
   TRACE("mode %x name [%s] argv %p cwd [%s] envp %p stdfds %p\n",
         mode, name, argv, cwd, envp, stdfds);
@@ -114,11 +119,13 @@ int spawn2(int mode, const char *name, const char * const argv[],
     have_stdfds = stdfds_copy[0] || stdfds_copy[1] || stdfds_copy[2];
   }
 
+  int type = mode & P_2_MODE_MASK;
+
   if (mode & P_2_THREADSAFE)
   {
     TRACE("using wrapper\n");
 
-    if ((mode & P_2_MODE_MASK) != P_WAIT && (mode & P_2_MODE_MASK) != P_NOWAIT)
+    if (type != P_WAIT && type != P_NOWAIT && type != P_SESSION)
       SET_ERRNO_AND(return -1, EINVAL);
 
     char w_exe[CCHMAXPATH + sizeof(SPAWN2_WRAPPERNAME) + 1];
@@ -270,8 +277,8 @@ int spawn2(int mode, const char *name, const char * const argv[],
 
       const char *w_argv[] = { w_exe, sem_str, mem_str, NULL };
 
-      rc = spawn2(P_NOWAIT, w_exe, w_argv, NULL, NULL, NULL);
-      TRACE("spawn2(wrapper) rc %d (%x) errno %d\n", rc, rc, errno);
+      rc = __spawn2(type == P_SESSION ? type : P_NOWAIT, w_exe, w_argv, NULL, NULL, NULL, req);
+      TRACE("__spawn2(wrapper) rc %d (%x) errno %d\n", rc, rc, errno);
     }
 
     /* Restore stdio file handle inheritance */
@@ -336,52 +343,56 @@ int spawn2(int mode, const char *name, const char * const argv[],
 
           /*
            * Save the wrapper->wrapped mapping in ths PID's ProcDesc. This is
-           * used in our waitpid overrides.
+           * used in our waitpid overrides. We don't do this for P_UNRELATED
+           * children as they are... well, unrelated (can't be waited on etc).
            */
-          ProcDesc *proc = find_proc_desc(getpid());
-          ASSERT(proc);
-
-          int idx = 0;
-
-          if (!proc->spawn2_wrappers)
+          if (type != P_SESSION || !(req->mode & P_UNRELATED))
           {
-            GLOBAL_NEW_PLUS_ARRAY(proc->spawn2_wrappers, proc->spawn2_wrappers->pairs, InitialPairArraySize);
-            if (proc->spawn2_wrappers)
-              proc->spawn2_wrappers->size = InitialPairArraySize;
-          }
-          else
-          {
-            for (idx = 0; idx < proc->spawn2_wrappers->size; ++idx)
+            ProcDesc *proc = find_proc_desc(getpid());
+            ASSERT(proc);
+
+            int idx = 0;
+
+            if (!proc->spawn2_wrappers)
             {
-              if (proc->spawn2_wrappers->pairs[idx].wrapper_pid == 0)
-                break;
+              GLOBAL_NEW_PLUS_ARRAY(proc->spawn2_wrappers, proc->spawn2_wrappers->pairs, InitialPairArraySize);
+              if (proc->spawn2_wrappers)
+                proc->spawn2_wrappers->size = InitialPairArraySize;
             }
-            if (idx == proc->spawn2_wrappers->size)
+            else
             {
-              SpawnWrappers *wrappers = RENEW_PLUS_ARRAY(proc->spawn2_wrappers, proc->spawn2_wrappers->pairs,
-                                                         proc->spawn2_wrappers->size + InitialPairArraySize);
-              if (wrappers)
+              for (idx = 0; idx < proc->spawn2_wrappers->size; ++idx)
               {
-                wrappers->size = proc->spawn2_wrappers->size + InitialPairArraySize;
-                proc->spawn2_wrappers = wrappers;
+                if (proc->spawn2_wrappers->pairs[idx].wrapper_pid == 0)
+                  break;
+              }
+              if (idx == proc->spawn2_wrappers->size)
+              {
+                SpawnWrappers *wrappers = RENEW_PLUS_ARRAY(proc->spawn2_wrappers, proc->spawn2_wrappers->pairs,
+                                                           proc->spawn2_wrappers->size + InitialPairArraySize);
+                if (wrappers)
+                {
+                  wrappers->size = proc->spawn2_wrappers->size + InitialPairArraySize;
+                  proc->spawn2_wrappers = wrappers;
+                }
               }
             }
-          }
 
-          if (!proc->spawn2_wrappers || idx >= proc->spawn2_wrappers->size)
-          {
-            TRACE("No memory for spawn2_wrappers\n");
-            rc = -1;
-            rc_errno = ENOMEM;
-          }
-          else
-          {
-            ASSERT_MSG(!proc->spawn2_wrappers->pairs[idx].wrapper_pid && !proc->spawn2_wrappers->pairs[idx].child_pid,
-                       "%d %d", proc->spawn2_wrappers->pairs[idx].wrapper_pid, proc->spawn2_wrappers->pairs[idx].child_pid);
-            proc->spawn2_wrappers->pairs[idx].wrapper_pid = rc;
-            proc->spawn2_wrappers->pairs[idx].child_pid = child_pid;
+            if (!proc->spawn2_wrappers || idx >= proc->spawn2_wrappers->size)
+            {
+              TRACE("No memory for spawn2_wrappers\n");
+              rc = -1;
+              rc_errno = ENOMEM;
+            }
+            else
+            {
+              ASSERT_MSG(!proc->spawn2_wrappers->pairs[idx].wrapper_pid && !proc->spawn2_wrappers->pairs[idx].child_pid,
+                         "%d %d", proc->spawn2_wrappers->pairs[idx].wrapper_pid, proc->spawn2_wrappers->pairs[idx].child_pid);
+              proc->spawn2_wrappers->pairs[idx].wrapper_pid = rc;
+              proc->spawn2_wrappers->pairs[idx].child_pid = child_pid;
 
-            TRACE("Added wrapper->wrapped pair %d->%d\n", rc, child_pid);
+              TRACE("Added wrapper->wrapped pair %d->%d\n", rc, child_pid);
+            }
           }
 
           break;
@@ -398,7 +409,7 @@ int spawn2(int mode, const char *name, const char * const argv[],
 
       if (rc != -1)
       {
-        if ((mode & P_2_MODE_MASK) == P_WAIT)
+        if (type == P_WAIT)
         {
           int status;
           rc = waitpid(rc, &status, 0);
@@ -721,15 +732,213 @@ int spawn2(int mode, const char *name, const char * const argv[],
 
       if (rc != -1)
       {
-        if (envp_copy)
-          rc = spawnvpe(mode, name, (char * const *)argv, envp_copy);
+        if (type == P_SESSION)
+        {
+          /*
+           * kLIBC spawn* doesn't support P_SESSION (yet). DO it on our own.
+           * Note that we use low memory for DosStartSession array arguments
+           * as it is not high memory aware.
+           */
+
+          char *comspec = NULL;
+
+          {
+            const char *dot = strrchr(name, '.');
+            if (dot)
+            {
+              if (stricmp(dot, ".cmd") == 0 || stricmp(dot, ".bat") == 0)
+              {
+                comspec = getenv("COMSPEC");
+                if (!comspec)
+                  comspec = "cmd.exe";
+              }
+            }
+          }
+
+          /*
+           * Resolve symlinks & other Unix-isms as DosStartSession can't stand
+           * them. Note that while DosStartSession does search in PATH if no path
+           * information is given, spawn2 should not do this and _fullpath will
+           * guarantee this as well (by prepending the current path in this case).
+           */
+          char name_buf[PATH_MAX];
+          int name_len = 0;
+          rc = _fullpath(name_buf, name, sizeof(name_buf));
+          if (rc == -1)
+            rc_errno = errno;
+          else
+            name_len = strlen(name_buf);
+
+          char *name_real = name_buf;
+
+          /* Flatten arguments */
+          char *arg_flat = NULL;
+
+          if (rc != -1)
+          {
+            int arg_size = 0;
+            const char * const *a;
+
+            /* Skip the program name in arguments, DosStartSession doesn't need it */
+            for (a = argv + 1; *a; ++a)
+              arg_size += strlen(*a) + 3 /* quotes + space/zero */;
+            if (comspec)
+              arg_size += name_len + 8 /* [/c ] + quotes * 2 + space/zero */;
+
+            if (arg_size)
+            {
+              arg_flat = _lmalloc(arg_size);
+              if (!arg_flat)
+              {
+                rc = -1;
+                rc_errno = ENOMEM;
+              }
+              else
+              {
+                char *ap = arg_flat;
+                int quotes;
+
+                if (comspec)
+                {
+                  /* The /C argument should be a single string, put it in outer quotes */
+                  memcpy(ap, "/c \"", 4);
+                  ap += 4;
+                  quotes = strchr(name_real, ' ') != NULL;
+                  if (quotes)
+                    *(ap++) = '"';
+                  memcpy(ap, name_real, name_len);
+                  ap += name_len;
+                  if (quotes)
+                    *(ap++) = '"';
+                  *(ap++) = ' ';
+                  name_real = comspec;
+                }
+
+                for (a = argv + 1; *a; ++a)
+                {
+                  const char *v = *a;
+                  quotes = strchr(*a, ' ') != NULL;
+                  if (quotes)
+                    *(ap++) = '"';
+                  while (*v)
+                    *(ap++) = *(v++);
+                  if (quotes)
+                    *(ap++) = '"';
+                  *(ap++) = ' ';
+                }
+
+                /* Replace the last space with zero (and a closing quote for /C) */
+                if (comspec)
+                  memcpy(--ap, "\"\0", 2);
+                else
+                  *(--ap) = '\0';
+              }
+            }
+          }
+
+          /* Flatten environment */
+          char *env_flat = NULL;
+          if (rc != -1 && envp_copy)
+          {
+            int env_size = 0;
+            char **e;
+
+            for (e = envp_copy; *e; ++e)
+              env_size += strlen(*e) + 1;
+            env_size += 1;
+
+            env_flat = _lmalloc(env_size);
+            if (!env_flat)
+            {
+              rc = -1;
+              rc_errno = ENOMEM;
+            }
+            else
+            {
+              char *ep = env_flat;
+              for (e = envp_copy; *e; ++e)
+              {
+                const char *v = *e;
+                while (*v)
+                  *(ep++) = *(v++);
+                *(ep++) = '\0';
+              }
+              *ep = '\0';
+            }
+          }
+
+          if (rc != -1)
+          {
+            TRACE("name_real [%s] arg_flat [%s] env_flat %p\n", name_real, arg_flat, env_flat);
+
+            /*
+             * Note: If it's a wrapper (req != NULL), use the wrapped child's
+             * EXE name as the session title as otherwise OS/2 will show the
+             * wrapper's EXE name which is totally confusing.
+             */
+
+            STARTDATA data;
+            data.Length = sizeof(data);
+            data.Related = (req ? req->mode : mode) & P_UNRELATED ? SSF_RELATED_INDEPENDENT : SSF_RELATED_CHILD;
+            data.FgBg = SSF_FGBG_FORE;
+            data.TraceOpt = SSF_TRACEOPT_NONE;
+            data.PgmTitle = req ? _getname(req->name) : NULL;
+            data.PgmName = name_real;
+            data.PgmInputs = arg_flat;
+            data.TermQ = NULL;
+            data.Environment = env_flat;
+            data.InheritOpt = SSF_INHERTOPT_PARENT;
+            data.SessionType = SSF_TYPE_DEFAULT;
+            data.IconFile = NULL;
+            data.PgmHandle = NULLHANDLE;
+            data.PgmControl = SSF_CONTROL_VISIBLE;
+            data.InitXPos = data.InitYPos = data.InitXSize = data.InitYSize = 0;
+            data.Reserved = 0;
+            data.ObjectBuffer = NULL;
+            data.ObjectBuffLen = 0;
+
+            ULONG ulSid = 0, ulPid = 0;
+            APIRET arc = DosStartSession(&data, &ulSid, &ulPid);
+
+            TRACE_IF(arc != NO_ERROR, "DosStartSession returned %ld\n", arc);
+
+            if (arc != NO_ERROR)
+            {
+              rc = -1;
+
+              /*
+               * Unfortunately, __libc_native2errno is not exported by kLIBC yet,
+               * (see https://github.com/bitwiseworks/libc/issues/16) so do some
+               * handling on our own...
+               */
+              switch (arc)
+              {
+                case ERROR_FILE_NOT_FOUND:
+                case ERROR_PATH_NOT_FOUND:
+                  rc_errno = ENOENT; break;
+                default:
+                  rc_errno = EINVAL;
+              }
+            }
+          }
+
+          if (env_flat)
+            free(env_flat);
+          if (arg_flat)
+            free(arg_flat);
+        }
         else
-          rc = spawnvp(mode, name, (char * const *)argv);
+        {
+          if (envp_copy)
+            rc = spawnvpe(mode, name, (char * const *)argv, envp_copy);
+          else
+            rc = spawnvp(mode, name, (char * const *)argv);
+  
+          if (rc == -1)
+            rc_errno = errno;
 
-        if (rc == -1)
-          rc_errno = errno;
-
-        TRACE_ERRNO_IF(rc == -1, "spawn*");
+          TRACE_ERRNO_IF(rc == -1, "spawn*");
+        }
       }
     }
   }
@@ -798,6 +1007,12 @@ int spawn2(int mode, const char *name, const char * const argv[],
   TRACE("return %d (%x)\n", rc, rc);
 
   return rc;
+}
+
+int spawn2(int mode, const char *name, const char * const argv[],
+           const char *cwd, const char * const envp[], int stdfds[3])
+{
+  return __spawn2(mode, name, argv, cwd, envp, stdfds, NULL);
 }
 
 /*
