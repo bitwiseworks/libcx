@@ -920,6 +920,13 @@ int __spawn2(int mode, const char *name, const char * const argv[],
                   rc_errno = EINVAL;
               }
             }
+            else
+            {
+              TRACE("DosStartSession pid %ld\n", ulPid);
+              ASSERT((data.Related == SSF_RELATED_INDEPENDENT && ulPid == 0) ||
+                     (data.Related == SSF_RELATED_CHILD && ulPid != 0));
+              rc = ulPid;
+            }
           }
 
           if (env_flat)
