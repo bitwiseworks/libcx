@@ -32,7 +32,8 @@ __BEGIN_DECLS
 #define P_2_THREADSAFE  0x40000000
 #define P_2_APPENDENV   0x20000000
 
-#define P_2_MODE_MASK 0xFF
+#define P_2_MODE_MASK 0x0FF
+#define P_2_TYPE_MASK 0xF00
 
 /**
  * Starts a child process using the executable specified in @a name.

@@ -125,7 +125,7 @@ int __spawn2(int mode, const char *name, const char * const argv[],
   {
     TRACE("using wrapper\n");
 
-    if (type != P_WAIT && type != P_NOWAIT && type != P_SESSION)
+    if (type != P_WAIT && type != P_NOWAIT && type != P_SESSION && type != P_PM)
       SET_ERRNO_AND(return -1, EINVAL);
 
     char w_exe[CCHMAXPATH + sizeof(SPAWN2_WRAPPERNAME) + 1];
@@ -277,7 +277,7 @@ int __spawn2(int mode, const char *name, const char * const argv[],
 
       const char *w_argv[] = { w_exe, sem_str, mem_str, NULL };
 
-      rc = __spawn2(type == P_SESSION ? type : P_NOWAIT, w_exe, w_argv, NULL, NULL, NULL, req);
+      rc = __spawn2(type == P_SESSION || type == P_PM ? type : P_NOWAIT, w_exe, w_argv, NULL, NULL, NULL, req);
       TRACE("__spawn2(wrapper) rc %d (%x) errno %d\n", rc, rc, errno);
     }
 
@@ -732,12 +732,12 @@ int __spawn2(int mode, const char *name, const char * const argv[],
 
       if (rc != -1)
       {
-        if (type == P_SESSION)
+        if (type == P_SESSION || type == P_PM)
         {
           /*
-           * kLIBC spawn* doesn't support P_SESSION (yet). DO it on our own.
-           * Note that we use low memory for DosStartSession array arguments
-           * as it is not high memory aware.
+           * kLIBC spawn* doesn't support P_SESSION or P_PM (yet). DO it on our
+           * own. Note that we use low memory for DosStartSession array
+           * arguments as it is not high memory aware.
            */
 
           char *comspec = NULL;
@@ -877,10 +877,13 @@ int __spawn2(int mode, const char *name, const char * const argv[],
              * wrapper's EXE name which is totally confusing.
              */
 
+            int reqMode = req ? req->mode : mode;
+            int reqType = reqMode & P_2_MODE_MASK;
+
             STARTDATA data;
             data.Length = sizeof(data);
-            data.Related = (req ? req->mode : mode) & P_UNRELATED ? SSF_RELATED_INDEPENDENT : SSF_RELATED_CHILD;
-            data.FgBg = SSF_FGBG_FORE;
+            data.Related = reqMode & P_UNRELATED ? SSF_RELATED_INDEPENDENT : SSF_RELATED_CHILD;
+            data.FgBg = reqMode & P_BACKGROUND ? SSF_FGBG_BACK : SSF_FGBG_FORE;
             data.TraceOpt = SSF_TRACEOPT_NONE;
             data.PgmTitle = req ? _getname(req->name) : NULL;
             data.PgmName = name_real;
@@ -888,14 +891,53 @@ int __spawn2(int mode, const char *name, const char * const argv[],
             data.TermQ = NULL;
             data.Environment = env_flat;
             data.InheritOpt = SSF_INHERTOPT_PARENT;
-            data.SessionType = SSF_TYPE_DEFAULT;
             data.IconFile = NULL;
             data.PgmHandle = NULLHANDLE;
-            data.PgmControl = SSF_CONTROL_VISIBLE;
             data.InitXPos = data.InitYPos = data.InitXSize = data.InitYSize = 0;
             data.Reserved = 0;
             data.ObjectBuffer = NULL;
             data.ObjectBuffLen = 0;
+
+            // NOTE: We maintain EMX spawn compatibility here.
+
+            switch (reqMode & P_2_TYPE_MASK)
+            {
+              case P_FULLSCREEN:
+                data.SessionType = SSF_TYPE_FULLSCREEN;
+                break;
+              case P_WINDOWED:
+                data.SessionType = SSF_TYPE_WINDOWABLEVIO;
+                break;
+              default:
+                if (reqType == P_PM)
+                  data.SessionType = SSF_TYPE_PM;
+                else
+                  data.SessionType = SSF_TYPE_DEFAULT;
+                break;
+            }
+
+            switch (reqMode & P_2_TYPE_MASK)
+            {
+              case P_MINIMIZE:
+                data.PgmControl = SSF_CONTROL_MINIMIZE;
+                break;
+              case P_MAXIMIZE:
+                data.PgmControl = SSF_CONTROL_MAXIMIZE;
+                break;
+              default:
+                data.PgmControl = SSF_CONTROL_VISIBLE;
+                break;
+            }
+
+            if (reqMode & P_NOCLOSE)
+              data.PgmControl |= SSF_CONTROL_NOAUTOCLOSE;
+
+            if (reqType != P_DEBUG)
+              data.TraceOpt = SSF_TRACEOPT_NONE;
+            else if (reqMode & P_DEBUGDESC)
+              data.TraceOpt = SSF_TRACEOPT_TRACEALL;
+            else
+              data.TraceOpt = SSF_TRACEOPT_TRACE;
 
             ULONG ulSid = 0, ulPid = 0;
             APIRET arc = DosStartSession(&data, &ulSid, &ulPid);
@@ -922,9 +964,13 @@ int __spawn2(int mode, const char *name, const char * const argv[],
             }
             else
             {
-              TRACE("DosStartSession pid %ld\n", ulPid);
-              ASSERT((data.Related == SSF_RELATED_INDEPENDENT && ulPid == 0) ||
-                     (data.Related == SSF_RELATED_CHILD && ulPid != 0));
+              TRACE("DosStartSession pid %ld (independent? %d)\n", ulPid, data.Related == SSF_RELATED_INDEPENDENT);
+              /*
+               * For unrelated sessions ulPid might be not zero althnough it doesn't
+               * represent a valid PID, make sure it is reset.
+               */
+              if (data.Related == SSF_RELATED_INDEPENDENT)
+                ulPid = 0;
               rc = ulPid;
             }
           }
