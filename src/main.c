@@ -37,6 +37,8 @@
 
 #include <InnoTekLIBC/thread.h>
 
+#include "lend/ld32.h"
+
 #include "shared.h"
 
 int gFpuCwTls = -1;
@@ -96,13 +98,23 @@ ULONG _System libcxExceptionHandler(PEXCEPTIONREPORTRECORD report,
       if (cw != expectedCw)
       {
         // Somebody has changed the FP CW behind our back (e.g. not via
-        // _control87), restore it and retry the previous FPU instruction (this
-        // is necessary so that FPU will correctly set the result of the
-        // operation to Inf/NaN when appropriate). Do a sanity check based on
-        // the assumption that the maximum x86 instruction length is 15 bytes.
+        // _control87). Restore it and attempt to retry the faulty FPU
+        // instrcution (so that FPU will correctly set the result of the
+        // operation to Inf/NaN in case of FDIV etc). Note that the faulting
+        // address does not necessarily point to the faulty FPU instruction
+        // because FPU exceptions are raised only at the next FPU instruction
+        // in the stream (or WAIT/FWAIT). And although we have the address
+        // of the faulty FPU instruction in the saved FPU context, we may
+        // not retry from there if there are some other instructions in between
+        // because they could potentially change the operands, the stack etc.
+        // So we only retry if the faulty FPU instruction exactply precedes
+        // the faulting address so that there is nothing in between that could
+        // affect the retry attempt. See Chapters 4.9, 8.6 and 8.7 in
+        // https://software.intel.com/sites/default/files/managed/a4/60/253665-sdm-vol-1.pdf
+
         ctx->ctx_env[0] = expectedCw;
         ULONG ip = ctx->ctx_env [3]; // FPU Instruction Pointer
-        if (ip && ip < ctx->ctx_RegEip && ctx->ctx_RegEip - ip <= 15)
+        if (length_disasm ((void *)ip) + ip == ctx->ctx_RegEip)
           ctx->ctx_RegEip = ip;
         return XCPT_CONTINUE_EXECUTION;
       }

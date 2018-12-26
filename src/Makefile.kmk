@@ -26,6 +26,7 @@ libcx_SOURCES = \
   net/getaddrinfo.c \
   net/getifaddrs.c \
   net/if_nameindex.c \
+  lend/ld32.c \
   main.c \
   main.s \
   shared.c
