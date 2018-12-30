@@ -31,15 +31,22 @@ libcx_SOURCES = \
   main.s \
   shared.c
 
-libcx_SOURCES.release += libcx.def
+# Release definitions
+libcx_SOURCES.release += $(PATH_OBJ)/libcx-release.def
+
+$(PATH_OBJ)/libcx-release.def: $(PATH_SUB_CURRENT)/libcx.def $(BUILD_VERSION_DEPS) | $(call DIRDEP,$(PATH_OBJ))
+	$(call MSG_L1,Generating $@)
+	$(QUIET)cp $< $@
+	$(QUIET)echo DESCRIPTION '"$(BUILD_BLDLEVEL)kLIBC Extension Library"' >> $@
 
 # Debug definitions
 libcx_DEFS.debug = TRACE_ENABLED STATS_ENABLED DEBUG
 libcx_SOURCES.debug += $(PATH_OBJ)/libcx-debug.def
 
-$(PATH_OBJ)/libcx-debug.def: $(PATH_SUB_CURRENT)/libcx.def | $(call DIRDEP,$(PATH_OBJ))
+$(PATH_OBJ)/libcx-debug.def: $(PATH_SUB_CURRENT)/libcx.def $(BUILD_VERSION_DEPS) | $(call DIRDEP,$(PATH_OBJ))
 	$(call MSG_L1,Generating $@)
 	$(QUIET)sed -e 's/  ;ddd /  /' < $< > $@
+	$(QUIET)echo DESCRIPTION '"$(BUILD_BLDLEVEL)kLIBC Extension Library (debug)"' >> $@
 
 # Make sure tests & utils inherit libcx debug defs
 TEMPLATE_Test_DEFS.debug += $(libcx_DEFS.debug)

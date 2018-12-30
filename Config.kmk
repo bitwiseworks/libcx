@@ -1,6 +1,24 @@
 ## @file
 # Global kBuild project configuration file
 
+# Grab version number
+BUILD_VERSION := $(shell $(SED) -nr -e 's/^\#define VERSION_MAJOR[[:space:]]+([0-9]+).*$$/\1/p' \
+                                    -e 's/^\#define VERSION_MINOR[[:space:]]+([0-9]+).*$$/\1/p' \
+                                    -e 's/^\#define VERSION_BUILD[[:space:]]+([0-9]+).*$$/\1/p' \
+                                    < $(PATH_ROOT)/src/version.h)
+BUILD_VERSION_MAJOR := $(word 1, $(BUILD_VERSION))
+BUILD_VERSION_MINOR := $(word 2, $(BUILD_VERSION))
+BUILD_VERSION_BUILD := $(word 3, $(BUILD_VERSION))
+BUILD_VERSION := $(BUILD_VERSION_MAJOR).$(BUILD_VERSION_MINOR).$(BUILD_VERSION_BUILD)
+BUILD_VERSION_DEPS = $(PATH_ROOT)/src/version.h $(MAKEFILE_LIST)
+
+# Grab build properties suitable for BLDLEVEL
+BUILD_DATE := $(shell LANG=C printf ' %-24.24s ' "`date -u +'%Y-%m-%d %T'`")
+BUILD_HOST := $(shell printf '%-.11s' `echo $$HOSTNAME`)
+
+# Format BLDLEVEL string (excluding the description, may be used as a prefix for it)
+BUILD_BLDLEVEL := @\#bww bitwise works GmbH:$(BUILD_VERSION_MAJOR).$(BUILD_VERSION_MINOR)\#@\#\#1\#\#$(BUILD_DATE)$(BUILD_HOST)::::$(BUILD_VERSION_BUILD)::@@
+
 # Unix layout: DLLs come to the lib dir.
 INST_DLL = $(INST_LIB)
 
