@@ -942,9 +942,9 @@ int __spawn2(int mode, const char *name, const char * const argv[],
             ULONG ulSid = 0, ulPid = 0;
             APIRET arc = DosStartSession(&data, &ulSid, &ulPid);
 
-            TRACE_IF(arc != NO_ERROR, "DosStartSession returned %ld\n", arc);
+            TRACE("DosStartSession returned %ld (0 and 457 are ok)\n", arc);
 
-            if (arc != NO_ERROR)
+            if (arc != NO_ERROR && arc != ERROR_SMG_START_IN_BACKGROUND)
             {
               rc = -1;
 
