@@ -79,6 +79,15 @@ int main(int argc, char **argv)
     req->rc = rc;
   }
 
+  /* ...close the handles to give the child full control over them... */
+  if (req->stdfds)
+  {
+    int i;
+    for (i = 0; i < 3; ++i)
+      if (req->stdfds[i] > 2) /* only close non-stdio ones */
+        close(req->stdfds[i]);
+  }
+
   /* ...and report to the parent waiting in spawn2 ASAP */
   arc = DosPostEventSem(hev);
   ASSERT_MSG(arc == NO_ERROR || arc == ERROR_ALREADY_POSTED, "%ld %lx", arc, hev);
