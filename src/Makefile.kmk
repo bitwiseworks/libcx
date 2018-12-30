@@ -58,15 +58,19 @@ TEMPLATE_Util_DEFS.debug += $(libcx_DEFS.debug)
 
 PROGRAMS += libcx-stats
 libcx-stats_TEMPLATE = Util
-libcx-stats_SOURCES = libcx-stats.c
+libcx-stats_SOURCES = libcx-stats.c $(PATH_OBJ)/tool.def
 
 PROGRAMS += libcx-spawn2-wrapper
 libcx-spawn2-wrapper_INST = $(INST_DLL)libcx-spawn2.wrp
 libcx-spawn2-wrapper_TEMPLATE = Util
-libcx-spawn2-wrapper_SOURCES = spawn/spawn2-wrapper.c
+libcx-spawn2-wrapper_SOURCES = spawn/spawn2-wrapper.c $(PATH_OBJ)/tool.def
 
 INSTALLS += libcx-spawn2-wrapper-inst
 libcx-spawn2-wrapper_inst_SOURCES = $(libcx-spawn2-wrapper_1_TARGET)
+
+$(PATH_OBJ)/tool.def: $(BUILD_VERSION_DEPS) | $(call DIRDEP,$(PATH_OBJ))
+	$(call MSG_L1,Generating $@)
+	$(QUIET)echo DESCRIPTION '"$(BUILD_BLDLEVEL)kLIBC Extension Library Tool"' >> $@
 
 #
 # Tests
