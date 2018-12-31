@@ -1,5 +1,15 @@
 # History of changes for LIBCx
 
+#### Version 0.6.4 (2018-12-31)
+
+* mmap: Fix returning EOVERFLOW on files with sizes greater than 4G.
+* mmap: Return EBADF instead of EINVAL when fd is -1 and no MAP_ANON.
+* Fix installing EXCEPTQ on LIBC threads (started with _beginthread) in release builds.
+* Add automatic FPU exception handler installation to recover from crashes due to unexpected changes of FPU CW by bogus Win/Gpi APIs.
+* spawn2: Return PID of wrapped child instead of wrapper in P_2_THREADSAFE mode.
+* spawn2: Implement P_SESSION support (including P_PM and other related flags from EMX).
+* Add BLDLEVEL info to LIBCx DLL and tools.
+
 #### Version 0.6.3 (2018-09-11)
 
 * Implement `getaddrinfo` and `getnameinfo` family APIs.

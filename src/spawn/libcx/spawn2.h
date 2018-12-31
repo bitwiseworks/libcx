@@ -118,22 +118,28 @@ __BEGIN_DECLS
  * primitives etc). Otherwise it may result in unexpected behavior.
  *
  * This function returns the return value of the child process (P_WAIT), or the
- * process ID of the child process (P_NOWAIT, P_DEBUG, P_SESSION and P_PM), or
- * zero (P_UNRELATED) if successful. On error it returns -1 and sets `errno` to
- * the respective error code.
+ * process ID of the child process (P_NOWAIT, P_SESSION and P_PM), or zero
+ * (P_UNRELATED) if successful. On error it returns -1 and sets `errno` to the
+ * respective error code.
  *
- * Note that if P_2_THREADSAFE is specified, the process ID of the intermediate
- * wrapper process is returned, not the process ID of the target executable
- * (which will be a child of that intermediate process). In most cases it
- * should not matter as the intermediate process redirects the execution result
- * of the final executable (including signals) to the current process in a
- * transparent way. The only known drawback is that it's impossible to use the
- * DosGiveSharedMem (and similar) API that requires an actual PID of the
- * target process to operate. This may be changed in the future.
+ * Note that since version 0.6.4, `spawn2` will return a process ID of a final
+ * process (which will be its grand-child), not the intermediate wrapper (its
+ * direct child) in P_2_THREADSAFE mode. This allows to use APIs like
+ * `DosGiveSharedMem` to communicate with the final process. Note that the
+ * `waitpid` family (and even `DosWaitChild`) provided by LIBCx is able to
+ * handle this situation and will work correctly despite the fact that waiting
+ * on non-immediate children is not "officially" possible on OS/2.
+ *
+ * ALso note that when P_2_THREADSAFE is used together with P_SESSION and
+ * P_UNRELATED, `spawn2` will return a PID of a started process instead of zero
+ * even though this process is completely unrelated to the caller in terms of
+ * the parent-child relationship. This is an unique LIBCx feature not available
+ * in EMX or in `DosStartSession`. If P_2_THREADSAFE is not used, zero will
+ * still be returned.
  *
  * Except for what is described above, the `spawn2` function behaves
- * essentially the same as the standard `spawnvpe` LIBC function. Please
- * consult the `spawnvpe` manual for more information.
+ * essentially the same as the standard `spawnvpe` function in the EMX library.
+ * Please consult the `spawnvpe` manual for more information.
  */
 int spawn2(int mode, const char *name, const char * const argv[],
            const char *cwd, const char * const envp[], int stdfds[3]);

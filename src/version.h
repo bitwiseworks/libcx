@@ -32,7 +32,7 @@
  */
 #define VERSION_MAJOR 0
 #define VERSION_MINOR 6
-#define VERSION_BUILD 3d
+#define VERSION_BUILD 4
 
 #define VERSION_MAJ_MIN_TEXTIFY(maj, min) #maj "." #min
 #define VERSION_MAJ_MIN_EXPAND(maj, min) VERSION_MAJ_MIN_TEXTIFY(maj, min)

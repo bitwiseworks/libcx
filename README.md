@@ -74,8 +74,10 @@ The `spawn2` API provides the following enhancements over the regular `spawnvpe`
 - Passing a set of file descriptors to be used as standard I/O of the started executable.
 - Disabling inheritance of all file descriptors of the parent process with a single flag.
 - Performing all the above in a completely thread-safe manner.
+- Supporting P_SESSION, P_PM and their additional flags according to EMX specs.
+- Returning an actual PID of a process started in P_UNRELATED mode when used together with P_2_THREADSAFE (unique feature, not available in EMX or in DosStartSession API).
 
-The `exeinfo` API is defined in the `libcx/spawn2.h` header. Consult it for more details.
+The `spawn2` API is defined in the `libcx/spawn2.h` header. Consult it for more details.
 
 ## Notes on C heap displacement.
 
