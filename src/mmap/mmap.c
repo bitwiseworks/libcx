@@ -329,7 +329,8 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       return MAP_FAILED;
     }
 
-    fmap_flags = PAG_READ | PAG_WRITE | PAG_EXECUTE;
+    /* Note: use PAG_GUARD to avoid races (see mmap_exception) */
+    fmap_flags = PAG_READ | PAG_WRITE | PAG_EXECUTE | PAG_GUARD;
     if (flags & MAP_SHARED)
     {
       /*
@@ -617,8 +618,9 @@ void *mmap(void *addr, size_t len, int prot, int flags,
         /*
          * Get access the file map region. Don't set PAG_WRITE to cause an
          * exception upon the first write to a page(see mmap_exception()).
+         * Note: use PAG_GUARD to avoid races (see mmap_exception).
          */
-        arc = DosGetSharedMem((PVOID)fmem->start, PAG_READ | PAG_EXECUTE);
+        arc = DosGetSharedMem((PVOID)fmem->start, PAG_READ | PAG_EXECUTE | PAG_GUARD);
         ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
       }
     }
@@ -1145,7 +1147,8 @@ static void flush_dirty_pages(MemMap *m, ULONG off, ULONG len)
               if (f & PAG_FREE)
               {
                 TRACE("getting shared memory %lx of mem %p\n", fm->start, fm);
-                arc = DosGetSharedMem((PVOID)fm->start, PAG_READ | PAG_EXECUTE);
+                /* Note: use PAG_GUARD to avoid races (see mmap_exception) */
+                arc = DosGetSharedMem((PVOID)fm->start, PAG_READ | PAG_EXECUTE | PAG_GUARD);
                 ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
               }
 
@@ -1632,14 +1635,36 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
 {
   int retry = 0;
 
-  if (report->ExceptionNum == XCPT_ACCESS_VIOLATION)
+  if (report->ExceptionNum == XCPT_ACCESS_VIOLATION ||
+      report->ExceptionNum == XCPT_GUARD_PAGE_VIOLATION)
   {
+    BOOL isGuard = report->ExceptionNum == XCPT_GUARD_PAGE_VIOLATION;
+
     ProcDesc *desc;
     MemMap *m;
 
     ULONG addr = report->ExceptionInfo[1];
 
-    TRACE("addr %lx, info %lx\n", addr, report->ExceptionInfo[0]);
+    TRACE("%s [flags %lx nested %p addr %p]: addr %lx, info %lx\n",
+          isGuard ? "XCPT_GUARD_PAGE_VIOLATION" : "XCPT_ACCESS_VIOLATION",
+          report->fHandlerFlags, report->NestedExceptionReportRecord, report->ExceptionAddress,
+          addr, report->ExceptionInfo[0]);
+
+    if (isGuard && report->fHandlerFlags & EH_NESTED_CALL && report->NestedExceptionReportRecord &&
+        report->NestedExceptionReportRecord->ExceptionNum == XCPT_ACCESS_VIOLATION &&
+        report->NestedExceptionReportRecord->ExceptionInfo[1] == addr &&
+        report->NestedExceptionReportRecord->ExceptionInfo[0] == report->ExceptionInfo[0])
+    {
+      /*
+       * Optimization: this exception is coming from DosRead after
+       * DosSetMem(PAG_COMMIT) in the code below due to PAG_GUARD. Since that
+       * code is already under global_lock (and has also validated the
+       * address), it makes no sense to do it again, so just continue.
+       */
+
+      TRACE("Shortcutting due to nested PAG_GUARD effect from DosRead\n");
+      return XCPT_CONTINUE_EXECUTION;
+    }
 
     global_lock();
 
@@ -1670,12 +1695,36 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
       if (!arc)
       {
         TRACE("off %lx, dos_flags %lx, len %ld\n", addr - m->start, dos_flags, len);
-        if (!(dos_flags & (PAG_FREE | PAG_COMMIT)))
+
+        if (isGuard)
+        {
+          /*
+           * This is an effect of PAG_GUARD on a page of a file-based mapping.
+           * It is used to protect from races when a thread of another process
+           * kicks in by accessing the page right after the first accessing
+           * thread of this process set the PAG_COMMIT flag but *before* it
+           * finished reading page contents with DosRead. Letting other
+           * processes continue would make them see incomplete page contents
+           * leading to integrity loss and various side effects (e.g.
+           * https://github.com/bitwiseworks/qtbase-os2/issues/72). But due to
+           * PAG_GUARD, all other threads of all other processes will end up
+           * here and since this code (as well as DosSetMem + DosRead) is under
+           * global_lock, it will only run after DosRead populating page
+           * contents in the first thread has done its job (and called
+           * global_unlock). In other words, this place acts as a sync point
+           * after which it's 100% safe to access the page in all threads.
+           * Note that a similar inter-thread race within one process is
+           * protected from using DosEnterCritSec below.
+           */
+          retry = 1;
+        }
+        else if (!(dos_flags & (PAG_FREE | PAG_COMMIT)))
         {
           /* First access to the allocated but uncommitted page, commit it */
           int revoke_write = 0;
 
           dos_flags = m->dos_flags;
+
           if (!(m->flags & MAP_ANON))
           {
             if (m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE)
@@ -1709,6 +1758,17 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
               revoke_write = 1;
             }
           }
+
+          /*
+           * Protect from inter-thread races between DosSetMem(PAG_COMMIT) and
+           * DosRead. Note that PAG_GUARD used for inter-process race
+           * protection (see above) doesn't serve well in this case because the
+           * first concurring thread would reset this flag for this process
+           * leaving all other threads unprotected and free to go (to read
+           * inconsistent data etc.).
+           */
+          DosEnterCritSec();
+
           TRACE("Committing page at addr %lx\n", page_addr);
           arc = DosSetMem((PVOID)page_addr, len, dos_flags | PAG_COMMIT);
           TRACE_IF(arc, "DosSetMem = %ld\n", arc);
@@ -1759,6 +1819,8 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
               }
             }
           }
+
+          DosExitCritSec();
         }
         else if (dos_flags & PAG_COMMIT)
         {
@@ -1767,11 +1829,18 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
           {
             /* Some other thread/process was faster and did what's necessary */
             TRACE("already have necessary permissions\n");
-            retry = 1;
+            if (dos_flags & PAG_GUARD)
+            {
+              /* Optimization: avoid unneededd XCPT_GUARD_PAGE_VIOLATION */
+              arc = DosSetMem((PVOID)page_addr, len, dos_flags & fPERM);
+              TRACE_IF(arc, "DosSetMem = %ld\n", arc);
+            }
+            if (!arc)
+              retry = 1;
           }
-          if (report->ExceptionInfo[0] == XCPT_WRITE_ACCESS &&
-              !(dos_flags & PAG_WRITE) &&
-              !(m->flags & MAP_ANON) && m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE)
+          else if (report->ExceptionInfo[0] == XCPT_WRITE_ACCESS &&
+                   !(dos_flags & PAG_WRITE) &&
+                   !(m->flags & MAP_ANON) && m->flags & MAP_SHARED && m->dos_flags & PAG_WRITE)
           {
             /*
              * First write access to a writable shared mapping page. Mark the
@@ -2371,14 +2440,15 @@ static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOper
           /*
            * Don't set PAG_WRITE to cause an exception upon the first
            * write to a page (see mmap_exception()).
+           * Note: use PAG_GUARD to avoid races (see mmap_exception).
            */
-          dos_flags = PAG_READ | PAG_EXECUTE;
+          dos_flags = PAG_READ | PAG_EXECUTE | PAG_GUARD;
         }
         /*
          * Note that if there is more than 1 user of the file map, we will give
          * the same region multiple times, but this should not hurt.
          */
-        arc = DosGiveSharedMem((PVOID)start, pForkHandle->pidChild, dos_flags);
+        arc = DosGiveSharedMem((PVOID)start, pForkHandle->pidChild, dos_flags | PAG_GUARD);
         ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
       }
       m = m->next;
