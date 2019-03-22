@@ -2,15 +2,19 @@
 # Global kBuild project configuration file
 
 # Grab version number
-BUILD_VERSION := $(shell $(SED) -nr -e 's/^\#define VERSION_MAJOR[[:space:]]+([0-9]+).*$$/\1/p' \
-                                    -e 's/^\#define VERSION_MINOR[[:space:]]+([0-9]+).*$$/\1/p' \
-                                    -e 's/^\#define VERSION_BUILD[[:space:]]+([0-9]+).*$$/\1/p' \
-                                    < $(PATH_ROOT)/src/version.h)
+BUILD_VERSION_FILE := $(PATH_ROOT)/src/version.h
+BUILD_VERSION := $(shell $(SED) -nr -e 's/^\#define VERSION_MAJOR[[:space:]]+([0-9][0-9a-z]*).*$$/\1/p' \
+                                    -e 's/^\#define VERSION_MINOR[[:space:]]+([0-9][0-9a-z]*).*$$/\1/p' \
+                                    -e 's/^\#define VERSION_BUILD[[:space:]]+([0-9][0-9a-z]*).*$$/\1/p' \
+                                    < $(BUILD_VERSION_FILE))
 BUILD_VERSION_MAJOR := $(word 1, $(BUILD_VERSION))
+$(if $(BUILD_VERSION_MAJOR),,$(error $(BUILD_VERSION_FILE): Invalid VERSION_MAJOR))
 BUILD_VERSION_MINOR := $(word 2, $(BUILD_VERSION))
+$(if $(BUILD_VERSION_MINOR),,$(error $(BUILD_VERSION_FILE): Invalid VERSION_MINOR))
 BUILD_VERSION_BUILD := $(word 3, $(BUILD_VERSION))
+$(if $(BUILD_VERSION_BUILD),,$(error $(BUILD_VERSION_FILE): Invalid VERSION_BUILD))
 BUILD_VERSION := $(BUILD_VERSION_MAJOR).$(BUILD_VERSION_MINOR).$(BUILD_VERSION_BUILD)
-BUILD_VERSION_DEPS = $(PATH_ROOT)/src/version.h $(MAKEFILE_LIST)
+BUILD_VERSION_DEPS = $(BUILD_VERSION_FILE) $(MAKEFILE_LIST)
 
 # Grab build properties suitable for BLDLEVEL
 BUILD_DATE := $(shell LANG=C printf ' %-24.24s ' "`date -u +'%Y-%m-%d %T'`")
