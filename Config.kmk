@@ -102,8 +102,17 @@ $(target)_SOURCES = $$(abspathex $(test), $$($(test)_DEFPATH)) $$(abspathex $($(
 # Note: LIBPATHSTRICT=T doesn't work with posix shells, use cmd.exe.
 .PHONY: test-$(target)
 test-$(target):
-	%$(call MSG_L1,Running test $(target)...)
+ifneq ($(has_iters),)
+	$(QUIET)rm -rf test-$(target).log
+	$(QUIET)for f in `seq 1 $(iters)` ; \
+	do \
+	  echo Running test $(target) [iter $$$$f]... ; \
+	  cmd.exe /c "set BEGINLIBPATH=$(PATH_STAGE_LIB);%BEGINLIBPATH% && set LIBPATHSTRICT=T && $(PATH_STAGE_BIN)/$$(notdir $$($(target)_1_TARGET)) --direct >> test-$(target).log 2>&1" || exit $$$$? ; \
+	done
+else
+	$(QUIET)echo Running test $(target)...
 	$(QUIET)cmd.exe /c "set BEGINLIBPATH=$(PATH_STAGE_LIB);%BEGINLIBPATH% && set LIBPATHSTRICT=T && $(PATH_STAGE_BIN)/$$(notdir $$($(target)_1_TARGET)) --direct > test-$(target).log 2>&1"
+endif
 
 ifneq ($(ordered),)
 .NOTPARALLEL: test-$(target)
@@ -120,5 +129,11 @@ endef # def_test_rules
 define def_test
 local target := $(notdir $(basename $(test)))
 local ordered := $($(test)_ORDERED)
+local has_iters :=
+local iters := 1
+ifneq ($($(target)_ITERATIONS),)
+local has_iters := 1
+local iters := $($(target)_ITERATIONS)
+endif
 $(eval $(def_test_rules))
 endef # def_test
