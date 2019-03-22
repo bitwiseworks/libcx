@@ -110,11 +110,14 @@ TESTS += \
   mmap/tst-mmap8.c \
   mmap/tst-mmap9.c \
   mmap/tst-mmap10.c \
+  mmap/tst-mmap11.c \
   mmap/tst-msync.c \
   mmap/tst-msync2.c \
   mmap/tst-msync3.c \
   mmap/tst-madvise.c \
   mmap/tst-mprotect.c
+
+tst-mmap11_ITERATIONS = 5
 
 TESTS += exeinfo/tst-exeinfo.c
 exeinfo/tst-exeinfo.c_SOURCES = exeinfo/tst-exeinfo.rc
