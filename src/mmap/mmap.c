@@ -1650,22 +1650,6 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
           report->fHandlerFlags, report->NestedExceptionReportRecord, report->ExceptionAddress,
           addr, report->ExceptionInfo[0]);
 
-    if (isGuard && report->fHandlerFlags & EH_NESTED_CALL && report->NestedExceptionReportRecord &&
-        report->NestedExceptionReportRecord->ExceptionNum == XCPT_ACCESS_VIOLATION &&
-        report->NestedExceptionReportRecord->ExceptionInfo[1] == addr &&
-        report->NestedExceptionReportRecord->ExceptionInfo[0] == report->ExceptionInfo[0])
-    {
-      /*
-       * Optimization: this exception is coming from DosRead after
-       * DosSetMem(PAG_COMMIT) in the code below due to PAG_GUARD. Since that
-       * code is already under global_lock (and has also validated the
-       * address), it makes no sense to do it again, so just continue.
-       */
-
-      TRACE("Shortcutting due to nested PAG_GUARD effect from DosRead\n");
-      return XCPT_CONTINUE_EXECUTION;
-    }
-
     global_lock();
 
     desc = find_proc_desc(getpid());
