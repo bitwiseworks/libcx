@@ -1,5 +1,9 @@
 # History of changes for LIBCx
 
+#### Version 0.6.5 (2019-03-29)
+
+* mmap: Implement thread-safe concurrent access to file-based mappings [#68].
+
 #### Version 0.6.4 (2018-12-31)
 
 * mmap: Fix returning EOVERFLOW on files with sizes greater than 4G.
