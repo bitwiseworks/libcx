@@ -57,11 +57,11 @@ EXPORTS
   ;ddd "_get_proc_mmaps"
   ;ddd "_libcx_trace"
 IMPORTS
-  __libc__init_app=libc066.___init_app
-  __libc_beginthread=libc066.__beginthread
-  __libc__read=libc066.___read
-  __libc_stream_read=libc066.__stream_read
-  __libc__control87=libc066.__control87
-  __libc___waitpid=libc066.___waitpid
+  __libc__init_app=libcn0.___init_app
+  __libc_beginthread=libcn0.__beginthread
+  __libc__read=libcn0.___read
+  __libc_stream_read=libcn0.__stream_read
+  __libc__control87=libcn0.__control87
+  __libc___waitpid=libcn0.___waitpid
   _doscalls_DosRead=doscalls.281
   _doscalls_DosWaitChild=doscalls.280
