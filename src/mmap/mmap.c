@@ -1641,7 +1641,7 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
     BOOL isGuard = report->ExceptionNum == XCPT_GUARD_PAGE_VIOLATION;
 
     ProcDesc *desc;
-    MemMap *m;
+    MemMap *m = NULL;
 
     ULONG addr = report->ExceptionInfo[1];
 
