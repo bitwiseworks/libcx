@@ -905,7 +905,7 @@ static int fcntl_locking(int fildes, int cmd, struct flock *fl)
 
           global_unlock();
 
-          arc = DosWaitEventSem(gpData->fcntl_locking->hEvSem, SEM_INDEFINITE_WAIT);
+          DOS_NI(arc = DosWaitEventSem(gpData->fcntl_locking->hEvSem, SEM_INDEFINITE_WAIT));
           TRACE("DosWaitEventSem = %lu\n", arc);
 
           ASSERT(arc == NO_ERROR || arc == ERROR_INTERRUPT);

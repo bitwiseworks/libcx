@@ -1486,7 +1486,7 @@ static void mmap_flush_thread(void *arg)
 
   while (1)
   {
-    arc = DosWaitEventSem(desc->mmap->flush_sem, SEM_INDEFINITE_WAIT);
+    DOS_NI(arc = DosWaitEventSem(desc->mmap->flush_sem, SEM_INDEFINITE_WAIT));
     TRACE_IF(arc, "DosWaitEventSem = %ld\n", arc);
 
     global_lock();

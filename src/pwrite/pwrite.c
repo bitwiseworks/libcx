@@ -120,14 +120,14 @@ static ssize_t pread_pwrite(int bWrite, int fildes, void *buf,
 
   ASSERT(mutex);
 
-  arc = DosRequestMutexSem(mutex, SEM_INDEFINITE_WAIT);
+  DOS_NI(arc = DosRequestMutexSem(mutex, SEM_INDEFINITE_WAIT));
   if (arc == ERROR_INVALID_HANDLE)
   {
     /* Try to open the mutex for this process */
     arc = DosOpenMutexSem(NULL, &mutex);
     TRACE("DosOpenMutexSem = %lu\n", arc);
     if (arc == NO_ERROR)
-      arc = DosRequestMutexSem(mutex, SEM_INDEFINITE_WAIT);
+      DOS_NI(arc = DosRequestMutexSem(mutex, SEM_INDEFINITE_WAIT));
   }
 
   ASSERT_MSG(arc == NO_ERROR, "%ld", arc);

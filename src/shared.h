@@ -116,6 +116,15 @@ void libcx_assert(const char *string, const char *fname, unsigned int line, cons
 /** Set errno (does tracing in debug builds). */
 #define SET_ERRNO(code) SET_ERRNO_AND(code, (void)0)
 
+/**
+ * Suppresses the ERROR_INTERRUPT return value in Dos API calls by retrying the
+ * operation as long as this code is returned. This is primarily intended to
+ * avoid unnecessary interrupts of system calls that may happen during POSIX
+ * signal delivery (e.g. SIGCHLD). Note that the macro cannot be used in
+ * assignment expressions so call it with the whole assignment as an argument.
+ */
+#define DOS_NI(expr) while((expr) == ERROR_INTERRUPT)
+
 /** Divides count by bucket_sz and rounds the result up. */
 #define DIVIDE_UP(count, bucket_sz) (((count) + (bucket_sz - 1)) / (bucket_sz))
 /** Rounds count up to be a multiple of bucket_sz */

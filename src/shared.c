@@ -185,7 +185,7 @@ static void shared_init()
        * guarantee shared memory is already alloated, then get access to
        * it and open shared heap located in that memory.
        */
-      arc = DosRequestMutexSem(gMutex, SEM_INDEFINITE_WAIT);
+      DOS_NI(arc = DosRequestMutexSem(gMutex, SEM_INDEFINITE_WAIT));
       ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
 
       if (arc == NO_ERROR)
@@ -354,7 +354,7 @@ static void shared_term()
 
   ASSERT(gSeenAssertion || gMutex != NULLHANDLE);
 
-  DosRequestMutexSem(gMutex, SEM_INDEFINITE_WAIT);
+  DOS_NI(arc = DosRequestMutexSem(gMutex, SEM_INDEFINITE_WAIT));
 
   if (gpData)
   {
@@ -559,7 +559,7 @@ void global_lock()
   ASSERT(gMutex != NULLHANDLE);
   ASSERT(gpData);
 
-  arc = DosRequestMutexSem(gMutex, SEM_INDEFINITE_WAIT);
+  DOS_NI(arc = DosRequestMutexSem(gMutex, SEM_INDEFINITE_WAIT));
 
   ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
 }

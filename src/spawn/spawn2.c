@@ -307,7 +307,7 @@ int __spawn2(int mode, const char *name, const char * const argv[],
       TRACE("waiting for wrapper to kick in\n");
       do
       {
-        arc = DosWaitEventSem(spawn2_sem, 500);
+        DOS_NI(arc = DosWaitEventSem(spawn2_sem, 500));
         ASSERT_MSG(arc == NO_ERROR || arc == ERROR_TIMEOUT || arc == ERROR_INTERRUPT,
                    "%ld %lx", arc, spawn2_sem);
 
