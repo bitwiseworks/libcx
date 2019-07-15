@@ -1,5 +1,9 @@
 # History of changes for LIBCx
 
+#### Version 0.6.6 (2019-07-15)
+
+* Handle ERROR_INTERRUPT from Dos calls by retrying [#39].
+
 #### Version 0.6.5 (2019-03-29)
 
 * mmap: Implement thread-safe concurrent access to file-based mappings [#68].
