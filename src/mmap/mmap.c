@@ -2129,6 +2129,13 @@ static int protect_map(ProcDesc *desc, MemMap *m, ULONG addr, size_t len, ULONG 
     if (!(m->flags & MAP_ANON))
       return -1;
 
+    /*
+     * Also fail the check if there is a partial mprotect: we don't support
+     * that ATM (see #75).
+     */
+    if (addr > m->start || addr + len < m->end)
+      return -1;
+
     return 0;
   }
 
