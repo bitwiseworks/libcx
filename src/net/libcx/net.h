@@ -29,6 +29,7 @@
  */
 
 #include <stddef.h>
+#include <sys/socket.h> /* for socklen_t */
 #include <net/if.h> /* for IFNAMSIZ */
 
 /* GAI error codes */
@@ -59,8 +60,6 @@
 #define AI_CANONNAME   0x0002
 #define AI_NUMERICHOST 0x0004
 #define AI_NUMERICSERV 0x0400
-
-typedef int socklen_t;
 
 struct addrinfo
 {
