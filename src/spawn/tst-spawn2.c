@@ -762,8 +762,9 @@ int do_test(int argc, const char *const *argv)
       DosWaitThread(&tid, DCWW_WAIT);
     }
 
-    if (test12_done != tid_cnt)
-      perr_and(return 1, "test 12: done threads %d, not %d", test12_done, tid_cnt);
+    unsigned int test12_done_load = __atomic_load_n(&test12_done, __ATOMIC_RELAXED);
+    if (test12_done_load != tid_cnt)
+      perr_and(return 1, "test 12: done threads %d, not %d", test12_done_load, tid_cnt);
   }
 
   return 0;
@@ -847,7 +848,7 @@ static void test12_thread(void *arg)
     if (wait_pid("test 12", pid, 0, 0))
       break;
 
-    __atomic_increment(&test12_done);
+    __atomic_add_fetch(&test12_done, 1, __ATOMIC_RELAXED);
   }
   while (0);
 }
