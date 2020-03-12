@@ -79,13 +79,12 @@ int main(int argc, char **argv)
     req->rc = rc;
   }
 
-  /* ...close the handles to give the child full control over them... */
+  /* ...close redirected handles to give the child full control over them... */
   if (req->stdfds)
   {
-    int i;
-    for (i = 0; i < 3; ++i)
-      if (req->stdfds[i] > 2) /* only close non-stdio ones */
-        close(req->stdfds[i]);
+    const int *pfd = req->stdfds;
+    while (*pfd++ != -1)
+      close(*pfd++); /* close target (child) handle */
   }
 
   /* ...and report to the parent waiting in spawn2 ASAP */

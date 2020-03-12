@@ -41,6 +41,7 @@
 #include <emx/umalloc.h>
 
 #define TRACE_GROUP TRACE_GROUP_SPAWN
+#define TRACE_MORE 0
 
 #include "../shared.h"
 
@@ -64,7 +65,7 @@ enum { InitialPairArraySize = 10 };
 
 static
 int __spawn2(int mode, const char *name, const char * const argv[],
-             const char *cwd, const char * const envp[], int stdfds[3],
+             const char *cwd, const char * const envp[], const int stdfds[],
              Spawn2Request *req)
 {
   TRACE("mode %x name [%s] argv %p cwd [%s] envp %p stdfds %p\n",
@@ -86,37 +87,73 @@ int __spawn2(int mode, const char *name, const char * const argv[],
 
   TRACE_BEGIN_IF(stdfds, "stdfds [");
     int i;
-    for (i = 0; i < 3; ++i)
+    for (i = 0; ((mode & P_2_XREDIR) && stdfds[i] != -1) ||
+                (!(mode & P_2_XREDIR) && i < 3); ++i)
       TRACE_CONT("%d,", stdfds[i]);
     TRACE_CONT("]\n");
   TRACE_END();
 
-  if (!name || !*name || !argv || !*argv)
+  if (!name || !*name || !argv || !*argv || (!stdfds && (mode & P_2_XREDIR)))
     SET_ERRNO_AND(return -1, EINVAL);
 
-  int have_stdfds = 0;
-  int stdfds_copy[3] = {0};
-
+  int num_redirs = 0;
   if (stdfds)
   {
-    /*
-     * We accept stdfds[1] = 1 and stdfds[2] = 2 and treat it as 0 (no
-     * redirection). This is for compatibility with apps that blindly supply
-     * standard handles for redirection (which makes no practical sense
-     * but can be explained from a programmatic POV).
-     */
+    if (!(mode & P_2_XREDIR))
+    {
+      /* Use extended mode to implement simple redirection */
 
-    if ((stdfds[0] == 1 || stdfds[0] == 2))
-      SET_ERRNO_AND(return -1, EINVAL);
+      ASSERT(!req); /* The wrapper never does that */
 
-    memcpy(stdfds_copy, stdfds, sizeof(stdfds_copy));
+      if ((stdfds[0] == 1 || stdfds[0] == 2))
+        SET_ERRNO_AND(return -1, EINVAL);
+      if ((stdfds[0] == -1 || stdfds[1] == -1 || stdfds[2] == -1))
+        SET_ERRNO_AND(return -1, EBADF);
 
-    if (stdfds_copy[1] == 1)
-      stdfds_copy[1] = 0;
-    if (stdfds_copy[2] == 2)
-      stdfds_copy[2] = 0;
+      /*
+       * We accept stdfds[1] = 1 and stdfds[2] = 2 which is effectively the
+       * same as 0 (no redirection, but inherit the handle from parent). This
+       * is for compatibility with apps that blindly supply standard handles
+       * for redirection (which makes no practical sense but can be explained
+       * from a programmatic POV).
+       *
+       * Note that if all 3 fds are 0, this is effectively the same as stdfds
+       * being NULL, i.e. no special redirection processing is needed at all.
+       * We skop this case leaving num_redirs as 0 (no redirection).
+       */
 
-    have_stdfds = stdfds_copy[0] || stdfds_copy[1] || stdfds_copy[2];
+      if (stdfds[0] || (stdfds[1] && stdfds[1] != 1) || (stdfds[2] && stdfds[2] != 2))
+      {
+        int idx = 0;
+        int fds[7];
+        for (int i = 0; i < 3; ++i)
+        {
+          /*
+           * Apply special handling (0 means inheritance and 1 and 2 are child
+           * handles, not parent ones).
+           */
+          int sfd = stdfds[i];
+          if (!sfd)
+            sfd = i;
+          else if (i == 1 && sfd == 2)
+            sfd = stdfds[2] ? stdfds[2] : 2;
+          else if (i == 2 && sfd == 1)
+            sfd = stdfds[1] ? stdfds[1] : 1;
+
+          fds[idx++] = sfd; /* source (parent) fd */
+          fds[idx++] = i; /* target (child) fd */
+        }
+        fds[idx] = -1;
+        return __spawn2(mode | P_2_XREDIR, name, argv, cwd, envp, fds, NULL);
+      }
+    }
+    else
+    {
+      const int *pfd = stdfds;
+      while (*pfd++ != -1)
+        ++num_redirs;
+      num_redirs /= 2;
+    }
   }
 
   int type = mode & P_2_MODE_MASK;
@@ -158,8 +195,16 @@ int __spawn2(int mode, const char *name, const char * const argv[],
       payload_size += sizeof(char *) * (envc + 1);
     }
 
-    if (have_stdfds)
-      payload_size += sizeof(stdfds_copy);
+    int *inherited = NULL;
+    if (num_redirs)
+    {
+      payload_size += sizeof(stdfds[0]) * (num_redirs * 2 + 1);
+      inherited = malloc(sizeof(*inherited) * num_redirs);
+      if (!inherited)
+        SET_ERRNO_AND(return -1, ENOMEM);
+      for (i = 0; i < num_redirs; ++i)
+        inherited[i] = -1;
+    }
 
     /* Allocate the request from LIBCx shared memory */
     size_t req_size = sizeof(Spawn2Request) + payload_size;
@@ -177,7 +222,10 @@ int __spawn2(int mode, const char *name, const char * const argv[],
     global_unlock();
 
     if (!spawn2_sem || !mem)
+    {
+      free(inherited);
       SET_ERRNO_AND(return -1, ENOMEM);
+    }
 
     /* Fill up request data */
 
@@ -234,31 +282,33 @@ int __spawn2(int mode, const char *name, const char * const argv[],
     else
       req->envp = NULL;
 
-    int inherited [3] = {0};
-
-    if (have_stdfds)
+    if (num_redirs)
     {
-      len = sizeof(stdfds_copy);
-      memcpy(payload, stdfds_copy, len);
-      req->stdfds = (int *)payload;
-      payload += len;
+      const int *pfd = stdfds;
+      int *pl = (int *)payload;
+      req->stdfds = pl;
 
-      /* Make sure stdio file handles are inherited by the wrapper */
-      for (i = 0; i < 3; ++i)
+      for (i = 0; i < num_redirs; ++i)
       {
-        if (stdfds_copy[i])
+        /* Make sure the source file handles are inherited by the wrapper */
+        int f = rc = fcntl(*pfd, F_GETFD);
+        if (f != -1 && (f & FD_CLOEXEC))
         {
-          int f = rc = fcntl(stdfds_copy[i], F_GETFD);
-          if (f != -1 && (f & FD_CLOEXEC))
-          {
-            TRACE("enable inheritance for %d\n", stdfds_copy[i]);
-            rc = fcntl(stdfds_copy[i], F_SETFD, f & ~FD_CLOEXEC);
-            if (rc != -1)
-              inherited[i] = 1;
-          }
-          if (rc == -1)
-            break;
+          TRACE("enable wrapper inheritance for fd %d\n", *pfd);
+          rc = fcntl(*pfd, F_SETFD, f & ~FD_CLOEXEC);
+          if (rc != -1)
+            inherited[i] = *pfd;
         }
+        if (rc == -1)
+          break;
+        /* copy both source and target fds */
+        *pl++ = *pfd++;
+        *pl++ = *pfd++;
+      }
+      if (rc != -1)
+      {
+        *pl++ = -1;
+        payload = (char *)pl;
       }
     }
     else
@@ -282,18 +332,19 @@ int __spawn2(int mode, const char *name, const char * const argv[],
     }
 
     /* Restore stdio file handle inheritance */
-    if (have_stdfds)
+    if (num_redirs)
     {
-      for (i = 0; i < 3; ++i)
+      for (i = 0; i < num_redirs; ++i)
       {
-        if (inherited[i])
+        if (inherited[i] != -1)
         {
-          int f = fcntl(stdfds_copy[i], F_GETFD);
+          int f = fcntl(inherited[i], F_GETFD);
           if (f != -1)
-            f = fcntl(stdfds_copy[i], F_SETFD, f | FD_CLOEXEC);
+            f = fcntl(inherited[i], F_SETFD, f | FD_CLOEXEC);
           ASSERT_MSG(f != -1, "%d %d", f, errno);
         }
       }
+      free(inherited);
     }
 
     if (rc != -1)
@@ -443,7 +494,9 @@ int __spawn2(int mode, const char *name, const char * const argv[],
   int rc_errno = 0;
 
   char *curdir = NULL;
-  int dupfds[3] = {0};
+  int *dups = NULL;
+  int *inherited = NULL;
+  fd_set *noclofds = NULL;
   fd_set *clofds = NULL;
 
   char **envp_copy = (char **)envp;
@@ -476,52 +529,145 @@ int __spawn2(int mode, const char *name, const char * const argv[],
 
   if (rc != -1)
   {
-    // Duplicate stdio (0,1,2) if needed
-    if (have_stdfds)
+    /* Process redirected file handles */
+    if (num_redirs)
     {
-      int i;
-      for (i = 0; i < 3; ++i)
+      dups = malloc(sizeof(*dups) * num_redirs);
+      if (dups)
       {
-        /*
-         * Note that we don't have to handle value of 1 in stdfds[2] specially:
-         * if stdfds[1] was provided, 1 was already redirected to it, so
-         * redirecting to 1 is equivalent to redirecting to stdfds[1]; if it
-         * was not, then we'll redirect 2 to 1 which is simply stdout in this
-         * case - still just what we need. We do need special handling for 2 in
-         * stdfds[1] though (by using a value of stdfds[2] as the target of
-         * redirection if it's provided).
-         */
+        inherited = malloc(sizeof(*inherited) * num_redirs);
+        if (inherited)
+          noclofds = malloc(sizeof(*noclofds));
+      }
+      if (!dups || !inherited || !noclofds)
+      {
+        rc_errno = ENOMEM;
+        rc = -1;
+      }
+      else
+      {
+        FD_ZERO(noclofds);
 
-        if (stdfds_copy[i])
+        const int *pfd = stdfds;
+        for (int i = 0; i < num_redirs; ++i)
         {
-          /* Secially handle stdfds[1] = 2 */
-          int target = stdfds_copy[i];
-          if (i == 1 && target == 2 && stdfds_copy[2])
-          {
-            target = stdfds_copy[2];
-            /* Break cirular redirection (stdout remains itself) */
-            if (target == 1)
-              continue;
-          }
+          inherited[i] = -1;
+          dups[i] = -1;
 
-          int fd = rc = dup(i);
+          /*
+           * Duplicate (save) all target file handles upfront to account for
+           * cross-redirections like (1->2, 2->1) unless they are simply
+           * inherited.
+           */
           if (rc != -1)
           {
-            int f = rc = fcntl(fd, F_GETFD);
+            int sfd = *pfd++;
+            int tfd = *pfd++;
+
+            if (FD_ISSET(tfd, noclofds))
+            {
+              TRACE("target fd %d given twice\n", tfd);
+              rc_errno = EINVAL;
+              rc = -1;
+              continue;
+            }
+            FD_SET(tfd, noclofds);
+
+            /* No need to duplicate an inherited file handle */
+            if (sfd == tfd)
+              continue;
+
+            dups[i] = rc = dup(tfd);
+            if (rc == -1 && errno == EBADF)
+            {
+              /* No need to duplicate a non-existent file handle */
+              rc = 0;
+              continue;
+            }
+
+            TRACE("save target fd %d as %d\n", tfd, dups[i]);
+
+            int f = rc = fcntl(dups[i], F_GETFD);
             if (rc != -1)
             {
-              rc = fcntl(fd, F_SETFD, f | FD_CLOEXEC);
+              rc = fcntl(dups[i], F_SETFD, f | FD_CLOEXEC);
               if (rc != -1)
-                if ((rc = dup2(target, i)) != -1)
-                  dupfds[i] = fd;
+              {
+                /*
+                 * Remember CLOEXEC flag of the original handle to properly
+                 * restore it later (dup creates fds with inheritance enabled).
+                 */
+                f = rc = fcntl(tfd, F_GETFD);
+                if (rc != -1 && (f & FD_CLOEXEC))
+                  inherited[i] = dups[i];
+              }
             }
+            if (rc == -1)
+              rc_errno = errno;
           }
-          if (rc == -1)
+        }
+
+        if (rc != -1)
+        {
+          const int *pfd = stdfds;
+          for (int i = 0; i < num_redirs; ++i)
           {
-            rc_errno = errno;
-            if (fd != -1)
-              close(fd);
-            break;
+            int sfd = *pfd++;
+            int tfd = *pfd++;
+
+            if (sfd == tfd)
+            {
+              /* Same file number, just enable inheritance */
+              int f = rc = fcntl(sfd, F_GETFD);
+              if (f != -1 && (f & FD_CLOEXEC))
+              {
+                TRACE("enable redir inheritance for fd %d\n", sfd);
+                rc = fcntl(sfd, F_SETFD, f & ~FD_CLOEXEC);
+                if (rc != -1)
+                  inherited[i] = sfd;
+              }
+              if (rc == -1)
+              {
+                rc_errno = errno;
+                break;
+              }
+            }
+            else
+            {
+              TRACE("duplicate source fd %d to target fd %d\n", sfd, tfd);
+
+              if (FD_ISSET(sfd, noclofds))
+              {
+                /*
+                 * Source fd is among targets so it could be already replaced
+                 * by another source fd. Find the saved original for it.
+                 */
+                for (int j = 0; j < i; ++j)
+                {
+                  if (stdfds[j * 2 + 1] == sfd)
+                  {
+                    sfd = dups[j];
+                    TRACE("replacing source fd with saved copy %d\n", sfd);
+                    ASSERT(sfd != -1);
+                  }
+                }
+              }
+
+              rc = dup2(sfd, tfd);
+              if (rc == -1)
+              {
+                rc_errno = errno;
+                break;
+              }
+            }
+
+            /*
+             * No need to disable inheritance for dups later as it's already
+             * done in the first loop (note that we can't put dups to noclofds
+             * there as noclofds is used to find duplicates in target handles).
+             */
+            if (dups[i] != -1)
+              FD_SET(dups[i], noclofds);
           }
         }
       }
@@ -529,8 +675,8 @@ int __spawn2(int mode, const char *name, const char * const argv[],
 
     if (rc != -1)
     {
-      // Disable inheritance if needed
-      if (mode & P_2_NOINHERIT)
+      /* Disable inheritance if requested */
+      if (mode & (P_2_NOINHERIT | P_2_XREDIR))
       {
         clofds = malloc(sizeof(*clofds));
         if (clofds == NULL)
@@ -542,14 +688,20 @@ int __spawn2(int mode, const char *name, const char * const argv[],
         {
           FD_ZERO(clofds);
 
-          int fd;
-          for (fd = 3; fd < OPEN_MAX; ++fd)
+          /* Leave std handles intact if there is no redirection */
+          int fd = num_redirs ? 0 : 3;
+          for (; fd < FD_SETSIZE; ++fd)
           {
+            /* Ignore redirected/inherited handles */
+            if (noclofds && FD_ISSET(fd, noclofds))
+              continue;
+
             int f = fcntl(fd, F_GETFD);
             if (f != -1)
             {
               if (!(f & FD_CLOEXEC))
               {
+                TRACE_IF(TRACE_MORE, "disable inheritance for fd %d\n", fd);
                 if ((rc = fcntl(fd, F_SETFD, f | FD_CLOEXEC)) != -1)
                   FD_SET(fd, clofds);
               }
@@ -1018,11 +1170,13 @@ int __spawn2(int mode, const char *name, const char * const argv[],
   /* Restore inheritance */
   if (clofds)
   {
-    int fd;
-    for (fd = 3; fd < OPEN_MAX; ++fd)
+    /* Leave std handles intact if there is no redirection */
+    int fd = num_redirs ? 0 : 3;
+    for (; fd < FD_SETSIZE; ++fd)
     {
       if (FD_ISSET(fd, clofds))
       {
+        TRACE_IF(TRACE_MORE, "re-enable inheritance for fd %d\n", fd);
         int f = fcntl(fd, F_GETFD);
         if (f != -1)
           fcntl(fd, F_SETFD, f & ~FD_CLOEXEC);
@@ -1032,18 +1186,48 @@ int __spawn2(int mode, const char *name, const char * const argv[],
     free(clofds);
   }
 
-  /* Restore stdio (0,1,2) */
-  if (have_stdfds)
+  /* Restore redirected file handles */
+  if (num_redirs)
   {
-    int i;
-    for (i = 0; i < 3; ++i)
+    if (dups && inherited && noclofds)
     {
-      if (dupfds[i])
+      const int *pfd = stdfds;
+      for (int i = 0; i < num_redirs; ++i)
       {
-        dup2(dupfds[i], i);
-        close(dupfds[i]);
+        if (inherited[i] != -1)
+        {
+          /* Disable temporarily enable inheritance */
+          int fd = inherited[i];
+          int f = fcntl(fd, F_GETFD);
+          if (f != -1)
+            f = fcntl(fd, F_SETFD, f | FD_CLOEXEC);
+          ASSERT_MSG(f != -1, "%d %d %d", i, fd, errno);
+        }
+
+        int sfd = *pfd++;
+        int tfd = *pfd++;
+        int dfd = dups[i];
+
+        if (dfd != -1)
+        {
+          TRACE("restore target fd %d from %d\n", tfd, dfd);
+          if (dup2(dfd, tfd) != -1)
+            close(dfd);
+          else
+            ASSERT_MSG(0, "%d %d %d %d", i, dfd, tfd, errno);
+        }
+        else if (sfd != tfd)
+        {
+          /* It's a redirection but the target fd didn't exist, clean it up */
+          TRACE("close temporary target fd %d\n", tfd);
+          close(tfd);
+        }
       }
     }
+
+    free(noclofds);
+    free(inherited);
+    free(dups);
   }
 
   /* Restore the current directory */
@@ -1063,7 +1247,7 @@ int __spawn2(int mode, const char *name, const char * const argv[],
 }
 
 int spawn2(int mode, const char *name, const char * const argv[],
-           const char *cwd, const char * const envp[], int stdfds[3])
+           const char *cwd, const char * const envp[], const int stdfds[])
 {
   return __spawn2(mode, name, argv, cwd, envp, stdfds, NULL);
 }

@@ -28,6 +28,7 @@
 #include <unistd.h>
 #include <alloca.h>
 #include <sys/fmutex.h>
+#include <sys/socket.h>
 
 #include "libcx/spawn2.h"
 
@@ -197,6 +198,12 @@ int do_test(int argc, const char *const *argv)
 
       case 10:
       {
+        int ofd = 2; // stderr by default
+
+        int nn = argc > 2 ? atoi(argv[2]) : 0;
+        if (nn == 2)
+          ofd = 1234; // hard-coded fd
+
         char buf[1024];
         rc = read(0, buf, sizeof(buf) - 1);
         if (rc == -1)
@@ -204,7 +211,7 @@ int do_test(int argc, const char *const *argv)
 
         buf[rc] = 0;
 
-        write(2, buf, strlen(buf));
+        write(ofd, buf, strlen(buf));
         break;
       }
 
@@ -557,6 +564,46 @@ int do_test(int argc, const char *const *argv)
       restore_logging(logging);
     }
 
+    // stderr->stdout pipe check in P_2_XREDIR mode, should succeed
+    printf ("test 9.2 (iter %d)\n", iter);
+    {
+      // forbid our own logging as we catch stdout
+      char *logging = suppress_logging();
+
+      int p[2];
+      rc = pipe(p);
+      if (rc == -1)
+        perrno_and(return 1, "test 9: pipe");
+
+      int stdfds[] = { p[1], 1, p[1], 2, -1 };
+
+      const char *args[] = { exename, "--direct", "9", NULL };
+      int pid = spawn2(P_NOWAIT | P_2_XREDIR | flags, exename, args, NULL, NULL, stdfds);
+      if (pid == -1)
+        perrno_and(return 1, "test 9.2: spawn2");
+
+      rc = close(p[1]);
+      if (rc == -1)
+        perrno_and(return 1, "test 9.2: close");
+
+      char buf[1024] = {0};
+      rc = read(p[0], buf, sizeof(buf) - 1);
+      if (rc == -1)
+        perrno_and(return 1, "test 9.2: read");
+
+      buf[rc] = 0;
+
+      if (wait_pid("test 9.2", pid, 0, 0))
+        return 1;
+
+      if (strcmp(buf, "CHILD TEST 9") != 0)
+        perr_and(return 1, "test 9.2: expected [CHILD TEST 9] got [%s]", buf);
+
+      close(p[0]);
+
+      restore_logging(logging);
+    }
+
     // stdin+stderr pipe check, should succeed
     printf ("test 10 (iter %d)\n", iter);
     {
@@ -602,6 +649,56 @@ int do_test(int argc, const char *const *argv)
 
       if (strcmp(buf, test_str) != 0)
         perr_and(return 1, "test 10: expected [%s] got [%s]", test_str, buf);
+
+      close(po[0]);
+      close(pi[1]);
+    }
+
+    // stdin+fixed fd socketpair check in P_2_XREDIR mode, should succeed
+    printf ("test 10.2 (iter %d)\n", iter);
+    {
+      int pi[2];
+      rc = socketpair(AF_UNIX, SOCK_STREAM, 0, pi);
+      if (rc == -1)
+        perrno_and(return 1, "test 10.2: socketpair in");
+
+      int po[2];
+      rc = socketpair(AF_UNIX, SOCK_STREAM, 0, po);
+      if (rc == -1)
+        perrno_and(return 1, "test 10.2: socketpair out");
+
+      int stdfds[] = { pi[0], 0, po[1], 1234, -1 };
+
+      const char *args[] = { exename, "--direct", "10", "2", NULL };
+      int pid = spawn2(P_NOWAIT | P_2_XREDIR | flags, exename, args, NULL, NULL, stdfds);
+      if (pid == -1)
+        perrno_and(return 1, "test 10.2: spawn2");
+
+      rc = close(po[1]);
+      if (rc == -1)
+        perrno_and(return 1, "test 10.2: close out");
+
+      rc = close(pi[0]);
+      if (rc == -1)
+        perrno_and(return 1, "test 10.2: close in");
+
+      const char *test_str = "CHILD 10 TEST PING";
+      rc = write(pi[1], test_str, strlen(test_str));
+      if (rc == -1)
+        perrno_and(return 1, "test 10.2: write");
+
+      char buf[1024] = {0};
+      rc = read(po[0], buf, sizeof(buf) - 1);
+      if (rc == -1)
+        perrno_and(return 1, "test 10.2: read");
+
+      buf[rc] = 0;
+
+      if (wait_pid("test 10.2", pid, 0, 0))
+        return 1;
+
+      if (strcmp(buf, test_str) != 0)
+        perr_and(return 1, "test 10.2: expected [%s] got [%s]", test_str, buf);
 
       close(po[0]);
       close(pi[1]);

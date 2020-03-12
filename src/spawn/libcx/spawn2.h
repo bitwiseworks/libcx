@@ -31,6 +31,7 @@ __BEGIN_DECLS
 #define P_2_NOINHERIT   0x80000000
 #define P_2_THREADSAFE  0x40000000
 #define P_2_APPENDENV   0x20000000
+#define P_2_XREDIR      0x10000000
 
 #define P_2_MODE_MASK 0x0FF
 #define P_2_TYPE_MASK 0xF00
@@ -62,13 +63,20 @@ __BEGIN_DECLS
  * as `VAR=VAL` strings where `VAL` is optional and `=` is not, otherwise the
  * behavior is undefined too.
  *
- * If the current process wants to redirect standard I/O streams of the child
- * process, it should specify the new handles in the @a stdfds array (which
- * otherwise should be NULL to indicate that the child process should inherit
- * standard I/O handles of its parent). This array, if not NULL, must contain 3
- * elements that represent LIBC file descriptors to be used by the child's
- * stdin, stdout and stderr streams, respectively. Some integer values have a
- * special meaning when used as certain array elements' values:
+ * The @a stdfds argument, when not NULL, allows the current process to set up
+ * file handle redirection and inheritance for the child process. It has two
+ * modes: simple mode (the default one) and extended mode (actiavted by
+ * P_2_XREDIR @a mode flag). Interpretation of the @a stdfds array differs
+ * depending on the mode. If @a stdfds is NULL, no redirection takes place
+ * regardless of the mode and the child process will simply inherit standard
+ * I/O handles of its parent.
+
+ * If the current process only wants to redirect standard I/O streams of the
+ * child process, it should use simple mode and specify the new handles in the
+ * @a stdfds array. This array, if not NULL, must contain exactly 3 elements
+ * that represent LIBC file descriptors to be used by the child's stdin, stdout
+ * and stderr streams, respectively. Some integer values have a special meaning
+ * when used as certain array elements' values:
  *
  * - 0 in any element indicates that the respective stream should not be
  * redirected but instead inherited from the parent.
@@ -82,6 +90,57 @@ __BEGIN_DECLS
  * the stderr stream (or to where stderr is redirected by stdfds[2] if it's not
  * 0). Putting 2 in stdfds[2] is equivalent to putting 0 there (see above).
  * Putting 2 in stdfds[0] will result in EINVAL.
+ *
+ * If the current process needs a more complex redirection and inheritance
+ * setup for the child, it should specify P_2_XREDIR in @a mode and @a stdfds
+ * will be intepreted as sequence of integer pairs ending with a special value
+ * of -1 that indicates the end of the sequence. Integers in each pair
+ * represent LIBC file descriptors where the first one is an open file
+ * descriptor of the current process to be inherited by the child process and
+ * the second one is a file descriptor the inherited one should appear as in
+ * the child process. This scheme allows for both selective inheritance and
+ * complex redirection.
+ *
+ * If both values in the pair match, the specified file descriptor will be
+ * simply inherited by the child process and will appear there under the same
+ * number. If the second value is different, it specifies a new file descriptor
+ * that will represent the file descriptor from the first value in the child
+ * process, effectively enabling I/O stream redirection. Note that as opposed
+ * to simple mode where values of 0, 1 and 2 are given a special meaning, in
+ * P_2_XREDIR mode the first value in the pair always represents an open file
+ * descriptor of the current process while the second value always represents a
+ * new file descriptor in the child process that will be opened to represent
+ * the specified file descriptor of its parent.
+ *
+ * All file descriptors specified in the second value of each pair (i.e. the
+ * ones to be opened in the child process) must be unique. Having a duplicate
+ * there will result in EINVAL from `spawn2`. File descriptors in the first
+ * value of each pair (i.e. the current process ones) must represent open files
+ * and may occur more than once: this allows to redirect the same parent file
+ * to more than one child descriptors (e.g. combine child stdout and stderr
+ * into one stream). Specifying a non-existent file descriptor as the first
+ * value in the pair will result in EBADF.
+ *
+ * Here is an example of redirecting both child stdout and stderr streams to
+ * the current process' file descriptor no. 5 using simple mode:
+ * ```
+ * int stdfds[] = { 0, 5, 1 };
+ * ```
+ * and using extended (P_2_XREDIR) mode:
+ * ```
+ * int stdfds[] = { 5, 1, 5, 2, -1 };
+ * ```
+ * Note that the second case will also cause the current process' stdin to be
+ * not inherited by the child, as opposed to the first one. In order to inherit
+ * it, a pair of 0, 0 should be added somewhere in the array.
+ *
+ * Note that in P_2_XREDIR mode P_2_NOINHERIT is always implied. I.e. only file
+ * descriptors explicitly specified in @a stdfds will be inherited by the child
+ * process from the current process and nothing else. This differs from simple
+ * I/O redirection mode which forces inheritance of standard I/O file
+ * descriptors with values 0, 1, 2 but does not touch other descriptors (so
+ * that they will be inherited depending on their individual settings via
+ * opening files in O_NOINHERIT mode or using `fcntl(F_SETFD, FD_CLOEXEC)`).
  *
  * In addition to the standard `P_*` constanst for the @a mode argument, the
  * following new values are recognized:
@@ -113,6 +172,10 @@ __BEGIN_DECLS
  * be used with P_WAIT or P_NOWAIT and will result in a failure with EINVAL
  * otherwise.
  *
+ * - P_2_XREDIR (added in version 0.6.7) enables extended redirection mode that
+ * changes interpretation of the @a stdfds argument (which must be not NULL in
+ * this case). The extended redirection mode is describred in detail above.
+ *
  * Note that if you issue a thread-unsafe `spawn2` call without P_2_THREADSAFE,
  * then you should provide thread safety on your own (by using syncnrhonization
  * primitives etc). Otherwise it may result in unexpected behavior.
@@ -142,7 +205,7 @@ __BEGIN_DECLS
  * Please consult the `spawnvpe` manual for more information.
  */
 int spawn2(int mode, const char *name, const char * const argv[],
-           const char *cwd, const char * const envp[], int stdfds[3]);
+           const char *cwd, const char * const envp[], const int stdfds[]);
 
 __END_DECLS
 

@@ -28,7 +28,7 @@ typedef struct
   const char *const *argv;
   const char *cwd;
   const char *const *envp;
-  int *stdfds;
+  const int *stdfds;
 
   int rc;
   int err;
