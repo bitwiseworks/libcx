@@ -423,6 +423,9 @@ int __spawn2(int mode, const char *name, const char * const argv[],
                                                            proc->spawn2_wrappers->size + InitialPairArraySize);
                 if (wrappers)
                 {
+                  /* Realloc doesn't zero new memory, do it by hand */
+                  for (int i = wrappers->size; i < wrappers->size + InitialPairArraySize; ++i)
+                    memset(&wrappers->pairs[i], 0, sizeof(wrappers->pairs[i]));
                   wrappers->size = proc->spawn2_wrappers->size + InitialPairArraySize;
                   proc->spawn2_wrappers = wrappers;
                 }
