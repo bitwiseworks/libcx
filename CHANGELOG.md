@@ -1,5 +1,12 @@
 # History of changes for LIBCx
 
+#### Version 0.6.7 (2020-03-27)
+
+* mmap: Return EACCESS for partial mprotect [#75].
+* net.h: Remove socklen_t as it's now defined in LIBC [bitwiseworks/libc#62].
+* spawn2: Allow for selective file handle inheritance [#77].
+* spawn2: Fix crashes when starting too many children in P_2_THREADSAFE mode [#78].
+
 #### Version 0.6.6 (2019-07-15)
 
 * Handle ERROR_INTERRUPT from Dos calls by retrying [#39].
