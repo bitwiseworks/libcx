@@ -643,15 +643,17 @@ int __spawn2(int mode, const char *name, const char * const argv[],
               {
                 /*
                  * Source fd is among targets so it could be already replaced
-                 * by another source fd. Find the saved original for it.
+                 * by another source fd. Find the saved original for it. Note
+                 * that there is no need to replace if that target was simply
+                 * inherited (i.e. matched the source) whcih is indicated by
+                 * its dups entry being -1 (i.e. it was not saved).
                  */
                 for (int j = 0; j < i; ++j)
                 {
-                  if (stdfds[j * 2 + 1] == sfd)
+                  if (dups[j] != -1 && stdfds[j * 2 + 1] == sfd)
                   {
                     sfd = dups[j];
                     TRACE("replacing source fd with saved copy %d\n", sfd);
-                    ASSERT(sfd != -1);
                   }
                 }
               }
