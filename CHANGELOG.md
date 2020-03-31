@@ -1,5 +1,10 @@
 # History of changes for LIBCx
 
+#### Version 0.6.8 (2020-03-31)
+
+* spawn2: Fix assertion when redirecting stderr to stdout [bitwiseworks/libc#69].
+* net: Support common symbolic port names in getaddrinfo [#73].
+
 #### Version 0.6.7 (2020-03-27)
 
 * mmap: Return EACCESS for partial mprotect [#75].
