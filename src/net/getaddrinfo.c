@@ -50,6 +50,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <ctype.h>
 
 #define HOST_NAME_MAX NI_MAXHOST
 
@@ -141,6 +142,33 @@ static char *get_canon_name_from_addr(struct in_addr ip,
 	return ret;
 }
 
+static int get_port_by_name(const char *service)
+{
+	struct servent	*port;		/* Port number for service */
+	int		portnum;	/* Port number */
+
+	if (!service)
+		portnum = 0;
+	else if (isdigit(*service & 255))
+		portnum = atoi(service);
+	else if ((port = getservbyname(service, NULL)) != NULL)
+		portnum = ntohs(port->s_port);
+	else if (!strcmp(service, "http"))
+		portnum = 80;
+	else if (!strcmp(service, "https"))
+		portnum = 443;
+	else if (!strcmp(service, "ipp") || !strcmp(service, "ipps"))
+		portnum = 631;
+	else if (!strcmp(service, "lpd"))
+		portnum = 515;
+	else if (!strcmp(service, "socket"))
+		portnum = 9100;
+	else
+		portnum = 0;
+
+	return portnum;
+}
+
 static struct addrinfo *alloc_entry(const struct addrinfo *hints,
 				struct in_addr ip,
 				unsigned short port)
@@ -180,7 +208,6 @@ static struct addrinfo *alloc_entry(const struct addrinfo *hints,
 /*
  * get address info for a single ipv4 address.
  *
- *	Bugs:	- servname can only be a number, not text.
  */
 
 static int getaddr_info_single_addr(const char *service,
@@ -193,9 +220,7 @@ static int getaddr_info_single_addr(const char *service,
 	struct in_addr ip;
 	unsigned short port = 0;
 
-	if (service) {
-		port = (unsigned short)atoi(service);
-	}
+	port = get_port_by_name(service);
 	ip.s_addr = htonl(addr);
 
 	ai = alloc_entry(hints, ip, port);
@@ -227,7 +252,6 @@ static int getaddr_info_single_addr(const char *service,
 /*
  * get address info for multiple ipv4 addresses.
  *
- *	Bugs:	- servname can only be a number, not text.
  */
 
 static int getaddr_info_name(const char *node,
@@ -241,9 +265,7 @@ static int getaddr_info_name(const char *node,
 	struct hostent *hp = NULL;
 	unsigned short port = 0;
 
-	if (service) {
-		port = (unsigned short)atoi(service);
-	}
+	port = get_port_by_name(service);
 
 	_fmutex *fsem = global_tcpip_sem();
 	ASSERT(_fmutex_request(fsem, _FMR_IGNINT) == 0);
