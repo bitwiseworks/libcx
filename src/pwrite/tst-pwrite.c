@@ -26,6 +26,10 @@
 #include <sys/wait.h>
 #include <sys/stat.h>
 
+#ifdef __OS2__
+#include <io.h>
+#endif
+
 #define FILE_SIZE 128
 
 #ifdef DEBUG

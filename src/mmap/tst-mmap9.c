@@ -27,6 +27,10 @@
 #include <sys/param.h>
 #include <sys/mman.h>
 
+#ifdef __OS2__
+#include <io.h>
+#endif
+
 #include "mmap.h"
 
 #ifndef PAGE_SIZE

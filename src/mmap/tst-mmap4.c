@@ -28,6 +28,10 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 
+#ifdef __OS2__
+#include <io.h>
+#endif
+
 /*
  * @todo For now we can't access beyond EOF for more than within
  * the last page. See https://github.com/bitwiseworks/libcx/issues/20

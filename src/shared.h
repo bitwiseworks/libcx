@@ -306,6 +306,11 @@ void touch_pages(void *buf, size_t len);
 
 char *get_module_name(char *buf, size_t len);
 
+#ifdef DEBUG
+void force_libcx_term();
+void force_libcx_init();
+#endif
+
 #ifdef APIENTRY /* <os2.h> included? */
 
 ULONG APIENTRY _doscalls_DosRead(HFILE hFile, PVOID pBuffer, ULONG ulLength,

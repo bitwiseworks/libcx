@@ -36,6 +36,10 @@
 #include <sys/param.h>
 #include <sys/mman.h>
 
+#ifdef __OS2__
+#include <io.h>
+#endif
+
 #ifndef PAGE_SIZE
 #define PAGE_SIZE 4096
 #endif
