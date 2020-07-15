@@ -1253,8 +1253,60 @@ static void free_mmap(ProcDesc *desc, MemMap *m, MemMap *prev)
   else
   {
     /* Release process-specific memory */
-    arc = DosFreeMem((PVOID)m->start);
-    ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
+    if (!prev && !desc)
+    {
+      /*
+       * All mappings are being released at process termination in order, don't check for errors
+       * as we might be releasing regions twice etc.
+       */
+      DosFreeMem((PVOID)m->start);
+    }
+    else
+    {
+      /*
+       * Some (possibly partial) mapping is being released. Check if there are other mappings
+       * referring to the underlying memory object and skip freeing it if so.
+       */
+      ULONG len = ~0;
+      ULONG mem_flags;
+      arc = DosQueryMem((PVOID)m->start, &len, &mem_flags);
+      ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
+      if (mem_flags & PAG_BASE)
+      {
+        /* We're at the beginning of the region, check if there is any mapping after us */
+        TRACE("beginning of memory object (len %lx), next mmapping %p (%lx..%lx)\n",
+              len, m->next, m->next ? m->next->start : 0, m->next ? m->next->end : 0);
+        if (!m->next || m->next->start >= m->start + len)
+        {
+          arc = DosFreeMem((PVOID)m->start);
+          ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
+        }
+      }
+      else
+      {
+        /* We need to find the beginning of the memory object (it's always on a 64K boundary */
+        ULONG start = m->start & 0xFFFF0000;
+        if (start == m->start)
+          start -= 0x10000;
+        while (start)
+        {
+          len = ~0;
+          arc = DosQueryMem((PVOID)start, &len, &mem_flags);
+          ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
+          if (mem_flags & PAG_BASE)
+            break;
+        }
+        ASSERT_MSG(start && (mem_flags & PAG_BASE), "%lx %lx", start, mem_flags);
+        TRACE("middle of memory object %lx (len %lx), prev mmapping %p (%lx..%lx), next mmapping %p (%lx..%lx)\n",
+              start, len, prev, prev ? prev->start : 0, prev ? prev->end : 0,
+              m->next, m->next ? m->next->start : 0, m->next ? m->next->end : 0);
+        if ((!prev || prev->end <= start) && (!m->next || m->next->start >= start + len))
+        {
+          arc = DosFreeMem((PVOID)start);
+          ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
+        }
+      }
+    }
   }
 
   /* Remove this mapping from this process' mapping list */
