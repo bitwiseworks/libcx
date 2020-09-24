@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <process.h>
 #include <umalloc.h>
+#include <emx/umalloc.h> /* for _um_realloc */
 #include <string.h> /* for TRACE_ERRNO */
 #include <sys/param.h> /* PAGE_SIZE */
 #include <sys/fmutex.h>
@@ -248,23 +249,25 @@ _fmutex *global_tcpip_sem();
 
 void *global_alloc(size_t size);
 
-#define GLOBAL_NEW(ptr) (ptr) = (__typeof(ptr))global_alloc(sizeof(*ptr))
-#define GLOBAL_NEW_PLUS(ptr, more) (ptr) = (__typeof(ptr))global_alloc(sizeof(*ptr) + (more))
-#define GLOBAL_NEW_ARRAY(ptr, sz) (ptr) = (__typeof(ptr))global_alloc(sizeof(*ptr) * (sz))
-#define GLOBAL_NEW_PLUS_ARRAY(ptr, arr, sz) (ptr) = (__typeof(ptr))global_alloc(sizeof(*ptr) + sizeof(*arr) * (sz))
+#define GLOBAL_NEW(ptr) (ptr) = (__typeof(ptr))global_alloc(sizeof(*(ptr)))
+#define GLOBAL_NEW_PLUS(ptr, more) (ptr) = (__typeof(ptr))global_alloc(sizeof(*(ptr)) + (more))
+#define GLOBAL_NEW_ARRAY(ptr, sz) (ptr) = (__typeof(ptr))global_alloc(sizeof(*(ptr)) * (sz))
+#define GLOBAL_NEW_PLUS_ARRAY(ptr, arr, sz) (ptr) = (__typeof(ptr))global_alloc(sizeof(*(ptr)) + sizeof(*(arr)) * (sz))
 
-#define NEW(ptr) (ptr) = (__typeof(ptr))calloc(1, sizeof(*ptr))
-#define NEW_PLUS(ptr, more) (ptr) = (__typeof(ptr))calloc(1, sizeof(*ptr) + (more))
-#define NEW_ARRAY(ptr, sz) (ptr) = (__typeof(ptr))calloc((sz), sizeof(*ptr))
-#define NEW_PLUS_ARRAY(ptr, arr, sz) (ptr) = (__typeof(ptr))calloc(1, sizeof(*ptr) + sizeof(*arr) * (sz))
+#define NEW(ptr) (ptr) = (__typeof(ptr))calloc(1, sizeof(*(ptr)))
+#define NEW_PLUS(ptr, more) (ptr) = (__typeof(ptr))calloc(1, sizeof(*(ptr)) + (more))
+#define NEW_ARRAY(ptr, sz) (ptr) = (__typeof(ptr))calloc((sz), sizeof(*(ptr)))
+#define NEW_PLUS_ARRAY(ptr, arr, sz) (ptr) = (__typeof(ptr))calloc(1, sizeof(*(ptr)) + sizeof(*(arr)) * (sz))
 
-#define RENEW_PLUS(ptr, more) ((__typeof(ptr))realloc(ptr, sizeof(*ptr) + (more)))
-#define RENEW_ARRAY(ptr, sz) ((__typeof(ptr))realloc(ptr, sizeof(*ptr) * (sz)))
-#define RENEW_PLUS_ARRAY(ptr, arr, sz) ((__typeof(ptr))realloc(ptr, sizeof(*ptr) + sizeof(*arr) * (sz)))
+#define crealloc(ptr, sz) _um_realloc(ptr, sz, 4, _UMFI_ZERO)
+#define RENEW_PLUS(ptr, more) ((__typeof(ptr))crealloc(ptr, sizeof(*(ptr)) + (more)))
+#define RENEW_ARRAY(ptr, sz) ((__typeof(ptr))crealloc(ptr, sizeof(*(ptr)) * (sz)))
+#define RENEW_PLUS_ARRAY(ptr, arr, sz) ((__typeof(ptr))crealloc(ptr, sizeof(*(ptr)) + sizeof(*(arr)) * (sz)))
 
-#define COPY_STRUCT(to, from) memcpy((to), (from), sizeof(*from))
-#define COPY_STRUCT_PLUS(to, from, more) memcpy((to), (from), sizeof(*from) + (more))
-#define COPY_ARRAY(to, from, sz) memcpy((to), (from), sizeof(*from) * (sz))
+#define COPY_STRUCT(to, from) memcpy((to), (from), sizeof(*(from)))
+#define COPY_STRUCT_PLUS(to, from, more) memcpy((to), (from), sizeof(*(from)) + (more))
+#define COPY_ARRAY(to, from, sz) memcpy((to), (from), sizeof(*(from)) * (sz))
+#define COPY_STRUCT_PLUS_ARRAY(to, from, arr, sz) memcpy((to), (from), sizeof(*(from)) + sizeof(*(arr)) * (sz))
 
 enum HashMapOpt
 {

@@ -97,10 +97,10 @@ static int gbTerminate = 0; /* 1 after fcntl_locking_term is called */
 static PidList *copy_pids(const PidList *list)
 {
   ASSERT(list);
-  size_t size = sizeof(*list) + sizeof(list->list[0]) * list->size;
-  PidList *nlist = global_alloc(size);
+  PidList *nlist;
+  GLOBAL_NEW_PLUS_ARRAY(nlist, list->list, list->size);
   if (nlist)
-    memcpy(nlist, list, size);
+    COPY_STRUCT_PLUS_ARRAY(nlist, list, list->list, list->size);
   return nlist;
 }
 
@@ -257,21 +257,22 @@ static int lock_mark(struct FcntlLock *l, short type, pid_t pid)
           /* Need more space */
           ASSERT(l->pids->used == l->pids->size);
           size_t nsize = l->pids->size += PID_LIST_MIN_SIZE;
-          PidList *nlist =
-              realloc(l->pids, sizeof(*l->pids) + sizeof(l->pids->list[0]) * nsize);
+          PidList *nlist = l->pids;
+          RENEW_PLUS_ARRAY(nlist, nlist->list, nsize);
           if (!nlist)
             return -1;
-          l->pids->list[l->pids->size] = pid;
-          l->pids->size = nsize;
-          ++l->pids->used;
+          nlist->list[nlist->size] = pid;
+          nlist->size = nsize;
+          ++nlist->used;
+          l->pids = nlist;
         }
       }
       else if (l->type == 'R')
       {
         ASSERT(l->pid && l->pid != pid);
         size_t nsize = PID_LIST_MIN_SIZE;
-        PidList *nlist =
-            global_alloc(sizeof(*l->pids) + sizeof(l->pids->list[0]) * nsize);
+        PidList *nlist;
+        GLOBAL_NEW_PLUS_ARRAY(nlist, nlist->list, nsize);
         if (!nlist)
           return -1;
         nlist->size = nsize;
