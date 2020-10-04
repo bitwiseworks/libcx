@@ -49,6 +49,7 @@
 #define TRACE_GROUP_EXEINFO 6
 #define TRACE_GROUP_CLOSE 7
 #define TRACE_GROUP_SPAWN 8
+#define TRACE_GROUP_SHMEM 9
 #endif
 
 #ifndef TRACE_MORE
@@ -137,6 +138,8 @@ void libcx_assert(const char *string, const char *fname, unsigned int line, cons
 #define PAGE_ALIGNED(addr) (!(((ULONG)addr) & (PAGE_SIZE - 1)))
 /** Returns addr aligned to page boundary. */
 #define PAGE_ALIGN(addr) (((ULONG)addr) & ~(PAGE_SIZE - 1))
+/** Returns length rounded up to a nearest page boundary. */
+#define PAGE_ROUND_UP(length) (ROUND_UP_2(length), PAGE_SIZE)
 /** Returns the number of pages needed for count bytes. */
 #define NUM_PAGES(count) DIVIDE_UP((count), PAGE_SIZE)
 
@@ -214,6 +217,7 @@ typedef struct SharedData
   struct FcntlLocking *fcntl_locking; /* Shared data for fcntl locking */
   unsigned long spawn2_sem; /* Signals spawn2 wrapper events */
   int spawn2_sem_refcnt; /* Number of processes using it */
+  struct ShmemData *shmem; /* shmem API data structure */
 #ifdef STATS_ENABLED
   size_t max_heap_used; /* Max size of used heap space */
   size_t num_procs; /* Number of ProcDesc structs */
@@ -307,6 +311,9 @@ void mmap_term(ProcDesc *proc);
 int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
                    struct _EXCEPTIONREGISTRATIONRECORD *reg,
                    struct _CONTEXT *ctx);
+
+void shmem_data_init(ProcDesc *proc);
+void shmem_data_term(ProcDesc *proc);
 
 void print_stats();
 

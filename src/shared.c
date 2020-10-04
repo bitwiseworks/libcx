@@ -79,6 +79,7 @@ static __LIBC_LOGGROUP  gLogGroup[] =
   { 1, "exeinfo" },           /*  6 */
   { 1, "close" },             /*  7 */
   { 1, "spawn" },             /*  8 */
+  { 1, "shmem" },             /*  9 */
 };
 
 static __LIBC_LOGGROUPS gLogGroups =
@@ -301,6 +302,7 @@ static void shared_init()
   /* Initialize individual components */
   mmap_init(proc);
   fcntl_locking_init(proc);
+  shmem_data_init(proc);
 
   /* Check if it's a spawn2 wrapper (e.g. spawn2-wrapper.c) */
   {
@@ -356,6 +358,7 @@ static void shared_term()
       proc = find_proc_desc_ex(getpid(), &bucket, &prev);
 
       /* Uninitialize individual components */
+      shmem_data_term(proc);
       fcntl_locking_term(proc);
       mmap_term(proc);
 

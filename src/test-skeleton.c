@@ -78,16 +78,27 @@ static inline const char *_getname (const char *path)
     const char *SigName = #need_sig; \
     const int NeedRC = (need_rc), NeedSig = (need_sig); \
     int status; \
-    switch (fork()) \
+    int in_parent_part = 0; \
+    pid_t child_pid; \
+    switch ((child_pid = fork())) \
     { \
       case -1: printf("%s: fork failed: %s\n", ForkName, strerror(errno)); return 1; \
       case 0: \
       { \
         do {} while(0)
 
+/* Injects parent test code while fork is running */
+#define TEST_FORK_PARENT_PART() \
+        assert(0); \
+      } \
+      default: \
+      { \
+        in_parent_part = 1; \
+        do {} while(0)
+
 /* Ends forked test code */
 #define TEST_FORK_END() \
-        assert(0); \
+        if (!in_parent_part) assert(0); \
       } \
     } \
     if (wait(&status) == -1) \

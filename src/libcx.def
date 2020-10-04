@@ -43,6 +43,15 @@ EXPORTS
   "_waitpid"
   "___waitpid"
   "DosWaitChild"
+  "_shmem_create"
+  "_shmem_give"
+  "_shmem_open"
+  "_shmem_duplicate"
+  "_shmem_close"
+  "_shmem_map"
+  "_shmem_unmap"
+  "_shmem_get_info"
+  "_shmem_max_handles"
   ; private symbols (may disappear w/o any notice)
   "_print_stats" @60000 NONAME
   "_libcx_assert" @60001 NONAME

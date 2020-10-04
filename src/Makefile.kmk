@@ -26,6 +26,7 @@ libcx_SOURCES = \
   net/getaddrinfo.c \
   net/getifaddrs.c \
   net/if_nameindex.c \
+  shmem/shmem.c \
   lend/ld32.c \
   main.c \
   main.s \
@@ -128,6 +129,8 @@ TESTS += \
   net/tst-getaddrinfo.c \
   net/tst-getifaddrs.c \
   net/tst-nameindex.c
+
+TESTS += shmem/tst-shmem.c
 
 PROGRAMS += tst-exeinfo-packed-1
 tst-exeinfo-packed-1_TEMPLATE = Test
