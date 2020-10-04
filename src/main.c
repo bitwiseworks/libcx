@@ -121,6 +121,14 @@ ULONG _System libcxExceptionHandler(PEXCEPTIONREPORTRECORD report,
     }
   }
 
+  // If we got that far, it's very likely that we are about to crash. Check if
+  // we are holding our global mutex and log it if we are. Note that we ignore
+  // XCPT_ASYNC_PROCESS_TERMINATE as it is used by kLIBC to deliver POSIX
+  // signals to threads that may happen while holding the mutex as well.
+  if (report->ExceptionNum != XCPT_ASYNC_PROCESS_TERMINATE &&
+      !(report->fHandlerFlags & (EH_NESTED_CALL | EH_UNWINDING)))
+    global_lock_deathcheck();
+
   return XCPT_CONTINUE_SEARCH;
 }
 

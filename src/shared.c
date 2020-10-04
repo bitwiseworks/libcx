@@ -103,7 +103,7 @@ static HMTX gMutex = NULLHANDLE;
 
 static void APIENTRY ProcessExit(ULONG);
 
-enum { StatsBufSize = 512 };
+enum { StatsBufSize = 768 };
 static int format_stats(char *buf, int size);
 
 static void *get_log_instance();
@@ -336,22 +336,6 @@ static void shared_term()
         gMutex, gpData, gpData ? gpData->heap : 0,
         gpData ? gpData->refcnt : 0, gSeenAssertion);
 
-#if !defined(TRACE_ENABLED)
-  if (gSeenAssertion && get_log_instance())
-  {
-    /*
-     * We're crashing after an assertion, write out LIBCx stats (not needed in
-     * trace builds as we will trace that out later anyway)
-     */
-    char *buf = alloca(StatsBufSize);
-    if (buf)
-    {
-      format_stats(buf, StatsBufSize);
-      __libc_LogRaw(gLogInstance, __LIBC_LOG_MSGF_FLUSH, buf, StatsBufSize);
-    }
-  }
-#endif
-
   ASSERT(gSeenAssertion || gMutex != NULLHANDLE);
 
   DOS_NI(arc = DosRequestMutexSem(gMutex, SEM_INDEFINITE_WAIT));
@@ -435,7 +419,9 @@ static void shared_term()
       }
 
 #ifdef TRACE_ENABLED
+      if (!gSeenAssertion)
       {
+        /* Print stats if there wasn't assertion (otherwise libcx_assert does it) */
         char *buf = alloca(StatsBufSize);
         if (buf)
         {
@@ -576,6 +562,58 @@ void global_unlock()
   arc = DosReleaseMutexSem(gMutex);
 
   ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
+}
+
+/**
+ * Returns 0 and PID and TID of the global mutex owner if it is currently
+ * owned.
+ *
+ * Returns -1 if the mutex is not owned or an error occurs.
+ */
+int global_lock_pidtid(int *pid, int *tid)
+{
+  if (gMutex != NULLHANDLE)
+  {
+    PID pid2 = 0;
+    TID tid2 = 0;
+    ULONG count = 0;
+    APIRET arc = DosQueryMutexSem(gMutex, &pid2, &tid2, &count);
+    if (arc == NO_ERROR)
+    {
+      if (pid)
+        *pid = pid2;
+      if (tid)
+        *tid = tid2;
+      return 0;
+    }
+  }
+
+  return -1;
+}
+
+void global_lock_deathcheck()
+{
+  if (gMutex != NULLHANDLE)
+  {
+    int pid, tid;
+    if (global_lock_pidtid(&pid, &tid) == 0 && pid == getpid() && tid == _gettid())
+    {
+      if (get_log_instance())
+      {
+        char buf[128];
+        int n;
+        /* See libcx_trace (it's not available in release builds so log directly) */
+        ULONG ts;
+        DosQuerySysInfo(QSV_MS_COUNT, QSV_MS_COUNT, &ts, sizeof(ts));
+        if (gLogToConsole)
+          n = snprintf(buf, sizeof(buf), "*** %08lx %04x:%02x ", ts, getpid(), _gettid());
+        else
+          n = snprintf(buf, sizeof(buf), "%08lx %02x ", ts, _gettid());
+        n += snprintf(buf + n, sizeof(buf) - n, "OOPS!!! Owner of global LIBCx mutex %08lx is about to die!!!\n", gMutex);
+        __libc_LogRaw(gLogInstance, 0 | __LIBC_LOG_MSGF_FLUSH, buf, n);
+      }
+    }
+  }
 }
 
 /**
@@ -1227,10 +1265,10 @@ static int format_stats(char *buf, int size)
   }
 #endif
 
-  return snprintf(buf, size,
+  int nret;
+  nret = snprintf(buf, size,
                   "\n"
-                  "LIBCx resource usage\n"
-                  "--------------------\n"
+                  "===== LIBCx resource usage =====\n"
                   "Reserved memory size:  %d bytes\n"
                   "Committed memory size: %d bytes\n"
                   "Heap size total:       %d bytes\n"
@@ -1268,6 +1306,25 @@ static int format_stats(char *buf, int size)
                   , gpData->max_shared_files
 #endif
                   );
+
+  if (nret < size - 1 && gMutex != NULLHANDLE)
+  {
+    int pid, tid;
+    if (global_lock_pidtid(&pid, &tid) == 0)
+    {
+      nret += snprintf(buf + nret, size - nret,
+                       "===== LIBCx global mutex owner =====\n"
+                       "mutex handle: %08lx\n"
+                       "owner PID:    %04x (%d)\n"
+                       "owner TID:    %d\n",
+                       gMutex, pid, pid, tid);
+    }
+  }
+
+  if (nret < size - 1)
+    nret += snprintf(buf + nret, size - nret, "===== LIBCx stats end =====\n");
+
+  return nret;
 }
 
 /**
@@ -1327,7 +1384,7 @@ void libcx_trace(unsigned traceGroup, const char *file, int line, const char *fu
   int n;
   ULONG ts;
 
-  enum { MaxBuf = 513 };
+  enum { MaxBuf = StatsBufSize < 513 ? 513 : StatsBufSize + 1 };
 
   msg = (char *)alloca(MaxBuf);
   if (!msg)
@@ -1520,32 +1577,42 @@ void libcx_assert(const char *string, const char *fname, unsigned int line, cons
 
   char *msg = NULL;
 
-  if (format)
   {
     va_list args;
 
-    enum { MaxBuf = 512 };
+    enum { MaxBuf = 512 + StatsBufSize };
 
     msg = (char *)alloca(MaxBuf);
     if (msg)
     {
-      va_start(args, format);
+      int n = 0;
 
-      int n = vsnprintf(msg, MaxBuf - 1, format, args);
-      if (n != EOF)
+      if (format)
       {
-        /* Check for truncation */
-        if (n >= MaxBuf - 1)
-          n = MaxBuf - 2;
-        /* Add \n at the end if missing */
-        if (msg[n] != '\n')
+        va_start(args, format);
+
+        n = vsnprintf(msg, MaxBuf, format, args);
+        if (n != EOF)
         {
-          msg[n] = '\n';
-          msg[n + 1] = '\0';
+          /* Check for truncation */
+          if (n > MaxBuf - 1)
+            n = MaxBuf - 1;
+          /* Add \n at the end if missing */
+          if (msg[n - 1] != '\n')
+          {
+            if (n < MaxBuf - 1)
+              ++n;
+            msg[n - 1] = '\n';
+            msg[n] = '\0';
+          }
         }
+
+        va_end(args);
       }
 
-      va_end(args);
+      /* Add LIBCx stats to the assertion message - it might be useful */
+      if (n < MaxBuf - 1)
+        n += format_stats(msg + n, MaxBuf - n);
     }
   }
 

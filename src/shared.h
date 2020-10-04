@@ -243,6 +243,8 @@ struct _CONTEXT;
 
 void global_lock();
 void global_unlock();
+int global_lock_pidtid(int *pid, int *tid);
+void global_lock_deathcheck();
 
 unsigned long global_spawn2_sem(ProcDesc *proc);
 _fmutex *global_tcpip_sem();
