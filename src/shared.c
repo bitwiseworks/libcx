@@ -697,6 +697,18 @@ static size_t hash_string(const char *str)
 }
 
 /**
+ * Reallocates a memory block with `realloc` and fills the new part with zeroes
+ * if @a new_size is bigger than @a old_size.
+ */
+void *crealloc(void *ptr, size_t old_size, size_t new_size)
+{
+  void *new_ptr = realloc(ptr, new_size);
+  if (new_ptr && new_size > old_size)
+    bzero(new_ptr + old_size, new_size - old_size);
+  return new_ptr;
+}
+
+/**
  * Returns a process description sturcture for the given process.
  * Must be called under global_lock().
  * Optional o_bucket and o_prev arguments will receive the appropriate values
@@ -965,13 +977,14 @@ FileDesc *get_file_desc_ex(pid_t pid, int fd, const char *path, enum HashMapOpt 
     }
     else
     {
-      int *fds = RENEW_ARRAY(desc->fds, desc->size_fds + FDArrayInc);
+      size_t nsize = desc->size_fds + FDArrayInc;
+      int *fds = RENEW_ARRAY(desc->fds, desc->size_fds, nsize);
       if (fds)
       {
         desc->fds = fds;
         desc->fds[desc->size_fds] = fd;
         memset(&desc->fds[desc->size_fds + 1], 0xFF, sizeof(desc->fds[0]) * (FDArrayInc - 1));
-        desc->size_fds += FDArrayInc;
+        desc->size_fds = nsize;
       }
       else
         desc = NULL;

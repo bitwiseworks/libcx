@@ -249,6 +249,8 @@ _fmutex *global_tcpip_sem();
 
 void *global_alloc(size_t size);
 
+void *crealloc(void *ptr, size_t old_size, size_t new_size);
+
 #define GLOBAL_NEW(ptr) (ptr) = (__typeof(ptr))global_alloc(sizeof(*(ptr)))
 #define GLOBAL_NEW_PLUS(ptr, more) (ptr) = (__typeof(ptr))global_alloc(sizeof(*(ptr)) + (more))
 #define GLOBAL_NEW_ARRAY(ptr, sz) (ptr) = (__typeof(ptr))global_alloc(sizeof(*(ptr)) * (sz))
@@ -259,15 +261,16 @@ void *global_alloc(size_t size);
 #define NEW_ARRAY(ptr, sz) (ptr) = (__typeof(ptr))calloc((sz), sizeof(*(ptr)))
 #define NEW_PLUS_ARRAY(ptr, arr, sz) (ptr) = (__typeof(ptr))calloc(1, sizeof(*(ptr)) + sizeof(*(arr)) * (sz))
 
-#define crealloc(ptr, sz) _um_realloc(ptr, sz, 4, _UMFI_ZERO)
-#define RENEW_PLUS(ptr, more) ((__typeof(ptr))crealloc(ptr, sizeof(*(ptr)) + (more)))
-#define RENEW_ARRAY(ptr, sz) ((__typeof(ptr))crealloc(ptr, sizeof(*(ptr)) * (sz)))
-#define RENEW_PLUS_ARRAY(ptr, arr, sz) ((__typeof(ptr))crealloc(ptr, sizeof(*(ptr)) + sizeof(*(arr)) * (sz)))
+#define RENEW_PLUS(ptr, old_more, new_more) ((__typeof(ptr))crealloc(ptr, sizeof(*(ptr)) + (old_more), sizeof(*(ptr)) + (new_more)))
+#define RENEW_ARRAY(ptr, old_sz, new_sz) ((__typeof(ptr))crealloc(ptr, sizeof(*(ptr)) * (old_sz), sizeof(*(ptr)) * (new_sz)))
+#define RENEW_PLUS_ARRAY(ptr, arr, old_sz, new_sz) ((__typeof(ptr))crealloc(ptr, sizeof(*(ptr)) + sizeof(*(arr)) * (old_sz), sizeof(*(ptr)) + sizeof(*(arr)) * (new_sz)))
 
 #define COPY_STRUCT(to, from) memcpy((to), (from), sizeof(*(from)))
 #define COPY_STRUCT_PLUS(to, from, more) memcpy((to), (from), sizeof(*(from)) + (more))
 #define COPY_ARRAY(to, from, sz) memcpy((to), (from), sizeof(*(from)) * (sz))
 #define COPY_STRUCT_PLUS_ARRAY(to, from, arr, sz) memcpy((to), (from), sizeof(*(from)) + sizeof(*(arr)) * (sz))
+
+#define CLEAR_STRUCT(ptr) bzero((ptr), sizeof(*(ptr)))
 
 enum HashMapOpt
 {

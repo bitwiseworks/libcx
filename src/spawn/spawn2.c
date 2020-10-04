@@ -57,7 +57,7 @@ typedef struct Pair
 
 typedef struct SpawnWrappers
 {
-  int size;
+  size_t size;
   Pair pairs[0];
 } SpawnWrappers;
 
@@ -419,14 +419,12 @@ int __spawn2(int mode, const char *name, const char * const argv[],
               }
               if (idx == proc->spawn2_wrappers->size)
               {
+                size_t nsize = proc->spawn2_wrappers->size + InitialPairArraySize;
                 SpawnWrappers *wrappers = RENEW_PLUS_ARRAY(proc->spawn2_wrappers, proc->spawn2_wrappers->pairs,
-                                                           proc->spawn2_wrappers->size + InitialPairArraySize);
+                                                           proc->spawn2_wrappers->size, nsize);
                 if (wrappers)
                 {
-                  /* Realloc doesn't zero new memory, do it by hand */
-                  for (int i = wrappers->size; i < wrappers->size + InitialPairArraySize; ++i)
-                    memset(&wrappers->pairs[i], 0, sizeof(wrappers->pairs[i]));
-                  wrappers->size = proc->spawn2_wrappers->size + InitialPairArraySize;
+                  wrappers->size = nsize;
                   proc->spawn2_wrappers = wrappers;
                 }
               }
@@ -1143,7 +1141,7 @@ int __spawn2(int mode, const char *name, const char * const argv[],
             rc = spawnvpe(mode, name, (char * const *)argv, envp_copy);
           else
             rc = spawnvp(mode, name, (char * const *)argv);
-  
+
           if (rc == -1)
             rc_errno = errno;
 

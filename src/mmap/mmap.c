@@ -550,7 +550,7 @@ void *mmap(void *addr, size_t len, int prot, int flags,
       {
         TRACE("increasing dirty map (old size %u bytes)\n", fh->dirtymap_sz);
         ASSERT(fh->dirtymap);
-        uint32_t *dirtymap = crealloc(fh->dirtymap, dirtymap_sz);
+        uint32_t *dirtymap = crealloc(fh->dirtymap, fh->dirtymap_sz, dirtymap_sz);
         if (!dirtymap)
         {
           if (!fmap->flags)

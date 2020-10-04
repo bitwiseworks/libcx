@@ -256,9 +256,9 @@ static int lock_mark(struct FcntlLock *l, short type, pid_t pid)
         {
           /* Need more space */
           ASSERT(l->pids->used == l->pids->size);
-          size_t nsize = l->pids->size += PID_LIST_MIN_SIZE;
+          size_t nsize = l->pids->size + PID_LIST_MIN_SIZE;
           PidList *nlist = l->pids;
-          RENEW_PLUS_ARRAY(nlist, nlist->list, nsize);
+          RENEW_PLUS_ARRAY(nlist, nlist->list, nlist->size, nsize);
           if (!nlist)
             return -1;
           nlist->list[nlist->size] = pid;
