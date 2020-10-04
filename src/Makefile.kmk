@@ -112,6 +112,7 @@ TESTS += \
   mmap/tst-mmap9.c \
   mmap/tst-mmap10.c \
   mmap/tst-mmap11.c \
+  mmap/tst-mmap12.c \
   mmap/tst-msync.c \
   mmap/tst-msync2.c \
   mmap/tst-msync3.c \

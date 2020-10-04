@@ -30,6 +30,8 @@
 #include <sys/param.h>
 #include <sys/mman.h>
 
+#include <../shared.h>
+
 #ifndef PAGE_SIZE
 #define PAGE_SIZE 4096
 #endif
