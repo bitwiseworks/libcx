@@ -75,6 +75,10 @@ static int do_test(void)
     return 1;
   }
 
+  printf("hst._provided %u\n", hst._provided);
+  printf("hst._used %u\n", hst._used);
+  printf("hst._max_free %u\n", hst._max_free);
+
   if (hst._provided > gpData->size)
   {
     printf("Total heap size %d is greater than committed size %d\n",
@@ -88,24 +92,14 @@ static int do_test(void)
 
   check_mem(1, hdr_size, 65536);
 
-  void *data = global_alloc(32000);
+  void *data = global_alloc(hst._max_free);
 
   check_mem(2, hdr_size, 65536);
 
   void *data2 = global_alloc(5000);
 
-  check_mem(3, hdr_size, 65536);
+  check_mem(3, hdr_size, 65536 * 2);
 
-  void *data3 = global_alloc(5000);
-
-  check_mem(4, hdr_size, 65536);
-
-  void *data4 = global_alloc(50000);
-
-  check_mem(5, hdr_size, 65536 * 2);
-
-  free(data4);
-  free(data3);
   free(data2);
   free(data);
 
