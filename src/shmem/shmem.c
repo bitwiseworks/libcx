@@ -35,8 +35,6 @@
 #define SHMEM_MIN_HANDLES 16
 #define SHMEM_MAX_HANDLES 32768
 
-#define SHMEM_FREE 0x80000000
-
 typedef struct ShmemView
 {
   struct ShmemView *next;
@@ -45,27 +43,36 @@ typedef struct ShmemView
   size_t refs; /* Reference counter for this mapping */
 } ShmemView;
 
+typedef struct ShmemProcHnd
+{
+  struct ShmemProcHnd *next;
+  SHMEM h; /* Handle */
+  int flags; /* SHMEM_ flags */
+} ShmemProcHnd;
+
 typedef struct ShmemProc
 {
   struct ShmemProc *next;
   pid_t pid; /* pid of the process */
-  int flags; /* SHMEM_ flags */
-  struct ShmemView *views; /* List of mappings (views) */
+  ShmemView *views; /* List of mappings (views) */
+  ShmemProcHnd *handles; /* List of handles (duplicates) */
 } ShmemProc;
 
 typedef struct ShmemObj
 {
+  struct ShmemObj *prev;
+  struct ShmemObj *next;
   PVOID addr; /* Virtual address of the memory object */
   size_t size; /* Size of the memory object as was given in `shmem_create` */
   size_t act_size; /* Actual size of the memory object */
-  size_t refs; /* Reference counter for this mapping (handles and views) */
+  ShmemProc *procs; /* Processes using this memory object */
 } ShmemObj;
 
 typedef struct ShmemHandle
 {
-  struct ShmemObj *obj; /* Memory object this handle represents */
+  ShmemObj *obj; /* Memory object this handle represents */
   int flags; /* SHMEM_ flags */
-  struct ShmemProc *procs; /* List of processes using this handle */
+  size_t refs; /* Reference counter for this handle (procs) */
 } ShmemHandle;
 
 /**
@@ -73,7 +80,8 @@ typedef struct ShmemHandle
  */
 typedef struct ShmemData
 {
-  struct ShmemHandle *handles; /* Array of all available handles */
+  ShmemObj *objects; /* List of all memory objects */
+  ShmemHandle *handles; /* Array of all available handles */
   size_t handles_size; /* Size of the handle array */
   size_t handles_count; /* Number of used array entries */
   size_t handles_free; /* Index of the first free entry */
@@ -118,62 +126,50 @@ APIRET MyDosSetMem(PVOID base, ULONG length, ULONG flags)
 }
 
 /**
- * Dereferences a given memory object. If the reference count goes to zero,
- * will free the underlying OS/2 memory object and remove the entry from the
- * list of known memory objects.
+ * Removes a given proc entry from the list of procs of a given memory object
+ * and frees the object in the current process. Also removes the object from
+ * the list and frees the entry if it has no more procs using it. Returns the
+ * next object entry or NULL if there is none.
  */
-static void unref_obj(ShmemObj *obj)
+static ShmemObj *free_proc(ShmemObj *obj, ShmemProc *proc, ShmemProc *prev_proc)
 {
-  ASSERT(obj && obj->refs);
+  TRACE("freeing proc %p views %p handles %p and mem obj addr %p size %u\n",
+        proc, proc->views, proc->handles, obj->addr, obj->size);
 
-  --obj->refs;
-  if (!obj->refs)
-  {
-    /* Free underlying memory */
-    APIRET arc = DosFreeMem(obj->addr);
-    TRACE("freed mem obj addr %p size %u with arc %d\n", obj->addr, obj->size, arc);
-
-    free(obj);
-  }
-}
-
-/**
- * Removes a given proc entry from the list of procs of a the given handle and
- * frees it. Also releases the handle if it has no more procs using it (which
- * may also free the underlying memory object if it becomes unused).
- */
-static void free_proc(SHMEM h, ShmemProc *proc, ShmemProc *prev_proc)
-{
-  struct ShmemHandle *hnd = &gpData->shmem->handles[h];
+  ASSERT(!proc->handles && !proc->views);
 
   /* Remove this proc from the list and free it */
   if (prev_proc)
     prev_proc->next = proc->next;
   else
-    hnd->procs = proc->next;
+    obj->procs = proc->next;
   free(proc);
 
-  if (!hnd->procs)
+  /* Free the memory object in the current process */
+  APIRET arc = DosFreeMem(obj->addr);
+  ASSERT_MSG(!arc, "%u", arc);
+
+  ShmemObj *next = obj->next;
+
+  if (!obj->procs)
   {
-    /* The last proc has gone, release the handle */
-    unref_obj(hnd->obj);
-    CLEAR_STRUCT(hnd);
+    /* The last proc has gone, remove the object form the list */
+    TRACE("freeing mem obj %p\n", obj);
 
-    /* Make sure the free handle is always the first (smallest) available one */
-    if (gpData->shmem->handles_free > h)
-      gpData->shmem->handles_free = h;
-
-    /* Decrease the total number of handles */
-    ASSERT(gpData->shmem->handles_count);
-    --gpData->shmem->handles_count;
-
-    TRACE("freed unused handle, new free %u size %u count %u\n",
-      gpData->shmem->handles_free, gpData->shmem->handles_size, gpData->shmem->handles_count);
+    if (obj->prev)
+      obj->prev->next = next;
+    else
+      gpData->shmem->objects = next;
+    if (next)
+      next->prev = obj->prev;
+    free(obj);
   }
+
+  return next;
 }
 
 /**
- * Looks for a proc entry with a given pid. Returns a found proc or NULL if
+ * Looks for a proc entry with a given pid. Returns a found entry or NULL if
  * there is none. Also returns a previous proc entry if @a prev is not NULL.
  */
 static ShmemProc *find_proc(ShmemProc *first, pid_t pid, ShmemProc **prev)
@@ -186,13 +182,39 @@ static ShmemProc *find_proc(ShmemProc *first, pid_t pid, ShmemProc **prev)
     proc = proc->next;
   }
 
-  TRACE("prev_proc %p proc %p flags 0x%X views %p pid %d\n",
-        prev_proc, proc, proc ? proc->flags : 0, proc ? proc->views : 0, pid);
+  TRACE("prev_proc %p proc %p views %p handles %p pid %d\n",
+        prev_proc, proc, proc ? proc->views : 0, proc ? proc->handles : 0, pid);
+  /* For an existing proc, there must be either views or handles */
+  ASSERT(!proc || proc->views || proc->handles);
 
   if (prev)
     *prev = prev_proc;
 
   return proc;
+}
+
+/**
+ * Looks for a proc handle entry with a given value. Returns a found entry or
+ * NULL if there is none. Also returns a previous handle entry if @a prev is not
+ * NULL.
+ */
+static ShmemProcHnd *find_proc_handle(ShmemProcHnd *first, SHMEM h, ShmemProcHnd **prev)
+{
+  struct ShmemProcHnd *hnd = first;
+  struct ShmemProcHnd *prev_hnd = NULL;
+  while (hnd && hnd->h != h)
+  {
+    prev_hnd = hnd;
+    hnd = hnd->next;
+  }
+
+  TRACE("prev_hnd %p hnd %p h %u flags 0x%X\n",
+        prev_hnd, hnd, hnd ? hnd->h : SHMEM_INVALID, hnd ? hnd->flags : 0);
+
+  if (prev)
+    *prev = prev_hnd;
+
+  return hnd;
 }
 
 /**
@@ -231,10 +253,10 @@ static ShmemHandle *get_handle(SHMEM h)
 
   struct ShmemHandle *hnd = &gpData->shmem->handles[h];
 
-  ASSERT(hnd->procs);
+  ASSERT(hnd->obj && hnd->refs);
 
-  TRACE("flags 0x%X obj addr %p size %u act_size %u refs %u\n",
-        hnd->flags, hnd->obj->addr, hnd->obj->size, hnd->obj->act_size, hnd->obj->refs);
+  TRACE("flags 0x%X refs %u obj %p addr %p size %u act_size %u\n",
+        hnd->flags, hnd->refs, hnd->obj, hnd->obj->addr, hnd->obj->size, hnd->obj->act_size);
 
   return hnd;
 }
@@ -288,9 +310,39 @@ static ShmemHandle *alloc_handle(SHMEM *h)
 
   struct ShmemHandle *hnd = &gpData->shmem->handles[*h];
 
-  ASSERT_MSG(!hnd->obj && !hnd->procs, "%u %p %p", *h, hnd->obj, hnd->procs);
+  ASSERT_MSG(!hnd->obj && !hnd->refs, "%u %p %u", *h, hnd->obj, hnd->refs);
 
   return hnd;
+}
+
+/**
+ * Releases a single process reference of a given handle. Will free the handle
+ * if there are no more processes using it.
+ */
+static ShmemHandle *unref_handle(SHMEM h)
+{
+  ShmemHandle *hnd = &gpData->shmem->handles[h];
+  ASSERT(hnd->obj);
+
+  ASSERT(hnd->refs);
+  --hnd->refs;
+
+  if (!hnd->refs)
+  {
+    /* The last proc has gone, free the handle */
+    CLEAR_STRUCT(hnd);
+
+    /* Make sure the free handle is always the first (smallest) available one */
+    if (gpData->shmem->handles_free > h)
+      gpData->shmem->handles_free = h;
+
+    /* Decrease the total number of handles */
+    ASSERT(gpData->shmem->handles_count);
+    --gpData->shmem->handles_count;
+
+    TRACE("freed unused handle, new free %u size %u count %u\n",
+      gpData->shmem->handles_free, gpData->shmem->handles_size, gpData->shmem->handles_count);
+  }
 }
 
 /**
@@ -319,50 +371,59 @@ void shmem_data_init(ProcDesc *proc)
  */
 void shmem_data_term(ProcDesc *proc)
 {
-  TRACE("gpData->shmem->handles_count %u\n", gpData->shmem->handles_count);
+  TRACE("gpData->shmem->objects %p gpData->shmem->handles_count %u\n",
+        gpData->shmem->objects, gpData->shmem->handles_count);
 
-  if (gpData->shmem->handles_count)
+  ASSERT (!gpData->shmem->handles_count || gpData->shmem->objects);
+
+  /* Free all handles and views belonging to this process */
+  ShmemObj *obj = gpData->shmem->objects;
+  while (obj)
   {
-    /* There are some handles, release ourselves from the ones we use */
-    for (size_t h = 0, count = gpData->shmem->handles_count; count; ++h)
+    ShmemProc *prev_proc;
+    ShmemProc *proc = find_proc(obj->procs, getpid(), &prev_proc);
+
+    if (proc)
     {
-      struct ShmemHandle *hnd = &gpData->shmem->handles[h];
-      if (hnd->obj)
+      /* Free all open handles */
+      ShmemProcHnd *proc_hnd = proc->handles;
+      while (proc_hnd)
       {
-        /* A valid handle */
-        ASSERT(hnd->procs);
+        TRACE("releasing handle %u\n", proc_hnd->h);
+        ASSERT(get_handle(proc_hnd->h));
 
-        --count;
+        unref_handle(proc_hnd->h);
 
-        ShmemProc *prev_proc;
-        ShmemProc *proc = find_proc(hnd->procs, getpid(), &prev_proc);
-
-        if (proc)
-        {
-          TRACE("releasing handle %u flags 0x%X obj addr %p size %u refs %u\n",
-                h, hnd->flags, hnd->obj->addr, hnd->obj->size, hnd->obj->refs);
-
-          /* Free all views */
-          ShmemView *view = proc->views;
-          while (view)
-          {
-            ShmemView *prev_view = view;
-            view = view->next;
-            free(prev_view);
-
-            /* Each view holds an implicit ref to the memory object, release it */
-            unref_obj(hnd->obj);
-          }
-
-          free_proc(h, proc, prev_proc);
-        }
+        ShmemProcHnd *prev_proc_hnd = proc_hnd;
+        proc_hnd = proc_hnd->next;
+        free(prev_proc_hnd);
       }
+      proc->handles = NULL;
+
+      /* Free all mapped views */
+      ShmemView *view = proc->views;
+      while (view)
+      {
+        ShmemView *prev_view = view;
+        view = view->next;
+        free(prev_view);
+      }
+      proc->views = NULL;
+
+      obj = free_proc(obj, proc, prev_proc);
+    }
+    else
+    {
+      obj = obj->next;
     }
   }
 
   if (gpData->refcnt == 0)
   {
     /* We are the last process, free shmem structures */
+    ASSERT_MSG(!gpData->shmem->handles_count, "%u", gpData->shmem->handles_count);
+    ASSERT_MSG(!gpData->shmem->objects, "%p\n", gpData->shmem->objects);
+
     free(gpData->shmem->handles);
     free(gpData->shmem);
   }
@@ -413,14 +474,14 @@ SHMEM shmem_create(size_t size, int flags)
 
   do
   {
-    struct ShmemObj *obj;
+    ShmemObj *obj;
     if (!(GLOBAL_NEW(obj)))
     {
       errno = ENOMEM;
       break;
     }
 
-    struct ShmemProc *proc;
+    ShmemProc *proc;
     if (!(GLOBAL_NEW(proc)))
     {
       free(obj);
@@ -428,26 +489,45 @@ SHMEM shmem_create(size_t size, int flags)
       break;
     }
 
-    struct ShmemHandle *hnd = alloc_handle(&h);
-    if (!hnd)
+    ShmemProcHnd *proc_hnd;
+    if (!(GLOBAL_NEW(proc_hnd)))
     {
-      free(obj);
       free(proc);
+      free(obj);
       errno = ENOMEM;
       break;
     }
 
+    ShmemHandle *hnd = alloc_handle(&h);
+    if (!hnd)
+    {
+      free(proc_hnd);
+      free(proc);
+      free(obj);
+      errno = ENOMEM;
+      break;
+    }
+
+    proc_hnd->h = h;
+    proc_hnd->flags = flags;
+
+    proc->pid = getpid();
+    proc->handles = proc_hnd;
+
     obj->addr = addr;
     obj->size = size;
     obj->act_size = act_size;
-    obj->refs = 1; /* Handle reference */
+    obj->procs = proc;
 
-    proc->pid = getpid();
-    proc->flags = flags;
+    /* Insert obj to the beginning of the list */
+    if (gpData->shmem->objects)
+      gpData->shmem->objects->prev = obj;
+    obj->next = gpData->shmem->objects;
+    gpData->shmem->objects = obj;
 
     hnd->obj = obj;
     hnd->flags = flags;
-    hnd->procs = proc;
+    hnd->refs = 1;
   }
   while (0);
 
@@ -478,38 +558,43 @@ int shmem_give(SHMEM h, pid_t pid, int flags)
 
   do
   {
-    struct ShmemHandle *hnd = get_handle(h);
-
+    ShmemHandle *hnd = get_handle(h);
     if (!hnd)
     {
       errno = EINVAL;
       break;
     }
 
-    struct ShmemProc *proc = find_proc(hnd->procs, pid, NULL);
+    ShmemProcHnd *proc_hnd = NULL;
+    ShmemProc *proc = find_proc(hnd->obj->procs, pid, NULL);
 
-    if (proc && !(proc->flags & SHMEM_FREE))
+    if (proc && proc->handles)
     {
-      /* The handle is already used in this process (and not freed) */
-      errno = EPERM;
-      break;
+      proc_hnd = find_proc_handle(proc->handles, h, NULL);
+
+      if (proc_hnd)
+      {
+        /* The handle is already used in the target process (and not freed) */
+        errno = EPERM;
+        break;
+      }
     }
 
-    if (!proc && !(GLOBAL_NEW(proc)))
+    if (!(GLOBAL_NEW(proc_hnd)))
     {
       errno = ENOMEM;
       break;
     }
 
-    if (proc->flags & SHMEM_FREE)
+    if (!proc)
     {
-      /* The target process already used this handle before and the memory
-       * object is still alive (because of some mappings around), just reuse it */
-      ASSERT (proc->views);
-      proc->flags &= ~SHMEM_FREE;
-    }
-    else
-    {
+      if (!(GLOBAL_NEW(proc)))
+      {
+        free(proc_hnd);
+        errno = ENOMEM;
+        break;
+      }
+
       /* Give access to the memory object (obey the handle restriction) */
       ULONG dos_flags = PAG_READ | PAG_EXECUTE;
       if (!(flags & SHMEM_READONLY) && !(hnd->flags & SHMEM_READONLY))
@@ -520,7 +605,8 @@ int shmem_give(SHMEM h, pid_t pid, int flags)
 
       if (arc)
       {
-        /* Free the new, unused proc entry */
+        /* Free the new, unused proc_handle and proc entry */
+        free(proc_hnd);
         free(proc);
         errno = __libc_native2errno(arc);
         break;
@@ -528,13 +614,21 @@ int shmem_give(SHMEM h, pid_t pid, int flags)
 
       proc->pid = pid;
 
-      /* Insert this proc to the beginning of the list */
-      proc->next = hnd->procs;
-      hnd->procs = proc;
+      /* Insert proc to the beginning of the list */
+      proc->next = hnd->obj->procs;
+      hnd->obj->procs = proc;
     }
 
-    /* Memorize handle flags for this process (to obey restrictions) */
-    proc->flags |= flags;
+    proc_hnd->h = h;
+    proc_hnd->flags = flags;
+
+    /* Insert proc_hnd to the beginning of the list */
+    proc_hnd->next = proc->handles;
+    proc->handles = proc_hnd;
+
+    /* Add proc reference to the handle */
+    ++hnd->refs;
+    ASSERT(hnd->refs);
 
     /* Success */
     rc = 0;
@@ -564,38 +658,43 @@ int shmem_open(SHMEM h, int flags)
 
   do
   {
-    struct ShmemHandle *hnd = get_handle(h);
-
+    ShmemHandle *hnd = get_handle(h);
     if (!hnd)
     {
       errno = EINVAL;
       break;
     }
 
-    struct ShmemProc *proc = find_proc(hnd->procs, getpid(), NULL);
+    ShmemProc *proc = find_proc(hnd->obj->procs, getpid(), NULL);
 
-    if (proc && !(proc->flags & SHMEM_FREE))
+    ShmemProcHnd *proc_hnd = NULL;
+    if (proc && proc->handles)
     {
-      /* The handle is already used in this process (and not freed) */
-      errno = EPERM;
-      break;
+      proc_hnd = find_proc_handle(proc->handles, h, NULL);
+
+      if (proc_hnd)
+      {
+        /* The handle is already used in this process (and not freed) */
+        errno = EPERM;
+        break;
+      }
     }
 
-    if (!proc && !(GLOBAL_NEW(proc)))
+    if (!(GLOBAL_NEW(proc_hnd)))
     {
       errno = ENOMEM;
       break;
     }
 
-    if (proc->flags & SHMEM_FREE)
+    if (!proc)
     {
-      /* This process already used this handle before and the memory object is
-       * still alive (because of some mappings around), just reuse it */
-      ASSERT (proc->views);
-      proc->flags &= ~SHMEM_FREE;
-    }
-    else
-    {
+      if (!(GLOBAL_NEW(proc)))
+      {
+        free(proc_hnd);
+        errno = ENOMEM;
+        break;
+      }
+
       /* Get access to the memory object (obey the handle restriction) */
       ULONG dos_flags = PAG_READ | PAG_EXECUTE;
       if (!(flags & SHMEM_READONLY) && !(hnd->flags & SHMEM_READONLY))
@@ -606,7 +705,8 @@ int shmem_open(SHMEM h, int flags)
 
       if (arc)
       {
-        /* Free the new, unused proc entry */
+        /* Free the new, unused proc_handle and proc entry */
+        free(proc_hnd);
         free(proc);
         errno = __libc_native2errno(arc);
         break;
@@ -614,13 +714,21 @@ int shmem_open(SHMEM h, int flags)
 
       proc->pid = getpid();
 
-      /* Insert this proc to the beginning of the list */
-      proc->next = hnd->procs;
-      hnd->procs = proc;
+      /* Insert proc to the beginning of the list */
+      proc->next = hnd->obj->procs;
+      hnd->obj->procs = proc;
     }
 
-    /* Memorize handle flags for this process (to obey restrictions) */
-    proc->flags |= flags;
+    proc_hnd->h = h;
+    proc_hnd->flags = flags;
+
+    /* Insert proc_hnd to the beginning of the list */
+    proc_hnd->next = proc->handles;
+    proc->handles = proc_hnd;
+
+    /* Add proc reference to the handle */
+    ++hnd->refs;
+    ASSERT(hnd->refs);
 
     /* Success */
     rc = 0;
@@ -650,39 +758,53 @@ SHMEM shmem_duplicate(SHMEM h, int flags)
 
   do
   {
-    struct ShmemHandle *hnd = get_handle(h);
+    ShmemHandle *hnd = get_handle(h);
     if (!hnd)
     {
       errno = EINVAL;
       break;
     }
 
-    struct ShmemProc *proc;
-    if (!(GLOBAL_NEW(proc)))
+    ShmemProc *proc = find_proc(hnd->obj->procs, getpid(), NULL);
+
+    ShmemProcHnd *proc_hnd = NULL;
+    if (proc && proc->handles)
+      proc_hnd = find_proc_handle(proc->handles, h, NULL);
+
+    if (!proc || !proc_hnd)
+    {
+      /* The handle is not used in this process */
+      errno = EINVAL;
+      break;
+    }
+
+    ShmemProcHnd *dup_proc_hnd;
+    if (!(GLOBAL_NEW(dup_proc_hnd)))
     {
       errno = ENOMEM;
       break;
     }
 
-    struct ShmemHandle *dup_hnd = alloc_handle(&dup_h);
+    ShmemHandle *dup_hnd = alloc_handle(&dup_h);
     if (!dup_hnd)
     {
-      free(proc);
+      free(dup_proc_hnd);
       errno = ENOMEM;
       break;
     }
 
-    ++hnd->obj->refs; /* Handle reference */
-    ASSERT(hnd->obj->refs);
-
-    proc->pid = getpid();
+    dup_proc_hnd->h = dup_h;
     /* Ihnerit selected source handle's process-specific flags */
-    proc->flags = flags | (proc->flags & SHMEM_READONLY);
+    dup_proc_hnd->flags = flags | (proc_hnd->flags & SHMEM_READONLY);
 
     dup_hnd->obj = hnd->obj;
     /* Ihnerit selected source handle's flags */
     dup_hnd->flags = flags | (hnd->flags & SHMEM_READONLY);
-    dup_hnd->procs = proc;
+    dup_hnd->refs = 1;
+
+    /* Insert dup_proc_hnd to the beginning of the list */
+    dup_proc_hnd->next = proc->handles;
+    proc->handles = dup_proc_hnd;
   }
   while (0);
 
@@ -709,34 +831,40 @@ int shmem_close(SHMEM h)
 
   do
   {
-    struct ShmemHandle *hnd = get_handle(h);
-
+    ShmemHandle *hnd = get_handle(h);
     if (!hnd)
     {
       errno = EINVAL;
       break;
     }
 
-    struct ShmemProc *prev_proc;
-    struct ShmemProc *proc = find_proc(hnd->procs, getpid(), &prev_proc);
+    ShmemProc *prev_proc;
+    ShmemProc *proc = find_proc(hnd->obj->procs, getpid(), &prev_proc);
 
-    if (!proc || (proc->flags & SHMEM_FREE))
+    ShmemProcHnd *prev_proc_hnd;
+    ShmemProcHnd *proc_hnd = NULL;
+    if (proc && proc->handles)
+      proc_hnd = find_proc_handle(proc->handles, h, &prev_proc_hnd);
+
+    if (!proc || !proc_hnd)
     {
       /* The handle is not used in this process */
       errno = EINVAL;
       break;
     }
 
-    if (proc->views)
-    {
-      /* The handle still has some mappings in this process, just mark it as freed */
-      proc->flags |= SHMEM_FREE;
-    }
+    /* Remove the handle from the list and free it */
+    if (prev_proc_hnd)
+      prev_proc_hnd->next = proc_hnd->next;
     else
-    {
-      /* No views, okay to get rid of the proc entry (may release handle & mem) */
-      free_proc(h, proc, prev_proc);
-    }
+      proc->handles = proc_hnd->next;
+    free(proc_hnd);
+
+    /* Get rid of the proc entry if no handles and views (will also free mem) */
+    if (!proc->handles && !proc->views)
+      free_proc(hnd->obj, proc, prev_proc);
+
+    unref_handle(h);
 
     /* Success */
     rc = 0;
@@ -767,8 +895,7 @@ void *shmem_map(SHMEM h, off_t offset, size_t length)
 
   do
   {
-    struct ShmemHandle *hnd = get_handle(h);
-
+    ShmemHandle *hnd = get_handle(h);
     if (!hnd)
     {
       errno = EINVAL;
@@ -785,9 +912,13 @@ void *shmem_map(SHMEM h, off_t offset, size_t length)
       break;
     }
 
-    struct ShmemProc *proc = find_proc(hnd->procs, getpid(), NULL);
+    ShmemProc *proc = find_proc(hnd->obj->procs, getpid(), NULL);
 
-    if (!proc || (proc->flags & SHMEM_FREE))
+    ShmemProcHnd *proc_hnd = NULL;
+    if (proc && proc->handles)
+      proc_hnd = find_proc_handle(proc->handles, h, NULL);
+
+    if (!proc || !proc_hnd)
     {
       /* The handle is not used in this process */
       errno = EINVAL;
@@ -798,7 +929,7 @@ void *shmem_map(SHMEM h, off_t offset, size_t length)
      * the restriction of the specified handle which will cause a change of
      * access for all other mappings, which is documented. */
     ULONG dos_flags = PAG_COMMIT | PAG_READ | PAG_EXECUTE;
-    if (!(proc->flags & SHMEM_READONLY) && !(hnd->flags & SHMEM_READONLY))
+    if (!(proc_hnd->flags & SHMEM_READONLY) && !(hnd->flags & SHMEM_READONLY))
       dos_flags |= PAG_WRITE;
     APIRET arc = MyDosSetMem(hnd->obj->addr + offset, length, dos_flags);
     if (arc)
@@ -808,8 +939,8 @@ void *shmem_map(SHMEM h, off_t offset, size_t length)
     }
 
     /* Look for an existing mapping */
-    struct ShmemView *prev_view;
-    struct ShmemView *view = find_view(proc->views, offset, &prev_view);
+    ShmemView *prev_view;
+    ShmemView *view = find_view(proc->views, offset, &prev_view);
 
     if (view && view->offset == offset)
     {
@@ -827,7 +958,7 @@ void *shmem_map(SHMEM h, off_t offset, size_t length)
     else
     {
       /* Allocate a new view */
-      struct ShmemView *new_view;
+      ShmemView *new_view;
       GLOBAL_NEW(new_view);
       if (!new_view)
       {
@@ -850,9 +981,6 @@ void *shmem_map(SHMEM h, off_t offset, size_t length)
         new_view->next = proc->views;
         proc->views = new_view;
       }
-
-      ++hnd->obj->refs; /* View reference */
-      ASSERT(hnd->obj->refs);
     }
 
     /* Success */
@@ -883,52 +1011,40 @@ int shmem_unmap(void *addr)
 
   do
   {
-    struct ShmemHandle *hnd = NULL;
-    SHMEM h;
-
     size_t offset = 0;
 
-    struct ShmemProc *prev_proc;
-    struct ShmemProc *proc;
+    ShmemProc *prev_proc;
+    ShmemProc *proc;
 
-    struct ShmemView *prev_view;
-    struct ShmemView *view;
+    ShmemView *prev_view;
+    ShmemView *view;
 
-    /* Look for a first handle with a view matching the given address */
-    for (int count = gpData->shmem->handles_count, i = 0; count; ++i)
+    /* Look for a view matching the given address */
+    ShmemObj *obj = gpData->shmem->objects;
+    while (obj)
     {
-      struct ShmemHandle *try_hnd = &gpData->shmem->handles[i];
-      if (try_hnd->obj)
+      if (obj->addr <= addr && (offset = addr - obj->addr) < obj->size)
       {
-        /* A valid handle */
-        --count;
-
-        if (try_hnd->obj->addr <= addr && (offset = addr - try_hnd->obj->addr) < try_hnd->obj->size)
+        proc = find_proc(obj->procs, getpid(), &prev_proc);
+        if (proc && proc->views)
         {
-          proc = find_proc(try_hnd->procs, getpid(), &prev_proc);
-          if (proc && proc->views)
-          {
-            view = find_view(proc->views, offset, &prev_view);
-            if (view)
-            {
-              hnd = try_hnd;
-              h = i;
-              break;
-            }
-          }
+          view = find_view(proc->views, offset, &prev_view);
+          if (view)
+            break;
         }
       }
+
+      obj = obj->next;
     }
 
-    if (!hnd)
+    if (!view)
     {
-      /* No handle with a mapping of addr in this process */
+      /* No object with a mapping of addr in this process */
       errno = EINVAL;
       break;
     }
 
-    TRACE("h %u obj addr %p size %u refs %u offset %u\n",
-          h, hnd->obj->addr, hnd->obj->size, hnd->obj->refs, offset);
+    TRACE("obj addr %p size %u offset %u\n", obj->addr, obj->size, offset);
 
     /* Decrease the view's reference counter */
     ASSERT(view->refs);
@@ -945,15 +1061,9 @@ int shmem_unmap(void *addr)
         proc->views = view->next;
       free(view);
 
-      /* Release the view's reference from the memory object */
-      unref_obj(hnd->obj);
-
-      if (!proc->views && (proc->flags & SHMEM_FREE))
-      {
-        /* The last view has gone and the handle itself is freed, okay to get
-         * rid of the proc entry (may release handle & mem) */
-        free_proc(h, proc, prev_proc);
-      }
+      /* Get rid of the proc entry if no handles and views (will also free mem) */
+      if (!proc->views && !proc->handles)
+        free_proc(obj, proc, prev_proc);
     }
 
     /* Success */
@@ -984,17 +1094,20 @@ int shmem_get_info(SHMEM h, int *flags, size_t *size, size_t *act_size)
 
   do
   {
-    struct ShmemHandle *hnd = get_handle(h);
-
+    ShmemHandle *hnd = get_handle(h);
     if (!hnd)
     {
       errno = EINVAL;
       break;
     }
 
-    struct ShmemProc *proc = find_proc(hnd->procs, getpid(), NULL);
+    ShmemProc *proc = find_proc(hnd->obj->procs, getpid(), NULL);
 
-    if (!proc || (proc->flags & SHMEM_FREE))
+    ShmemProcHnd *proc_hnd = NULL;
+    if (proc && proc->handles)
+      proc_hnd = find_proc_handle(proc->handles, h, NULL);
+
+    if (!proc || !proc_hnd)
     {
       /* The handle is not used in this process */
       errno = EINVAL;
@@ -1011,7 +1124,7 @@ int shmem_get_info(SHMEM h, int *flags, size_t *size, size_t *act_size)
     {
       *flags = hnd->flags;
       /* Also expose selected process-specific flags */
-      *flags |= (proc->flags & SHMEM_READONLY);
+      *flags |= (proc_hnd->flags & SHMEM_READONLY);
     }
 
     /* Success */

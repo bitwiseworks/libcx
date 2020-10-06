@@ -174,25 +174,16 @@ do_test (void)
   }
 
   rc = shmem_open(h, 0);
-  if (rc == -1)
+  if (rc != -1 || errno != EINVAL)
   {
-    perror("shmem_open failed");
+    printf("shmem_open closed returned %d and errno %d instead of -1 and errno %d\n", rc, errno, EINVAL);
     return 1;
   }
 
-  addr3 = shmem_map(h, 0, PAGE_SIZE * 2);
-  if (!addr3)
+  if (shmem_unmap(addr) == -1)
   {
-    perror("shmem_map 3 failed");
+    perror("shmem_unmap failed");
     return 1;
-  }
-  else
-  {
-    if (addr3[PAGE_SIZE] != 123)
-    {
-      printf("read from addr 3 failed (must be 123, got %hu)\n", addr2[0]);
-      return 1;
-    }
   }
 
   /*
@@ -200,6 +191,13 @@ do_test (void)
    */
 
   printf("Test 1.2\n");
+
+  h = shmem_create(BLOCK_SIZE - 1, 0);
+  if (h == SHMEM_INVALID)
+  {
+    perror("shmem_create failed");
+    return 1;
+  }
 
   {
     SHMEM dup1, dup2;
@@ -244,24 +242,15 @@ do_test (void)
       printf("shmem_get_info 2 returned flags 0x%X instead of 0x%X\n", flags, SHMEM_READONLY);
       return 1;
     }
+
+    /* Note: deliberately leave two duplicates unclosed to check how they
+     * are automatically closed on termination */
   }
 
   rc = shmem_close(h);
   if (rc == -1)
   {
     perror("shmem_close failed");
-    return 1;
-  }
-
-  if (shmem_unmap(addr3) == -1)
-  {
-    perror("shmem_unmap failed");
-    return 1;
-  }
-
-  if (shmem_unmap(addr) == -1)
-  {
-    perror("shmem_unmap failed");
     return 1;
   }
 
@@ -676,6 +665,18 @@ do_test (void)
     rc = shmem_give(h, child_pid, 0);
   }
   TEST_FORK_END();
+
+  if (shmem_unmap(addr) == -1)
+  {
+    perror("shmem_unmap failed");
+    return 1;
+  }
+
+  if (shmem_close(h) == -1)
+  {
+    perror("shmem_close failed");
+    return 1;
+  }
 
   /*
    * Test 6: deliberately alloc but not free to check that it's freeed at

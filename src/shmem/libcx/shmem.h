@@ -209,10 +209,6 @@ SHMEM shmem_duplicate(SHMEM h, int flags);
  * for new allocations. Hence, it is important to always call `shmem_close` when
  * the handle is no longer needed.
  *
- * Note that the closed handle may be reopened again in the same process with a
- * call to `shmem_open` as long as the underlying memory object is still alive
- * by the time of the `shmem_open` call.
- *
  * @param[in]  h     Shared memory object handle.
  *
  * @return     0 on success, otherwise -1 and error code in `errno`.
