@@ -40,6 +40,7 @@ typedef struct ShmemView
   struct ShmemView *next;
   size_t offset; /* Offset of the mapping */
   size_t length; /* Length of the mapping */
+  int readonly; /* 1 if this view is mapped as read-only, or 0 */
   size_t refs; /* Reference counter for this mapping */
 } ShmemView;
 
@@ -56,6 +57,7 @@ typedef struct ShmemProc
   pid_t pid; /* pid of the process */
   ShmemView *views; /* List of mappings (views) */
   ShmemProcHnd *handles; /* List of handles (duplicates) */
+  size_t rw_views; /* Number of read-write mappings */
 } ShmemProc;
 
 typedef struct ShmemObj
@@ -182,8 +184,9 @@ static ShmemProc *find_proc(ShmemProc *first, pid_t pid, ShmemProc **prev)
     proc = proc->next;
   }
 
-  TRACE("prev_proc %p proc %p views %p handles %p pid %d\n",
-        prev_proc, proc, proc ? proc->views : 0, proc ? proc->handles : 0, pid);
+  TRACE("prev_proc %p proc %p views %p handles %p rw_views %u pid %d\n",
+        prev_proc, proc, proc ? proc->views : 0, proc ? proc->handles : 0,
+        proc ? proc->rw_views : 0, pid);
   /* For an existing proc, there must be either views or handles */
   ASSERT(!proc || proc->views || proc->handles);
 
@@ -233,8 +236,9 @@ static ShmemView *find_view(ShmemView *first, size_t offset, ShmemView **prev)
     view = view->next;
   }
 
-  TRACE("prev_view %p view %p offset %u length %u refs %u\n",
-    prev_view, view, view ? view->offset : 0, view ? view->length : 0, view ? view->refs : 0);
+  TRACE("prev_view %p view %p offset %u length %u readonly %d refs %u\n",
+    prev_view, view, view ? view->offset : 0, view ? view->length : 0,
+    view ? view->readonly : 0, view ? view->refs : 0);
 
   if (prev)
     *prev = prev_view;
@@ -925,11 +929,14 @@ void *shmem_map(SHMEM h, off_t offset, size_t length)
       break;
     }
 
+    int readonly = (proc_hnd->flags & SHMEM_READONLY) || (hnd->flags & SHMEM_READONLY);
+    TRACE("readonly %d\n", readonly);
+
     /* Commit memory (may fail due to out-of-memory or such). Note that we obey
-     * the restriction of the specified handle which will cause a change of
-     * access for all other mappings, which is documented. */
+     * the restriction of the specified handle only if there are no unrestricted
+     * read-write views (as this would break their access). */
     ULONG dos_flags = PAG_COMMIT | PAG_READ | PAG_EXECUTE;
-    if (!(proc_hnd->flags & SHMEM_READONLY) && !(hnd->flags & SHMEM_READONLY))
+    if (!readonly || proc->rw_views)
       dos_flags |= PAG_WRITE;
     APIRET arc = MyDosSetMem(hnd->obj->addr + offset, length, dos_flags);
     if (arc)
@@ -954,6 +961,14 @@ void *shmem_map(SHMEM h, off_t offset, size_t length)
       /* Merge the ranges by updating the length if the new one is bigger */
       if (view->length < length)
         view->length = length;
+
+      /* Upgrade the read-only view to read-write to satisfy the request */
+      if (view->readonly && !readonly)
+      {
+        view->readonly = 0;
+        ++proc->rw_views;
+        ASSERT(proc->rw_views);
+      }
     }
     else
     {
@@ -969,6 +984,14 @@ void *shmem_map(SHMEM h, off_t offset, size_t length)
       new_view->offset = offset;
       new_view->length = length;
       new_view->refs = 1;
+
+      /* Memorize the read-only status and correct rw_views accordingly */
+      new_view->readonly = readonly;
+      if (!readonly)
+      {
+        ++proc->rw_views;
+        ASSERT(proc->rw_views);
+      }
 
       /* Insert the view before the one we found */
       if (prev_view)
@@ -1055,11 +1078,33 @@ int shmem_unmap(void *addr)
       /* The last reference has gone, remove this view from the list and free
        * it. Note that we don't uncommit view's pages as that's impossible for
        * shared memory on OS/2. */
+      if (!view->readonly)
+      {
+        /* This is a read-write view, decrease rw_views */
+        ASSERT(proc->rw_views);
+        --proc->rw_views;
+      }
+
       if (prev_view)
         prev_view->next = view->next;
       else
         proc->views = view->next;
       free(view);
+
+      if (proc->views && proc->rw_views == 0)
+      {
+        /* There're views but none of them is read-write, switch all to read-only */
+        view = proc->views;
+        while (view)
+        {
+          TRACE("switching to r/o addr %p length %u\n", obj->addr + view->offset, view->length);
+          APIRET arc = MyDosSetMem(obj->addr + view->offset, view->length,
+                                   PAG_COMMIT | PAG_READ | PAG_EXECUTE);
+          ASSERT_MSG(!arc, "%lu", arc);
+
+          view = view->next;
+        }
+      }
 
       /* Get rid of the proc entry if no handles and views (will also free mem) */
       if (!proc->views && !proc->handles)

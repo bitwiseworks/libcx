@@ -179,12 +179,6 @@ int shmem_open(SHMEM h, int flags);
  * passing them the restricted duplcate and making it accessible there with
  * `shmem_give` or `shmem_open`).
  *
- * Note that if a restricted duplicate is passed to a `shmem_map` call in the
- * process that created it and that call succeeds, the restriction will apply to
- * all existing mappings of the same memory object in this process itself, even
- * those mapped earlier from handles that did not have such a restriction. This
- * behavior is imposed by OS/2 specifics.
- *
  * Once not needed, the handle should be closed with `shmem_close`.
  *
  * @param[in]  h      Shared memory object handle.
@@ -236,17 +230,8 @@ int shmem_close(SHMEM h);
  *
  * The returned mapping will have read-write access permissions unless they were
  * restricted for the specified handle in this process using SHMEM_READONLY flag
- * when calling `shmem_give`,`shmem_open` or if the handle is a read-only
- * duplicate created with `shmem_duplicate`.
- *
- * It is important to note that if the specified handle carries a read-only
- * restriction in the calling process and the calling process has any existing
- * mappings of the same memory object that overlap the requested range, this
- * function will implicitly apply this restriction to the overlapping parts of
- * all of these mappings, even those mapped earlier from handles that did not
- * have such a restriction. Any further attempt to write to any overlapping part
- * of such a mapping will result into an access violation exception. This
- * behavior is imposed by the OS/2 memory manager.
+ * when calling `shmem_give`,`shmem_open` on it or when creating it as a
+ * read-only duplicate with `shmem_duplicate`.
  *
  * When the mapping is no longer necessary, it should be unmapped by calling
  * `shmem_unmap` using exactly the same address value as returned by this
@@ -254,6 +239,17 @@ int shmem_close(SHMEM h);
  * may overlap but each mapping should be separately released with a
  * corresponding call to `shmem_unmap` in order to let the system release the
  * memory object and eventally free the underlying physical memory.
+ *
+ * It is important to note that if the specified handle carries a read-only
+ * restriction in the calling process and the calling process has any existing
+ * mappings of the same memory object performed via some other unrestricted
+ * read-write handle, the new mapping will also be read-write ignoring the
+ * restriction. As soon as all such mappings are unmapped with `shmem_unmap`,
+ * this restriction will be automaticall applied to all read-only mappings
+ * including the one returned by this call. This automatic restriction
+ * application will not happen if there was a read-write mapping starting at the
+ * same offset as the one returned by this call. These limitations are imposed
+ * by OS/2 specifics.
  *
  * Note that due to another OS/2 memory manager constraint, this function may
  * return identical virtual address values for multiple `shmem_map` calls and
@@ -282,6 +278,12 @@ void *shmem_map(SHMEM h, off_t offset, size_t length);
  *
  * Only addresses returned by `shmem_map` should be passed as arguments to this
  * function, or it will fail with errno set to `EINVAL`.
+ *
+ * If there are some mappings in the current process created by `shmem_map` on
+ * restricted read-only handles of the same memory object, and none of their
+ * offsets ever matched any read-write mappings, this function will apply the
+ * read-only restriction previously ignored by `shmem_map` on all of such
+ * mappings.
  *
  * @param      addr  Virtual addresss of the mapping returned by `shmem_map`.
  *

@@ -509,7 +509,7 @@ do_test (void)
     addr = shmem_map(h, 0, 0);
     if (!addr)
     {
-      TEST_FORK_PERROR("shmem_map 2 failed");
+      TEST_FORK_PERROR("shmem_map failed");
       return 1;
     }
     else
@@ -545,7 +545,16 @@ do_test (void)
 
     addr[0] = 1; /* This must succeed */
 
-    addr[PAGE_SIZE] = 1; /* This must crash */
+    addr[PAGE_SIZE] = 2; /* This must succeed because of having an r/w handle */
+    addr2[0] = 3; /* This must succeed either (same addr as above) */
+
+    if (shmem_unmap(addr) == -1)
+    {
+      TEST_FORK_PERROR("shmem_unmap failed");
+      return 1;
+    }
+
+    addr2[0] = 4; /* Now this must crash (no r/w handle) */
 
     TEST_FORK_PRINTF("failed to crash\n");
   }
@@ -557,9 +566,167 @@ do_test (void)
     return 1;
   }
 
-  if (addr[PAGE_SIZE] != 124)
+  if (addr[PAGE_SIZE] != 3)
   {
-    printf("read from addr after dup failed (must be 124, got %hu)\n", addr[0]);
+    printf("read from addr after dup failed (must be 3, got %hu)\n", addr[PAGE_SIZE]);
+    return 1;
+  }
+
+  /*
+   * Test 3.5: restrictive duplicate effect on self (no crash)
+   */
+
+  printf("Test 3.5\n");
+
+  TEST_FORK_BEGIN("child", 0, 0);
+  {
+    rc = shmem_open(h, 0);
+    if (rc == -1)
+    {
+      TEST_FORK_PERROR("shmem_open failed");
+      return 1;
+    }
+
+    addr = shmem_map(h, 0, 0);
+    if (!addr)
+    {
+      TEST_FORK_PERROR("shmem_map failed");
+      return 1;
+    }
+    else
+    {
+      if (addr[PAGE_SIZE] != 3)
+      {
+        TEST_FORK_PRINTF("read from addr failed (must be 3, got %hu)\n", addr[PAGE_SIZE]);
+        return 1;
+      }
+    }
+
+    dup_h = shmem_duplicate(h, SHMEM_READONLY);
+    if (dup_h == SHMEM_INVALID)
+    {
+      perror("shmem_duplicate failed");
+      return 1;
+    }
+
+    addr2 = shmem_map(dup_h, 0, PAGE_SIZE * 2);
+    if (!addr2)
+    {
+      TEST_FORK_PERROR("shmem_map 2 failed");
+      return 1;
+    }
+    else
+    {
+      if (addr2[PAGE_SIZE] != 3)
+      {
+        TEST_FORK_PRINTF("read from addr 2 failed (must be 3, got %hu)\n", addr2[PAGE_SIZE]);
+        return 1;
+      }
+    }
+
+    addr[0] = 1; /* This must succeed */
+
+    addr2[0] = 2; /* This must succeed either (same addr as above) */
+
+    if (shmem_unmap(addr) == -1)
+    {
+      TEST_FORK_PERROR("shmem_unmap failed");
+      return 1;
+    }
+
+    addr2[0] = 3; /* This must succeed (still r/w view because of the same offset) */
+
+    return 0;
+  }
+  TEST_FORK_END();
+
+  if (addr[0] != 3)
+  {
+    printf("read from addr after dup failed (must be 3, got %hu)\n", addr[0]);
+    return 1;
+  }
+
+  if (addr[PAGE_SIZE] != 3)
+  {
+    printf("read from addr after dup failed (must be 3, got %hu)\n", addr[PAGE_SIZE]);
+    return 1;
+  }
+
+  /*
+   * Test 3.6: restrictive duplicate effect on self (no crash either)
+   */
+
+  printf("Test 3.6\n");
+
+  TEST_FORK_BEGIN("child", 0, 0);
+  {
+    rc = shmem_open(h, 0);
+    if (rc == -1)
+    {
+      TEST_FORK_PERROR("shmem_open failed");
+      return 1;
+    }
+
+    rc = shmem_open(dup_h, 0);
+    if (rc == -1)
+    {
+      TEST_FORK_PERROR("shmem_open dup failed");
+      return 1;
+    }
+
+    addr = shmem_map(dup_h, 0, 0);
+    if (!addr)
+    {
+      TEST_FORK_PERROR("shmem_map dup failed");
+      return 1;
+    }
+    else
+    {
+      if (addr[PAGE_SIZE] != 3)
+      {
+        TEST_FORK_PRINTF("read from addr failed (must be 3, got %hu)\n", addr[PAGE_SIZE]);
+        return 1;
+      }
+    }
+
+    addr2 = shmem_map(h, 0, PAGE_SIZE * 2);
+    if (!addr2)
+    {
+      TEST_FORK_PERROR("shmem_map 2 failed");
+      return 1;
+    }
+    else
+    {
+      if (addr2[PAGE_SIZE] != 3)
+      {
+        TEST_FORK_PRINTF("read from addr 2 failed (must be 3, got %hu)\n", addr2[PAGE_SIZE]);
+        return 1;
+      }
+    }
+
+    addr2[0] = 1; /* This must succeed (upgraded r/o view to r/w) */
+
+    if (shmem_unmap(addr) == -1)
+    {
+      TEST_FORK_PERROR("shmem_unmap failed");
+      return 1;
+    }
+
+    addr2[0] = 2; /* This must succeed (still r/w view because of the same offset) */
+
+    return 0;
+  }
+  TEST_FORK_END();
+
+  if (addr[0] != 2)
+  {
+    printf("read from addr after dup failed (must be 2, got %hu)\n", addr[0]);
+    return 1;
+  }
+
+  if (addr[PAGE_SIZE] != 3)
+  {
+    printf("read from addr after dup failed (must be 3, got %hu)\n", addr[PAGE_SIZE]);
     return 1;
   }
 
