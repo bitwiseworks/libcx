@@ -63,7 +63,7 @@ do_test (void)
   int i, n;
   unsigned char *addr;
   char *fname;
-  int count = 7;
+  int count = 60;
 
   int fd = create_temp_file("tst-mmap6-", &fname);
   if (fd == -1)

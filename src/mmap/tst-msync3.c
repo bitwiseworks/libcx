@@ -39,7 +39,7 @@
 #define TEST_SIZE 10
 #define TEST_VAL 255
 
-/* Shared mapping file flush interval in ms (must match one from mmap.c) */
+/* Shared mapping file flush interval in ms (must match one from mmap.h) */
 #define FLUSH_DELAY 1000
 
 unsigned char buf[FILE_SIZE];
@@ -110,7 +110,7 @@ do_test (void)
     addr[i] = TEST_VAL;
 
 //      /* Let mmap auto-sync code flush changed memory back to the file */
-//      usleep((FLUSH_DELAY + 500) * 1000);
+//      usleep((FLUSH_DELAY * 2 + 500) * 1000);
 
   /* Sync only the second page */
   msync(addr + PAGE_SIZE, PAGE_SIZE, MS_SYNC);

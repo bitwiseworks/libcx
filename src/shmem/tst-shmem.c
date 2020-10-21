@@ -306,7 +306,7 @@ do_test (void)
     addr[PAGE_SIZE] = 123;
   }
 
-  TEST_FORK_BEGIN("child", 0, 0);
+  TEST_FORK_WITH_PIPE_BEGIN("child", 0, 0);
   {
     addr = shmem_map(h, 0, 0);
     if (addr != NULL || errno != EINVAL)
@@ -321,6 +321,8 @@ do_test (void)
       TEST_FORK_PERROR("shmem_open failed");
       return 1;
     }
+
+    TEST_FORK_PING_PONG_PARENT();
 
     addr2 = shmem_map(h, PAGE_SIZE, 0);
     if (!addr2)
@@ -351,20 +353,33 @@ do_test (void)
       return 1;
     }
 
-    sleep(1);
+    TEST_FORK_PING_PONG_PARENT();
 
     return 0;
   }
-  TEST_FORK_PARENT_PART();
+  TEST_FORK_WITH_PIPE_PARENT_PART();
   {
+    TEST_FORK_WAIT_CHILD_PING();
+
+    rc = shmem_give(h, child_pid, 0);
+    if (rc != -1 || errno != EPERM)
+    {
+      TEST_FORK_PRINTF("shmem_give public returned %d and errno %d instead of -1 and errno %d\n", rc, errno, EPERM);
+      return 1;
+    }
+
+    TEST_FORK_PING_PONG_CHILD();
+
     rc = shmem_give(h, child_pid, 0);
     if (rc != -1 || errno != EACCES)
     {
-      TEST_FORK_PRINTF("shmem_give public returned %p and errno %d instead of -1 and errno %d\n", rc, errno, EACCES);
+      TEST_FORK_PRINTF("shmem_give public 2 returned %d and errno %d instead of -1 and errno %d\n", rc, errno, EACCES);
       return 1;
     }
+
+    TEST_FORK_PING_CHILD();
   }
-  TEST_FORK_END();
+  TEST_FORK_WITH_PIPE_END();
 
   /*
    * Test 3.2: shmem in child process with access restrictions
@@ -772,7 +787,7 @@ do_test (void)
     addr[PAGE_SIZE] = 123;
   }
 
-  TEST_FORK_BEGIN("child", 0, 0);
+  TEST_FORK_WITH_PIPE_BEGIN("child", 0, 0);
   {
     addr = shmem_map(h, 0, 0);
     if (addr != NULL || errno != EINVAL)
@@ -788,7 +803,7 @@ do_test (void)
       return 1;
     }
 
-    sleep(2); /* Wait for shm_give... */
+    TEST_FORK_PING_PONG_PARENT(); /* Wait for shm_give... */
 
     rc = shmem_open(h, 0);
     if (rc != -1 || errno != EPERM)
@@ -826,12 +841,15 @@ do_test (void)
 
     return 0;
   }
-  TEST_FORK_PARENT_PART();
+  TEST_FORK_WITH_PIPE_PARENT_PART();
   {
-    sleep (1);
+    TEST_FORK_WAIT_CHILD_PING();
+
     rc = shmem_give(h, child_pid, 0);
+
+    TEST_FORK_PING_CHILD();
   }
-  TEST_FORK_END();
+  TEST_FORK_WITH_PIPE_END();
 
   if (shmem_unmap(addr) == -1)
   {
