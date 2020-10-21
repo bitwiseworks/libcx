@@ -125,6 +125,90 @@ static inline const char *_getname (const char *path)
   } \
   while(0)
 
+/* Same as TEST_FORK_BEGIN but with two comm pipes between parent and child */
+#define TEST_FORK_WITH_PIPE_BEGIN(name, need_rc, need_sig) \
+  do \
+  { \
+    int pipe_ptoc[2]; \
+    int pipe_ctop[2]; \
+    char pipe_data; \
+    int in_parent_with_pipe_part = 0; \
+    if (pipe (pipe_ptoc) || pipe (pipe_ctop)) \
+    { \
+      perror("pipe"); \
+      return 1; \
+    } \
+    TEST_FORK_BEGIN(name, need_rc, need_sig); \
+      close(pipe_ptoc[1]); \
+      close(pipe_ctop[0]); \
+
+/* Same as TEST_FORK_PARENT_PART TEST_FORK_WITH_PIPE_BEGIN */
+#define TEST_FORK_WITH_PIPE_PARENT_PART() \
+      TEST_FORK_PARENT_PART(); \
+      close(pipe_ptoc[0]); \
+      close(pipe_ctop[1]); \
+      in_parent_with_pipe_part = 1; \
+      do {} while(0)
+
+/* Same as TEST_FORK_END but for TEST_FORK_WITH_PIPE_BEGIN */
+#define TEST_FORK_WITH_PIPE_END() \
+    TEST_FORK_END(); \
+    if (!in_parent_with_pipe_part) \
+    { \
+      close(pipe_ptoc[0]); \
+      close(pipe_ctop[1]); \
+    } \
+    close(pipe_ptoc[1]); \
+    close(pipe_ctop[0]); \
+  } \
+  while(0)
+
+/* Pings child in TEST_FORK_WITH_PIPE_BEGIN mode */
+#define TEST_FORK_PING_CHILD() \
+  if (write(pipe_ptoc[1], "1", 1) != 1) \
+  { \
+    perror("ping_child"); \
+    return 1; \
+  } \
+  else do {} while(0)
+
+/* Waits for child ping in TEST_FORK_WITH_PIPE_BEGIN mode */
+#define TEST_FORK_WAIT_CHILD_PING() \
+  if (read(pipe_ctop[0], &pipe_data, 1) != 1) \
+  { \
+    perror("wait_child_ping"); \
+    return 1; \
+  } \
+  else do {} while(0)
+
+/* Pings parent in TEST_FORK_WITH_PIPE_BEGIN mode */
+#define TEST_FORK_PING_PARENT() \
+  if (write(pipe_ctop[1], "1", 1) != 1) \
+  { \
+    TEST_FORK_PERROR("ping_parent"); \
+    return 1; \
+  } \
+  else do {} while(0)
+
+/* Waits for parent ping in TEST_FORK_WITH_PIPE_BEGIN mode */
+#define TEST_FORK_WAIT_PARENT_PING() \
+  if (read(pipe_ptoc[0], &pipe_data, 1) != 1) \
+  { \
+    TEST_FORK_PERROR("wait_parent_ping"); \
+    return 1; \
+  } \
+  else do {} while(0)
+
+/* TEST_FORK_PING_CHILD and TEST_FORK_WAIT_CHILD_PING together */
+#define TEST_FORK_PING_PONG_CHILD() \
+  TEST_FORK_PING_CHILD(); \
+  TEST_FORK_WAIT_CHILD_PING()
+
+/* TEST_FORK_PING_PARENT and TEST_FORK_WAIT_PARENT_PING together */
+#define TEST_FORK_PING_PONG_PARENT() \
+  TEST_FORK_PING_PARENT(); \
+  TEST_FORK_WAIT_PARENT_PING()
+
 /* printf to use in forked test code */
 #define TEST_FORK_PRINTF(msg, ...) printf("%s: " msg, ForkName, ## __VA_ARGS__)
 
