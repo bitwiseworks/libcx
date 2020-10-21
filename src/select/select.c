@@ -28,7 +28,7 @@
 #include "../shared.h"
 
 #ifndef MAX
-#define MAX(a,b)	((a) > (b) ? (a) : (b))
+#define MAX(a,b)  ((a) > (b) ? (a) : (b))
 #endif
 
 int _std_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
@@ -40,6 +40,16 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
   TRACE("nfds %d, readfds %p, writefds %p, exceptfds %p timeout %p (%ld.%ld)\n",
         nfds, readfds, writefds, exceptfds, timeout,
         timeout ? timeout->tv_sec : 0, timeout ? timeout->tv_usec : 0);
+
+  /*
+   * Validate arguments. Note that although _std_select does that too, we
+   * need to do it upfront since we use ndfs on our own.
+   */
+  if (nfds < 0 || nfds > FD_SETSIZE)
+  {
+    errno = EINVAL;
+    return -1;
+  }
 
   int fd;
   int n_ready_fds;

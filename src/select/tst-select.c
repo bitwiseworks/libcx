@@ -44,11 +44,21 @@ static int do_test(void)
   struct  timeval tm;
 
   /*
+   * Test wrong select arguments
+   */
+  tm.tv_sec = 0;
+  tm.tv_usec = 300000;
+  rc = select(-1, NULL, NULL, NULL, &tm);
+  if (rc != -1 && errno != EINVAL)
+  {
+    printf("select(-1) returned %d and errno %d instead of -1 and EINVAL\n", rc, errno);
+    return 1;
+  }
+
+  /*
    * Test select sleep
    */
 
-  tm.tv_sec = 0;
-  tm.tv_usec = 300000;
   rc = select(0, NULL, NULL, NULL, &tm);
   if (rc == -1)
   {
