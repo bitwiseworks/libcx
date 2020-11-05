@@ -21,7 +21,9 @@
 
 #include <errno.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <emx/io.h>
 
@@ -163,6 +165,7 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
   else
   {
     struct timeval t_new;
+    int efault_attempts = 3;
 
     if (n_ready_fds)
     {
@@ -180,12 +183,82 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
           readfds ? &r_new : NULL, writefds ? &w_new : NULL, exceptfds ? &e_new : NULL,
           timeout, timeout ? timeout->tv_sec : 0, timeout ? timeout->tv_usec : 0);
 
-    nfds_ret = _std_select(max_fd + 1,
-                           readfds ? &r_new : NULL,
-                           writefds ? &w_new : NULL,
-                           exceptfds ? &e_new : NULL, timeout);
+    while (efault_attempts--)
+    {
+      nfds_ret = _std_select(max_fd + 1,
+                             readfds ? &r_new : NULL,
+                             writefds ? &w_new : NULL,
+                             exceptfds ? &e_new : NULL, timeout);
+      TRACE("nfds_ret %d (%s)\n", nfds_ret, strerror(nfds_ret == -1 ? errno : 0));
 
-    TRACE("nfds_ret %d (%s)\n", nfds_ret, strerror(nfds_ret == -1 ? errno : 0));
+      if (nfds_ret >= 0 || errno != EFAULT)
+        break;
+
+      /*
+       * EFAULT comes from the OS/2 TCP/IP stack and seems to be some mistery.
+       * Some tests show that simply retrying after some sleep makes it go away.
+       */
+      TRACE("EFAULT, retrying (attempts left %d)\n", efault_attempts);
+      usleep(100000);
+    }
+
+    if (nfds_ret < 0 && errno == EBADF)
+    {
+      /*
+       * OS/2 select is known to return EBADF if some fd represents a socketpair
+       * whose other end unexpectedly dies (e.g. the process crashes). In this
+       * case we report all sets ready for this fd to let the caller inspect the
+       * socket and remove it from the set to let other fds be selected. This, in
+       * particular, fixes 100% CPU load in a tight select loop always returning
+       * EBADF that would be run in some applications (Mozilla, libevent)
+       * otherwise.
+       */
+      TRACE("EBADF, setting guilty fds ready\n");
+
+      int count = 0;
+      for (fd = 0; fd <= max_fd; ++fd)
+      {
+        if (!FD_ISSET(fd, &regular_fds))
+        {
+          int has_r = 0, has_w = 0, has_e = 0;
+          if ((has_r = readfds && FD_ISSET(fd, readfds)) ||
+              (has_w = writefds && FD_ISSET(fd, writefds)) ||
+              (has_e = exceptfds && FD_ISSET(fd, exceptfds)))
+          {
+            /* Use a dummy call to find out which fd is guilty and set it */
+            int dummy = 0;
+            socklen_t dummy_len = sizeof(dummy);
+            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &dummy, &dummy_len) == -1 &&
+                errno == EBADF) {
+              TRACE("getsockopt reports EBADF for fd %d, dead socketpair?", fd);
+              if (has_r)
+                FD_SET(fd, &r_new);
+              if (has_w)
+                FD_SET(fd, &w_new);
+              if (has_e)
+                FD_SET(fd, &e_new);
+              ++count;
+            }
+            else
+            {
+              /* Important to clear the fd if we are not setting it. */
+              if (has_r)
+                FD_CLR(fd, &r_new);
+              if (has_w)
+                FD_CLR(fd, &w_new);
+              if (has_e)
+                FD_CLR(fd, &e_new);
+            }
+          }
+        }
+      }
+      /*
+       * Note that if count is zero here, it means that there are actually no
+       * guilty fds and something else went wrong, let us return the error then.
+       */
+      if (count)
+        nfds_ret = count;
+    }
 
     if (nfds_ret >= 0)
     {
