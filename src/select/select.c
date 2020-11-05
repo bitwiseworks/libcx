@@ -23,6 +23,7 @@
 #include <string.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <emx/io.h>
 
 #define TRACE_GROUP TRACE_GROUP_SELECT
 #include "../shared.h"
@@ -54,7 +55,6 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
   int fd;
   int n_ready_fds;
   int nfds_ret;
-  struct stat st;
 
   fd_set regular_fds;
 
@@ -92,7 +92,36 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
 
     if (n_fd_set)
     {
-      if (fstat (fd, &st) != -1 && S_ISREG (st.st_mode))
+      /*
+       * fstat is too expensive to detect if it's a regular file (as it does an
+       * expensive I/O operation to query file attributes), use LIBC internals
+       * instead as we don't need those attributes.
+       */
+      int is_regular = 0;
+      __LIBC_PFH pFH;
+      pFH = __libc_FH(fd);
+      if (pFH)
+      {
+        if ((pFH->fFlags & __LIBC_FH_TYPEMASK) == F_FILE)
+        {
+           is_regular = 1;
+        }
+        else if ((pFH->fFlags & __LIBC_FH_TYPEMASK) != F_SOCKET)
+        {
+          /*
+           * TODO: Judging by __libc_Back_fsFileStatFH (fstat work horse), the
+           * handle type may be not set, which will cause a call to
+           * __libc_back_fsNativeFileStat if pFH->pszNativePath is not null.
+           * Let it go in such a case - fd might still be a regular file.
+           */
+          TRACE("fd %d type %d, path [%s]\n", fd, (pFH->fFlags & __LIBC_FH_TYPEMASK), pFH->pszNativePath);
+          struct stat st;
+          if (fstat (fd, &st) != -1 && S_ISREG (st.st_mode))
+            is_regular = 1;
+        }
+      }
+
+      if (is_regular)
       {
         /*
          * Regular files should be always immediately ready for I/O,
