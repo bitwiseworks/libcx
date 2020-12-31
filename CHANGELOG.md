@@ -1,5 +1,16 @@
 # History of changes for LIBCx
 
+#### Version 0.6.9 (2020-12-31)
+
+* mmap: Avoid assertion on freeing partial mappings [w/a for #75 and #76].
+* Use realloc version that zeroes new memory [#46].
+* Log PID/TID holding global LIBCx lock on fatal assertions.
+* Implement shmem API [#83].
+* select: Return -1 and ENIVAL when nfds < 0 or > FD_SETSIZE [#79].
+* test-skeleton: Support 2 comm pipes between TEST_FORK child and parent.
+* select: Avoid expensive I/O on regular files [#86].
+* select: Implement EBADF and EFAULT hacks [#85].
+
 #### Version 0.6.8 (2020-03-31)
 
 * spawn2: Fix assertion when redirecting stderr to stdout [bitwiseworks/libc#69].
