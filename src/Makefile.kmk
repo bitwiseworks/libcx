@@ -27,6 +27,7 @@ libcx_SOURCES = \
   net/getifaddrs.c \
   net/if_nameindex.c \
   shmem/shmem.c \
+  libcx/handles.c \
   libcx/interrupt.c \
   lend/ld32.c \
   main.c \
@@ -133,6 +134,8 @@ TESTS += \
   net/tst-nameindex.c
 
 TESTS += shmem/tst-shmem.c
+
+TESTS += libcx/tst-handles.c
 
 PROGRAMS += tst-exeinfo-packed-1
 tst-exeinfo-packed-1_TEMPLATE = Test

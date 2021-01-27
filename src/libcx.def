@@ -52,6 +52,8 @@ EXPORTS
   "_shmem_unmap"
   "_shmem_get_info"
   "_shmem_max_handles"
+  "_libcx_send_handles"
+  "_libcx_take_handles"
   ; private symbols (may disappear w/o any notice)
   "_print_stats" @60000 NONAME
   "_libcx_assert" @60001 NONAME
