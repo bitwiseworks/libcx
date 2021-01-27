@@ -77,6 +77,7 @@ static inline const char *_getname (const char *path)
     const char *ForkName = name; \
     const char *SigName = #need_sig; \
     const int NeedRC = (need_rc), NeedSig = (need_sig); \
+    int parent_pid = getpid(); \
     int status; \
     int in_parent_part = 0; \
     pid_t child_pid; \
@@ -101,7 +102,7 @@ static inline const char *_getname (const char *path)
         if (!in_parent_part) assert(0); \
       } \
     } \
-    if (wait(&status) == -1) \
+    if (TEMP_FAILURE_RETRY(wait(&status)) == -1) \
     { \
       printf("%s: wait failed: %s\n", ForkName, strerror(errno)); \
       return 1; \
@@ -165,7 +166,7 @@ static inline const char *_getname (const char *path)
 
 /* Pings child in TEST_FORK_WITH_PIPE_BEGIN mode */
 #define TEST_FORK_PING_CHILD() \
-  if (write(pipe_ptoc[1], "1", 1) != 1) \
+  if (TEMP_FAILURE_RETRY(write(pipe_ptoc[1], "1", 1)) != 1) \
   { \
     perror("ping_child"); \
     return 1; \
@@ -174,7 +175,7 @@ static inline const char *_getname (const char *path)
 
 /* Waits for child ping in TEST_FORK_WITH_PIPE_BEGIN mode */
 #define TEST_FORK_WAIT_CHILD_PING() \
-  if (read(pipe_ctop[0], &pipe_data, 1) != 1) \
+  if (TEMP_FAILURE_RETRY(read(pipe_ctop[0], &pipe_data, 1)) != 1) \
   { \
     perror("wait_child_ping"); \
     return 1; \
@@ -183,7 +184,7 @@ static inline const char *_getname (const char *path)
 
 /* Pings parent in TEST_FORK_WITH_PIPE_BEGIN mode */
 #define TEST_FORK_PING_PARENT() \
-  if (write(pipe_ctop[1], "1", 1) != 1) \
+  if (TEMP_FAILURE_RETRY(write(pipe_ctop[1], "1", 1)) != 1) \
   { \
     TEST_FORK_PERROR("ping_parent"); \
     return 1; \
@@ -192,7 +193,7 @@ static inline const char *_getname (const char *path)
 
 /* Waits for parent ping in TEST_FORK_WITH_PIPE_BEGIN mode */
 #define TEST_FORK_WAIT_PARENT_PING() \
-  if (read(pipe_ptoc[0], &pipe_data, 1) != 1) \
+  if (TEMP_FAILURE_RETRY(read(pipe_ptoc[0], &pipe_data, 1)) != 1) \
   { \
     TEST_FORK_PERROR("wait_parent_ping"); \
     return 1; \

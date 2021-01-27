@@ -27,6 +27,7 @@ libcx_SOURCES = \
   net/getifaddrs.c \
   net/if_nameindex.c \
   shmem/shmem.c \
+  libcx/interrupt.c \
   lend/ld32.c \
   main.c \
   main.s \

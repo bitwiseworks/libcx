@@ -100,6 +100,8 @@ static HMODULE ghModule = NULLHANDLE;
 
 SharedData *gpData = NULL;
 
+ProcDesc *gpProcDesc = NULL;
+
 static HMTX gMutex = NULLHANDLE;
 
 static void APIENTRY ProcessExit(ULONG);
@@ -155,8 +157,9 @@ static void *mem_alloc(Heap_t h, size_t *psize, int *pclean)
 
 /**
  * Initializes the shared structures.
+ * @a forked is TRUE when initializing a forked child.
  */
-static void shared_init()
+static void shared_init(int forked)
 {
   APIRET arc;
   int rc;
@@ -303,6 +306,7 @@ static void shared_init()
   mmap_init(proc);
   fcntl_locking_init(proc);
   shmem_data_init(proc);
+  interrupt_init(proc, forked);
 
   /* Check if it's a spawn2 wrapper (e.g. spawn2-wrapper.c) */
   {
@@ -322,6 +326,10 @@ static void shared_init()
         global_spawn2_sem(proc);
       }
     }
+
+    /* Store a global reference to this process description for fast access */
+    gpProcDesc = proc;
+    TRACE("gpProcDesc %p\n", gpProcDesc);
   }
 
   DosReleaseMutexSem(gMutex);
@@ -337,6 +345,7 @@ static void shared_term()
   TRACE("gMutex %lx, gpData %p (heap %p, refcnt %d), gSeenAssertion %lu\n",
         gMutex, gpData, gpData ? gpData->heap : 0,
         gpData ? gpData->refcnt : 0, gSeenAssertion);
+  TRACE("gpProcDesc %p\n", gpProcDesc);
 
   ASSERT(gSeenAssertion || gMutex != NULLHANDLE);
 
@@ -352,17 +361,19 @@ static void shared_term()
       ASSERT(gpData->refcnt);
       gpData->refcnt--;
 
-      /* Remove the process description upon process termination */
-      size_t bucket = 0;
-      ProcDesc *prev = NULL;
-      proc = find_proc_desc_ex(getpid(), &bucket, &prev);
+      /* Reset the global process description reference before destruction */
+      gpProcDesc = NULL;
+
+      /* Remove the process description before further uninit to make it non-reachable */
+      proc = take_proc_desc(getpid());
+      TRACE("proc %p\n", proc);
 
       /* Uninitialize individual components */
+      interrupt_term(proc);
       shmem_data_term(proc);
       fcntl_locking_term(proc);
       mmap_term(proc);
 
-      TRACE("proc %p\n", proc);
       if (proc)
       {
         if (proc->spawn2_wrappers)
@@ -402,7 +413,7 @@ static void shared_term()
           free(proc->files);
         }
 
-        free_proc_desc(proc, bucket, prev);
+        free(proc);
       }
 
       if (gpData->refcnt == 0)
@@ -496,7 +507,7 @@ unsigned long _System _DLL_InitTerm(unsigned long hModule, unsigned long ulFlag)
       if (_CRT_init() != 0)
         return 0;
       __ctordtorInit();
-      shared_init();
+      shared_init(FALSE /*forked*/);
       break;
     }
 
@@ -568,25 +579,29 @@ void global_unlock()
 }
 
 /**
- * Returns 0 and PID and TID of the global mutex owner if it is currently
- * owned.
+ * Returns 0 and PID, TID and the request count of the global mutex owner if it
+ * is currently owned.
+ *
+ * Any parameter can be NULL to ignore the respective value.
  *
  * Returns -1 if the mutex is not owned or an error occurs.
  */
-int global_lock_pidtid(int *pid, int *tid)
+int global_lock_info(pid_t *pid, int *tid, unsigned *count)
 {
   if (gMutex != NULLHANDLE)
   {
     PID pid2 = 0;
     TID tid2 = 0;
-    ULONG count = 0;
-    APIRET arc = DosQueryMutexSem(gMutex, &pid2, &tid2, &count);
+    ULONG count2 = 0;
+    APIRET arc = DosQueryMutexSem(gMutex, &pid2, &tid2, &count2);
     if (arc == NO_ERROR)
     {
       if (pid)
         *pid = pid2;
       if (tid)
         *tid = tid2;
+      if (count)
+        *count = count2;
       return 0;
     }
   }
@@ -598,8 +613,9 @@ void global_lock_deathcheck()
 {
   if (gMutex != NULLHANDLE)
   {
-    int pid, tid;
-    if (global_lock_pidtid(&pid, &tid) == 0 && pid == getpid() && tid == _gettid())
+    pid_t pid;
+    int tid;
+    if (global_lock_info(&pid, &tid, NULL) == 0 && pid == getpid() && tid == _gettid())
     {
       if (get_log_instance())
       {
@@ -752,14 +768,11 @@ void *crealloc(void *ptr, size_t old_size, size_t new_size)
 /**
  * Returns a process description sturcture for the given process.
  * Must be called under global_lock().
- * Optional o_bucket and o_prev arguments will receive the appropriate values
- * for the returned process description when they are not NULL (and may be later
- * used in e.g. a free_proc_desc_ex() call).
  * Returns NULL when opt is HashMapOpt_New and there is not enough memory
  * to allocate a new sctructure, or when opt is not HashMapOpt_New and there
- * is no descriptor for the given process.
+ * is no description for the given process.
  */
-ProcDesc *get_proc_desc_ex(pid_t pid, enum HashMapOpt opt, size_t *o_bucket, ProcDesc **o_prev)
+ProcDesc *get_proc_desc_ex(pid_t pid, enum HashMapOpt opt)
 {
   size_t bucket;
   ProcDesc *desc, *prev;
@@ -805,36 +818,20 @@ ProcDesc *get_proc_desc_ex(pid_t pid, enum HashMapOpt opt, size_t *o_bucket, Pro
 #endif
     }
   }
-
-  if (o_bucket)
-    *o_bucket = bucket;
-  if (o_prev)
-    *o_prev = prev;
-
-  return desc;
-}
-
-/**
- * Frees the given process description. Note that bucket, prev, and proc must be
- * valid values as received from find_proc_desc_ex in order to maintain
- * the map of remaining process descriptions.
- */
-void free_proc_desc(ProcDesc *desc, size_t bucket, ProcDesc *prev)
-{
-  ASSERT(desc);
-  ASSERT_MSG(bucket <= PROC_DESC_HASH_SIZE, "%u", bucket);
-
-  /* Remove from the hash map */
-  if (prev)
-    prev->next = desc->next;
-  else
-    gpData->procs[bucket] = desc->next;
-
-  free(desc);
+  else if (desc && opt == HashMapOpt_Take)
+  {
+    /* Remove from the hash map */
+    if (prev)
+      prev->next = desc->next;
+    else
+      gpData->procs[bucket] = desc->next;
 
 #if STATS_ENABLED
-  --gpData->num_procs;
+    --gpData->num_procs;
 #endif
+  }
+
+  return desc;
 }
 
 /**
@@ -870,7 +867,7 @@ FileDesc *get_file_desc_ex(pid_t pid, int fd, const char *path, enum HashMapOpt 
 
   enum { FDArrayInc = 4 };
 
-  proc = get_proc_desc_ex(pid, opt == HashMapOpt_New ? opt : HashMapOpt_None, NULL, NULL);
+  proc = get_proc_desc_ex(pid, opt == HashMapOpt_New ? opt : HashMapOpt_None);
   if (!proc)
     return NULL;
 
@@ -1313,7 +1310,7 @@ static int format_stats(char *buf, int size)
   if (nret < size - 1 && gMutex != NULLHANDLE)
   {
     int pid, tid;
-    if (global_lock_pidtid(&pid, &tid) == 0)
+    if (global_lock_info(&pid, &tid, NULL) == 0)
     {
       nret += snprintf(buf + nret, size - nret,
                        "===== LIBCx global mutex owner =====\n"
@@ -1370,7 +1367,7 @@ void force_libcx_term()
  */
 void force_libcx_init()
 {
-  shared_init();
+  shared_init(FALSE /*forked*/);
 }
 #endif
 
@@ -1754,7 +1751,7 @@ static void forkCompletion(void *pvArg, int rc, __LIBC_FORKCTX enmCtx)
    * Initialize LIBCx in the forked child (note that for normal children this is
    * done in _DLL_InitTerm()).
    */
-  shared_init();
+  shared_init(TRUE /*forked*/);
 }
 
 static int forkParentChild(__LIBC_PFORKHANDLE pForkHandle, __LIBC_FORKOP enmOperation)

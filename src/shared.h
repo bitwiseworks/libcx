@@ -74,11 +74,13 @@ void libcx_trace(unsigned traceGroup, const char *file, int line, const char *fu
 #define TRACE_IF(cond, msg, ...) if (cond) TRACE(msg, ## __VA_ARGS__)
 #define TRACE_BEGIN_IF(cond, msg, ...) if (cond) TRACE_BEGIN(msg, ## __VA_ARGS__)
 
-#define TRACE_ERRNO(msg, ...) TRACE(msg ": %s\n", ##__VA_ARGS__, strerror(errno))
+#define TRACE_ERRNO(msg, ...) TRACE(msg ": %s (%d)\n", ##__VA_ARGS__, strerror(errno), errno)
 #define TRACE_ERRNO_IF(cond, msg, ...) if (cond) TRACE_ERRNO(msg, ## __VA_ARGS__)
 
 #define TRACE_AND(stmt, msg, ...) do_(TRACE(msg, ##__VA_ARGS__); stmt)
 #define TRACE_ERRNO_AND(stmt, msg, ...) do_(TRACE_ERRNO(msg, ##__VA_ARGS__); stmt)
+
+#define TRACE_PERR(rc) do { int _rc = (rc); if (rc < 0) TRACE(#rc " = %d, errno %d (%s)\n", _rc, errno, strerror(errno)); else TRACE(#rc " = %d\n", _rc); } while(0)
 
 #else
 
@@ -96,6 +98,7 @@ void libcx_trace(unsigned traceGroup, const char *file, int line, const char *fu
 #define TRACE_ERRNO_IF(msg, ...) do {} while (0)
 #define TRACE_AND(stmt, msg, ...) do_(stmt)
 #define TRACE_ERRNO_AND(stmt, msg, ...) do_(stmt)
+#define TRACE_PERR(rc) do {} while (0)
 
 #endif /* TRACE_ENABLED */
 
@@ -106,11 +109,15 @@ void libcx_trace(unsigned traceGroup, const char *file, int line, const char *fu
 #if ASSERT_USE_LIBC_LOG
 void libcx_assert(const char *string, const char *fname, unsigned int line, const char *format, ...) __printflike(4, 5);
 #define ASSERT_MSG(cond, msg, ...) do { if (!(cond)) { libcx_assert(#cond, __FILE__, __LINE__, msg, ## __VA_ARGS__); } } while(0)
+#define ASSERT_NO_PERR(rc) do { int _rc = (rc); if (_rc != 0) { libcx_assert(#rc " = 0", __FILE__, __LINE__, "%d (errno %d, %s)", _rc, errno, strerror(errno)); } } while(0)
 #define ASSERT(cond) ASSERT_MSG(cond, NULL)
+#define ASSERT_FAILED() ASSERT(FALSE)
 #else
 #include <assert.h>
 #define ASSERT_MSG(cond, msg, ...) do { if (!(cond)) { fprintf(stderr, "Assertion info: " msg, ## __VA_ARGS__); fflush(stderr); _assert(#cond, __FILE__, __LINE__); } } while(0)
-#deifne ASSERT(cond) assert(cond)
+#define ASSERT_NO_PERR(rc) do { int _rc = (rc); if (_rc != 0) { fprintf(stderr, "Assertion info: %d (errno %d, %s)", _rc, errno, strerror(errno)); fflush(stderr); _assert(#rc " = 0", __FILE__, __LINE__); } } while(0)
+#define ASSERT(cond) assert(cond)
+#define ASSERT_FAILED() ASSERT(FALSE)
 #endif
 
 /** Set errno and execute the given statement (does tracing in debug builds). */
@@ -202,6 +209,7 @@ typedef struct ProcDesc
   unsigned long spawn2_sem; /* Global spawn2_sem if open in this process */
   struct SpawnWrappers *spawn2_wrappers; /* spawn2 wrapper->wrapped mappings */
   _fmutex tcpip_fsem; /* Mutex for making thread-safe TCP/IP DLL calls */
+  struct Interrupts *interrupts; /* Interrupt request data for this process */
 } ProcDesc;
 
 /**
@@ -237,6 +245,13 @@ typedef struct SharedData
 extern SharedData *gpData;
 
 /**
+ * Current (this) process description for fast reference.
+ * Always valid for the duration of LIBCx lifetime but indiviual fields may
+ * still need `global_lock` or some other means of serialized access.
+ */
+extern ProcDesc *gpProcDesc;
+
+/**
  * TLS to save the FPU CW.
  */
 extern int gFpuCwTls;
@@ -247,7 +262,7 @@ struct _CONTEXT;
 
 void global_lock();
 void global_unlock();
-int global_lock_pidtid(int *pid, int *tid);
+int global_lock_info(pid_t *pid, int *tid, unsigned *count);
 void global_lock_deathcheck();
 
 unsigned long global_spawn2_sem(ProcDesc *proc);
@@ -282,13 +297,13 @@ enum HashMapOpt
 {
   HashMapOpt_None = 0,
   HashMapOpt_New = 1,
+  HashMapOpt_Take = 2,
 };
 
-ProcDesc *get_proc_desc_ex(pid_t pid, enum HashMapOpt opt, size_t *o_bucket, ProcDesc **o_prev);
-static inline ProcDesc *get_proc_desc(pid_t pid) { return get_proc_desc_ex(pid, HashMapOpt_New, NULL, NULL); }
-static inline ProcDesc *find_proc_desc(pid_t pid) { return get_proc_desc_ex(pid, HashMapOpt_None, NULL, NULL); }
-static inline ProcDesc *find_proc_desc_ex(pid_t pid, size_t *o_bucket, ProcDesc **o_prev) { return get_proc_desc_ex(pid, HashMapOpt_None, o_bucket, o_prev); }
-void free_proc_desc(ProcDesc *desc, size_t bucket, ProcDesc *prev);
+ProcDesc *get_proc_desc_ex(pid_t pid, enum HashMapOpt opt);
+static inline ProcDesc *get_proc_desc(pid_t pid) { return get_proc_desc_ex(pid, HashMapOpt_New); }
+static inline ProcDesc *find_proc_desc(pid_t pid) { return get_proc_desc_ex(pid, HashMapOpt_None); }
+static inline ProcDesc *take_proc_desc(pid_t pid) { return get_proc_desc_ex(pid, HashMapOpt_Take); }
 
 FileDesc *get_file_desc_ex(pid_t pid, int fd, const char *path, enum HashMapOpt opt, size_t *o_bucket, FileDesc **o_prev, ProcDesc **o_proc, SharedFileDesc **o_desc_g);
 static inline FileDesc *get_file_desc(int fd, const char *path) { return get_file_desc_ex(-1, fd, path, HashMapOpt_New, NULL, NULL, NULL, NULL); }
@@ -314,6 +329,18 @@ int mmap_exception(struct _EXCEPTIONREPORTRECORD *report,
 
 void shmem_data_init(ProcDesc *proc);
 void shmem_data_term(ProcDesc *proc);
+
+void interrupt_init(ProcDesc *proc, int forked);
+void interrupt_term(ProcDesc *proc);
+int interrupt_exception(struct _EXCEPTIONREPORTRECORD *report,
+                        struct _EXCEPTIONREGISTRATIONRECORD *reg,
+                        struct _CONTEXT *ctx);
+
+typedef int INTERRUPT_WORKER (pid_t pid, void *data);
+typedef struct InterruptResult *INTERRUPT_RESULT;
+int interrupt_request(pid_t pid, INTERRUPT_WORKER *worker, void *data, INTERRUPT_RESULT *result);
+int interrupt_request_rc(INTERRUPT_RESULT result);
+void interrupt_request_release(INTERRUPT_RESULT result);
 
 void print_stats();
 

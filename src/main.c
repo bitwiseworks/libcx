@@ -76,6 +76,9 @@ ULONG _System libcxExceptionHandler(PEXCEPTIONREPORTRECORD report,
                                     PCONTEXTRECORD ctx,
                                     PVOID unused)
 {
+  if (interrupt_exception(report, reg, ctx))
+    return XCPT_CONTINUE_EXECUTION;
+
   if (mmap_exception(report, reg, ctx))
     return XCPT_CONTINUE_EXECUTION;
 
