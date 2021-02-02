@@ -26,10 +26,8 @@
 
 __BEGIN_DECLS
 
-#define LIBCX_HANDLE_INVALID -1
-
-#define LIBCX_HANDLE_SHMEM 0
-#define LIBCX_HANDLE_FD 1
+#define LIBCX_HANDLE_SHMEM 1
+#define LIBCX_HANDLE_FD 2
 
 #define LIBCX_HANDLE_NEW 0x1
 
@@ -45,7 +43,7 @@ typedef struct
   };
   int16_t flags;
   int32_t value;
-} LIBC_HANDLE;
+} LIBCX_HANDLE;
 #pragma pack()
 
 /**
@@ -84,7 +82,7 @@ typedef struct
  * @return     0 or number of new handles on success, otherwise -1 and error
  *             code in `errno`.
  */
-int libcx_send_handles(LIBC_HANDLE *handles, size_t num_handles, pid_t pid, int flags);
+int libcx_send_handles(LIBCX_HANDLE *handles, size_t num_handles, pid_t pid, int flags);
 
 /**
  * Takes selected kLIBC and LIBCx handles from another LIBCx process.
@@ -123,7 +121,7 @@ int libcx_send_handles(LIBC_HANDLE *handles, size_t num_handles, pid_t pid, int 
  * @return     0 or number of new handles on success, otherwise -1 and error
  *             code in `errno`.
  */
-int libcx_take_handles(const LIBC_HANDLE *handles, size_t num_handles, pid_t pid, int flags);
+int libcx_take_handles(LIBCX_HANDLE *handles, size_t num_handles, pid_t pid, int flags);
 
 __END_DECLS
 

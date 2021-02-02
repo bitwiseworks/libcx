@@ -30,8 +30,8 @@
 #include "libcx/handles.h"
 #include "libcx/shmem.h"
 
-#define TR_HANDLE_SHMEM 0
-#define TR_HANDLE_SOCKET 1
+#define TR_HANDLE_SHMEM 1
+#define TR_HANDLE_SOCKET 2
 
 typedef struct TRANSIT_HANDLE
 {
@@ -48,14 +48,16 @@ typedef struct TRANSIT_HANDLE
 typedef struct HANDLES_DATA
 {
   size_t num_handles;
-  TRANSIT_HANDLE handles[0];
+  int flags;
+  TRANSIT_HANDLE handles[0]; /* Must be last! */
 } HANDLES_DATA;
 
 static int send_handles_worker(pid_t pid, void *data)
 {
   HANDLES_DATA *h_data = (HANDLES_DATA*)data;
 
-  TRACE("pid 0x%x data %p num_handles %u\n", pid, h_data, h_data->num_handles);
+  TRACE("pid 0x%x data %p num_handles %u flags 0x%x\n",
+        pid, h_data, h_data->num_handles, h_data->flags);
 
   global_lock();
 
@@ -82,14 +84,14 @@ static int send_handles_worker(pid_t pid, void *data)
     }
   }
 
-  global_unlock();
-
   /* TODO: call GLOBAL_MEM_SET_OWNER(h_data, pid) when it's ready */
+
+  global_unlock();
 
   return 0;
 }
 
-int libcx_send_handles(LIBC_HANDLE *handles, size_t num_handles, pid_t pid, int flags)
+int libcx_send_handles(LIBCX_HANDLE *handles, size_t num_handles, pid_t pid, int flags)
 {
   TRACE("handles %p num_handles %u pid 0x%x flags 0x%X\n", handles, num_handles, pid, flags);
 
@@ -168,6 +170,7 @@ int libcx_send_handles(LIBC_HANDLE *handles, size_t num_handles, pid_t pid, int 
       break;
 
     h_data->num_handles = num_handles;
+    h_data->flags = flags;
 
     /* Prepare handles for transit */
     for (size_t i = 0; i < h_data->num_handles; ++i)
@@ -203,18 +206,37 @@ int libcx_send_handles(LIBC_HANDLE *handles, size_t num_handles, pid_t pid, int 
 
     if (rc == 0)
     {
-      interrupt_request_release(result);
+      global_lock();
 
-      /* TODO: use GLOBAL_DEL(h_data) when it's ready */
-      free(h_data);
+      /* Process handles after transit */
+      for (size_t i = 0; i < num_handles; ++i)
+      {
+        switch (handles[i].type)
+        {
+          case LIBCX_HANDLE_SHMEM:
+            if (flags & LIBCX_HANDLE_CLOSE)
+            {
+              int rc2 = shmem_close((SHMEM)handles[i].value);
+              if (rc2 == -1 && errno != EINVAL)
+                ASSERT_NO_PERR(rc2);
+            }
+            break;
+          default:
+            ASSERT_FAILED();
+            break;
+        }
+      }
+
+      global_unlock();
+
+      /* Note: Important to release the result after processing handles! */
+      interrupt_request_release(result);
     }
   }
-  else
-  {
-    /* TODO: use GLOBAL_DEL(h_data) when it's ready */
-    if (h_data)
-      free(h_data);
-  }
+
+  /* TODO: use GLOBAL_DEL(h_data) when it's ready */
+  if (h_data)
+    free(h_data);
 
   TRACE_PERR(rc);
   return rc;
@@ -225,13 +247,14 @@ static int take_handles_worker(pid_t pid, void *data)
 {
   HANDLES_DATA *h_data = (HANDLES_DATA*)data;
 
-  TRACE("pid 0x%x data %p num_handles %u\n", pid, h_data, h_data->num_handles);
+  TRACE("pid 0x%x data %p num_handles %u flags 0x%x\n",
+        pid, h_data, h_data->num_handles, h_data->flags);
 
   int rc = 0;
 
   global_lock();
 
-  /* Prepare handles for transit */
+  /* Prepare handles for transit (or close them afterwards) */
   for (size_t i = 0; i < h_data->num_handles; ++i)
   {
     TRACE("transit handle %u: type %d flags 0x%x value %d\n", i,
@@ -241,22 +264,31 @@ static int take_handles_worker(pid_t pid, void *data)
     {
       case TR_HANDLE_SHMEM:
       {
-        SHMEM h = h_data->handles[i].h;
-        int flags;
-        if (shmem_get_info(h_data->handles[i].h, &flags, NULL, NULL) != 0)
+        if (h_data->flags & LIBCX_HANDLE_CLOSE)
         {
-          errno = EINVAL;
-          rc = -1;
-          break;
+          int rc2 = shmem_close(h_data->handles[i].h);
+          if (rc2 == -1 && errno != EINVAL)
+            ASSERT_NO_PERR(rc2);
         }
-        if (flags & SHMEM_PUBLIC)
-          h_data->handles[i].flags = SHMEM_PUBLIC;
         else
         {
-          /* Private memory needs to be given to the other process */
-          int rc2 = shmem_give(h_data->handles[i].h, pid, 0);
-          if (rc2 == -1 && errno != EPERM)
-            ASSERT_NO_PERR(rc2);
+          SHMEM h = h_data->handles[i].h;
+          int flags;
+          if (shmem_get_info(h_data->handles[i].h, &flags, NULL, NULL) != 0)
+          {
+            errno = EINVAL;
+            rc = -1;
+            break;
+          }
+          if (flags & SHMEM_PUBLIC)
+            h_data->handles[i].flags = SHMEM_PUBLIC;
+          else
+          {
+            /* Private memory needs to be given to the other process */
+            int rc2 = shmem_give(h_data->handles[i].h, pid, 0);
+            if (rc2 == -1 && errno != EPERM)
+              ASSERT_NO_PERR(rc2);
+          }
         }
         break;
       }
@@ -266,15 +298,23 @@ static int take_handles_worker(pid_t pid, void *data)
     }
   }
 
-  global_unlock();
+  if (h_data->flags & LIBCX_HANDLE_CLOSE)
+  {
+    /* TODO: use GLOBAL_DEL(h_data) when it's ready */
+    free(h_data);
+  }
+  else
+  {
+    /* TODO: call GLOBAL_MEM_SET_OWNER(h_data, pid) when it's ready */
+  }
 
-  /* TODO: call GLOBAL_MEM_SET_OWNER(h_data, pid) when it's ready */
+  global_unlock();
 
   TRACE_PERR(rc);
   return rc == 0 ? 0 : errno;
 }
 
-int libcx_take_handles(const LIBC_HANDLE *handles, size_t num_handles, pid_t pid, int flags)
+int libcx_take_handles(LIBCX_HANDLE *handles, size_t num_handles, pid_t pid, int flags)
 {
   TRACE("handles %p num_handles %u pid 0x%x flags 0x%X\n", handles, num_handles, pid, flags);
 
@@ -344,6 +384,7 @@ int libcx_take_handles(const LIBC_HANDLE *handles, size_t num_handles, pid_t pid
       break;
 
     h_data->num_handles = num_handles;
+    h_data->flags = (flags & ~LIBCX_HANDLE_CLOSE);
 
     /* TODO: call GLOBAL_MEM_SET_OWNER(h_data, pid) when it's ready */
   }
@@ -395,6 +436,36 @@ int libcx_take_handles(const LIBC_HANDLE *handles, size_t num_handles, pid_t pid
 
       /* Note: Important to release the result after processing handles! */
       interrupt_request_release(result);
+
+      /* Now instruct the other party to close handles */
+      if (rc == 0 && (flags & LIBCX_HANDLE_CLOSE))
+      {
+        h_data->flags = LIBCX_HANDLE_CLOSE;
+
+        /* Refresh source handles (as the worker could change them) */
+        for (size_t i = 0; i < num_handles && rc == 0; ++i)
+        {
+          switch (handles[i].type)
+          {
+            case LIBCX_HANDLE_SHMEM:
+            {
+              h_data->handles[i].type = TR_HANDLE_SHMEM;
+              h_data->handles[i].h = (SHMEM)handles[i].value;
+              break;
+            }
+          }
+        }
+
+        /* TODO: call GLOBAL_MEM_SET_OWNER(h_data, pid) when it's ready */
+
+        rc = interrupt_request(pid, take_handles_worker, h_data, &result);
+
+        if (rc == 0)
+          interrupt_request_release(result);
+
+        /* The worker is responsible to free h_data in after closing handles */
+        h_data = NULL;
+      }
     }
   }
 

@@ -49,9 +49,8 @@ do_test (void)
 
   /*
    * Test 1.1: parent sends handles to child
+   * (0 - no flags, 1 - LIBCX_HANDLE_CLOSE)
    */
-
-  printf("Test 1.1\n");
 
   h1 = shmem_create(BLOCK_SIZE, 0);
   if (h1 == SHMEM_INVALID)
@@ -67,109 +66,192 @@ do_test (void)
     return 1;
   }
 
-  TEST_FORK_WITH_PIPE_BEGIN("child", 0, 0);
+  for (int n = 1; n <= 2; ++n)
   {
-    TEST_FORK_PRINTF("here 1\n");
+    printf("Test 1.1.%d\n", n);
 
-    TEST_FORK_WAIT_PARENT_PING();
-
-    TEST_FORK_PRINTF("here 2\n");
-
-    int flags;
-    size_t size, act_size;
-
-    rc = shmem_get_info(h1, &flags, &size, &act_size);
-    if (rc == -1)
+    TEST_FORK_WITH_PIPE_BEGIN("child", 0, 0);
     {
-      TEST_FORK_PERROR("shmem_get_info(h1) failed");
-      return 1;
-    }
-    if (flags != 0)
-    {
-      TEST_FORK_PRINTF("shmem_get_info(h1) returned flags 0x%X nstead of 0x%X\n", flags, 0);
-      return 1;
-    }
+      TEST_FORK_PRINTF("here 1\n");
 
-    rc = shmem_get_info(h2, &flags, &size, &act_size);
-    if (rc == -1)
-    {
-      TEST_FORK_PERROR("shmem_get_info(h2) failed");
-      return 1;
-    }
-    if (flags != SHMEM_PUBLIC)
-    {
-      TEST_FORK_PRINTF("shmem_get_info(h2) returned flags 0x%X nstead of 0x%X\n", flags, SHMEM_PUBLIC);
-      return 1;
-    }
+      TEST_FORK_WAIT_PARENT_PING();
 
-    return 0;
+      TEST_FORK_PRINTF("here 2\n");
+
+      int flags;
+      size_t size, act_size;
+
+      rc = shmem_get_info(h1, &flags, &size, &act_size);
+      if (rc == -1)
+      {
+        TEST_FORK_PERROR("shmem_get_info(h1) failed");
+        return 1;
+      }
+      if (flags != 0)
+      {
+        TEST_FORK_PRINTF("shmem_get_info(h1) returned flags 0x%X nstead of 0x%X\n", flags, 0);
+        return 1;
+      }
+
+      rc = shmem_get_info(h2, &flags, &size, &act_size);
+      if (rc == -1)
+      {
+        TEST_FORK_PERROR("shmem_get_info(h2) failed");
+        return 1;
+      }
+      if (flags != SHMEM_PUBLIC)
+      {
+        TEST_FORK_PRINTF("shmem_get_info(h2) returned flags 0x%X nstead of 0x%X\n", flags, SHMEM_PUBLIC);
+        return 1;
+      }
+
+      return 0;
+    }
+    TEST_FORK_WITH_PIPE_PARENT_PART();
+    {
+      LIBCX_HANDLE handles[2] = { {LIBCX_HANDLE_SHMEM, 0, h1}, {LIBCX_HANDLE_SHMEM, 0, h2} };
+      rc = libcx_send_handles(handles, sizeof(handles)/sizeof(*handles), child_pid,
+                              n == 2 ? LIBCX_HANDLE_CLOSE : 0);
+      if (rc == -1)
+      {
+        perror("libcx_send_handles(h1,h2) failed");
+        return 1;
+      }
+
+      int flags;
+      size_t size, act_size;
+
+      if (n == 1)
+      {
+        rc = shmem_get_info(h1, &flags, &size, &act_size);
+        if (rc == -1)
+        {
+          perror("shmem_get_info(h1) failed");
+          return 1;
+        }
+      }
+      else
+      {
+        rc = shmem_get_info(h1, &flags, &size, &act_size);
+        if (rc != -1 || errno != EINVAL)
+        {
+          printf("shmem_get_info(h1) succeeded or failed not with EINVAL (%d, %d)\n", rc, errno);
+          return 1;
+        }
+      }
+
+      TEST_FORK_PING_CHILD();
+    }
+    TEST_FORK_WITH_PIPE_END();
   }
-  TEST_FORK_WITH_PIPE_PARENT_PART();
-  {
-    LIBC_HANDLE handles[2] = { {LIBCX_HANDLE_SHMEM, 0, h1}, {LIBCX_HANDLE_SHMEM, 0, h2} };
-    rc = libcx_send_handles(handles, sizeof(handles)/sizeof(*handles), child_pid, 0);
-    if (rc == -1)
-    {
-      perror("libcx_send_handles(h1,h2) failed");
-      return 1;
-    }
-
-    TEST_FORK_PING_CHILD();
-  }
-  TEST_FORK_WITH_PIPE_END();
 
   /*
    * Test 1.2: child takes handles from parent
+   * (0 - no flags, 1 - LIBCX_HANDLE_CLOSE)
    */
 
-  printf("Test 1.2\n");
-
-  TEST_FORK_WITH_PIPE_BEGIN("child", 0, 0);
+  h1 = shmem_create(BLOCK_SIZE, 0);
+  if (h1 == SHMEM_INVALID)
   {
-    LIBC_HANDLE handles[2] = { {LIBCX_HANDLE_SHMEM, 0, h1}, {LIBCX_HANDLE_SHMEM, 0, h2} };
-    rc = libcx_take_handles(handles, sizeof(handles)/sizeof(*handles), parent_pid, 0);
-    if (rc == -1)
+    perror("shmem_create(h1) failed");
+    return 1;
+  }
+
+  h2 = shmem_create(BLOCK_SIZE, SHMEM_PUBLIC);
+  if (h2 == SHMEM_INVALID)
+  {
+    perror("shmem_create(h2) failed");
+    return 1;
+  }
+
+  for (int n = 1; n <= 2; ++n)
+  {
+    printf("Test 1.2.%d\n", n);
+
+    TEST_FORK_WITH_PIPE_BEGIN("child", 0, 0);
     {
-      TEST_FORK_PERROR("libcx_take_handles(h1,h2) failed");
-      return 1;
+      LIBCX_HANDLE handles[2] = { {LIBCX_HANDLE_SHMEM, 0, h1}, {LIBCX_HANDLE_SHMEM, 0, h2} };
+      rc = libcx_take_handles(handles, sizeof(handles)/sizeof(*handles), parent_pid,
+                              n == 2 ? LIBCX_HANDLE_CLOSE : 0);
+      if (rc == -1)
+      {
+        TEST_FORK_PERROR("libcx_take_handles(h1,h2) failed");
+        return 1;
+      }
+
+      int flags;
+      size_t size, act_size;
+
+      rc = shmem_get_info(h1, &flags, &size, &act_size);
+      if (rc == -1)
+      {
+        TEST_FORK_PERROR("shmem_get_info(h1) failed");
+        return 1;
+      }
+      if (flags != 0)
+      {
+        TEST_FORK_PRINTF("shmem_get_info(h1) returned flags 0x%X nstead of 0x%X\n", flags, 0);
+        return 1;
+      }
+
+      rc = shmem_get_info(h2, &flags, &size, &act_size);
+      if (rc == -1)
+      {
+        TEST_FORK_PERROR("shmem_get_info(h2) failed");
+        return 1;
+      }
+      if (flags != SHMEM_PUBLIC)
+      {
+        TEST_FORK_PRINTF("shmem_get_info(h2) returned flags 0x%X nstead of 0x%X\n", flags, SHMEM_PUBLIC);
+        return 1;
+      }
+
+      return 0;
     }
+    TEST_FORK_WITH_PIPE_END();
 
     int flags;
     size_t size, act_size;
 
-    rc = shmem_get_info(h1, &flags, &size, &act_size);
-    if (rc == -1)
+    if (n == 1)
     {
-      TEST_FORK_PERROR("shmem_get_info(h1) failed");
-      return 1;
+      rc = shmem_get_info(h1, &flags, &size, &act_size);
+      if (rc == -1)
+      {
+        perror("shmem_get_info(h1) failed");
+        return 1;
+      }
     }
-    if (flags != 0)
+    else
     {
-      TEST_FORK_PRINTF("shmem_get_info(h1) returned flags 0x%X nstead of 0x%X\n", flags, 0);
-      return 1;
+      rc = shmem_get_info(h1, &flags, &size, &act_size);
+      if (rc != -1 || errno != EINVAL)
+      {
+        printf("shmem_get_info(h1) succeeded or failed not with EINVAL (%d, %d)\n", rc, errno);
+        return 1;
+      }
     }
-
-    rc = shmem_get_info(h2, &flags, &size, &act_size);
-    if (rc == -1)
-    {
-      TEST_FORK_PERROR("shmem_get_info(h2) failed");
-      return 1;
-    }
-    if (flags != SHMEM_PUBLIC)
-    {
-      TEST_FORK_PRINTF("shmem_get_info(h2) returned flags 0x%X nstead of 0x%X\n", flags, SHMEM_PUBLIC);
-      return 1;
-    }
-
-    return 0;
   }
-  TEST_FORK_WITH_PIPE_END();
 
   /*
    * Test 1.3: parent takes handles from child
    */
 
   printf("Test 1.3\n");
+
+  h1 = shmem_create(BLOCK_SIZE, 0);
+  if (h1 == SHMEM_INVALID)
+  {
+    perror("shmem_create(h1) failed");
+    return 1;
+  }
+
+  h2 = shmem_create(BLOCK_SIZE, SHMEM_PUBLIC);
+  if (h2 == SHMEM_INVALID)
+  {
+    perror("shmem_create(h2) failed");
+    return 1;
+  }
 
   TEST_FORK_WITH_PIPE_BEGIN("child", 0, 0);
   {
@@ -213,7 +295,7 @@ do_test (void)
   }
   TEST_FORK_WITH_PIPE_PARENT_PART();
   {
-    LIBC_HANDLE handles[2] = { {LIBCX_HANDLE_SHMEM, 0, h1}, {LIBCX_HANDLE_SHMEM, 0, h2} };
+    LIBCX_HANDLE handles[2] = { {LIBCX_HANDLE_SHMEM, 0, h1}, {LIBCX_HANDLE_SHMEM, 0, h2} };
     rc = libcx_send_handles(handles, sizeof(handles)/sizeof(*handles), child_pid, 0);
     if (rc == -1)
     {
@@ -244,17 +326,17 @@ do_test (void)
     rc = shmem_get_info(h3, &flags, &size, &act_size);
     if (rc != -1 || errno != EINVAL)
     {
-      printf("shmem_get_info(h3) succeeded or failed not with EINVAL (%d)\n", errno);
+      printf("shmem_get_info(h3) succeeded or failed not with EINVAL (%d, %d)\n", rc, errno);
       return 1;
     }
     rc = shmem_get_info(h4, &flags, &size, &act_size);
     if (rc != -1 || errno != EINVAL)
     {
-      printf("shmem_get_info(h4) succeeded or failed not with EINVAL (%d)\n", errno);
+      printf("shmem_get_info(h4) succeeded or failed not with EINVAL (%d, %d)\n", rc, errno);
       return 1;
     }
 
-    LIBC_HANDLE handles2[2] = { {LIBCX_HANDLE_SHMEM, 0, h3}, {LIBCX_HANDLE_SHMEM, 0, h4} };
+    LIBCX_HANDLE handles2[2] = { {LIBCX_HANDLE_SHMEM, 0, h3}, {LIBCX_HANDLE_SHMEM, 0, h4} };
     rc = libcx_take_handles(handles2, sizeof(handles2)/sizeof(*handles2), child_pid, 0);
     if (rc == -1)
     {
