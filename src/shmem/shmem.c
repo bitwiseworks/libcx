@@ -813,8 +813,8 @@ SHMEM shmem_duplicate(SHMEM h, int flags)
     dup_proc_hnd->flags = flags | (proc_hnd->flags & SHMEM_READONLY);
 
     dup_hnd->obj = hnd->obj;
-    /* Ihnerit selected source handle's flags */
-    dup_hnd->flags = flags | (hnd->flags & SHMEM_READONLY);
+    /* Ihnerit all source handle's flags */
+    dup_hnd->flags = flags | hnd->flags;
     dup_hnd->refs = 1;
 
     /* Insert dup_proc_hnd to the beginning of the list */

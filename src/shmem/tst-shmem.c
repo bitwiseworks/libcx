@@ -255,6 +255,58 @@ do_test (void)
   }
 
   /*
+   * Test 1.3: test duplicate of SHMEM_PUBLIC
+   */
+
+  printf("Test 1.3\n");
+
+  h = shmem_create(BLOCK_SIZE - 1, SHMEM_PUBLIC);
+  if (h == SHMEM_INVALID)
+  {
+    perror("shmem_create failed");
+    return 1;
+  }
+
+  {
+    SHMEM dup1;
+    int flags;
+
+    dup1 = shmem_duplicate(h, SHMEM_READONLY);
+    if (dup1 == SHMEM_INVALID)
+    {
+      perror("shmem_duplicate 1 failed");
+      return 1;
+    }
+
+    rc = shmem_get_info(dup1, &flags, NULL, NULL);
+    if (rc == -1)
+    {
+      perror("shmem_get_info 1 failed");
+      return 1;
+    }
+
+    if (flags != (SHMEM_READONLY | SHMEM_PUBLIC))
+    {
+      printf("shmem_get_info 1 returned flags 0x%X instead of 0x%X\n", flags, SHMEM_READONLY | SHMEM_PUBLIC);
+      return 1;
+    }
+
+    rc = shmem_close(dup1);
+    if (rc == -1)
+    {
+      perror("shmem_close 1 failed");
+      return 1;
+    }
+  }
+
+  rc = shmem_close(h);
+  if (rc == -1)
+  {
+    perror("shmem_close failed");
+    return 1;
+  }
+
+  /*
    * Test 2: create many handles (> SHMEM_MIN_HANDLES)
    */
 
