@@ -267,9 +267,11 @@ static ShmemHandle *get_handle(SHMEM h)
 
 /**
  * Allocates a new handle and returns its array entry on success or NULL on
- * failure.
+ * failure. If hnd is not NULL it is expected to be an address of a valid
+ * pointer to a handles array entry that willb be adjusted in case if
+ * allocation causes a reallocation that moves memory.
  */
-static ShmemHandle *alloc_handle(SHMEM *h)
+static ShmemHandle *alloc_handle(SHMEM *h, ShmemHandle **old_hnd)
 {
   if (gpData->shmem->handles_free == gpData->shmem->handles_size)
   {
@@ -284,6 +286,15 @@ static ShmemHandle *alloc_handle(SHMEM *h)
     {
       errno = ENOMEM;
       return NULL;
+    }
+
+    if (old_hnd && *old_hnd && handles != gpData->shmem->handles)
+    {
+      /* Adjust the existing pointer */
+      ASSERT(*old_hnd >= gpData->shmem->handles &&
+             *old_hnd < gpData->shmem->handles + gpData->shmem->handles_size);
+      TRACE("adjusting old_hnd from %p to %p\n", *old_hnd, handles + (*old_hnd - gpData->shmem->handles));
+      *old_hnd = handles + (*old_hnd - gpData->shmem->handles);
     }
 
     gpData->shmem->handles_size = size;
@@ -502,7 +513,7 @@ SHMEM shmem_create(size_t size, int flags)
       break;
     }
 
-    ShmemHandle *hnd = alloc_handle(&h);
+    ShmemHandle *hnd = alloc_handle(&h, NULL);
     if (!hnd)
     {
       free(proc_hnd);
@@ -789,7 +800,7 @@ SHMEM shmem_duplicate(SHMEM h, int flags)
       break;
     }
 
-    ShmemHandle *dup_hnd = alloc_handle(&dup_h);
+    ShmemHandle *dup_hnd = alloc_handle(&dup_h, &hnd);
     if (!dup_hnd)
     {
       free(dup_proc_hnd);
