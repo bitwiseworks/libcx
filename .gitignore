@@ -1,3 +1,6 @@
 *.TRP
 *.log
 libcx.*
+
+# ignore out directory for in tree builds
+out
