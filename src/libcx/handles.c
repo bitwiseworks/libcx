@@ -23,7 +23,10 @@
 #define INCL_BASE
 #include <os2.h>
 
+#include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <InnoTekLIBC/tcpip.h>
 
 #include "../shared.h"
 
@@ -31,7 +34,8 @@
 #include "libcx/shmem.h"
 
 #define TR_HANDLE_SHMEM 1
-#define TR_HANDLE_SOCKET 2
+#define TR_HANDLE_FD 2
+#define TR_HANDLE_SOCKET 3
 
 typedef struct TRANSIT_HANDLE
 {
@@ -41,6 +45,7 @@ typedef struct TRANSIT_HANDLE
   {
     SHMEM h;
     int fd;
+    int socket;
     int value;
   };
 } TRANSIT_HANDLE;
@@ -56,13 +61,15 @@ static int send_handles_worker(pid_t pid, void *data)
 {
   HANDLES_DATA *h_data = (HANDLES_DATA*)data;
 
+  int rc = 0;
+
   TRACE("pid 0x%x data %p num_handles %u flags 0x%x\n",
         pid, h_data, h_data->num_handles, h_data->flags);
 
   global_lock();
 
   /* Process handles after transit */
-  for (size_t i = 0; i < h_data->num_handles; ++i)
+  for (size_t i = 0; i < h_data->num_handles && rc != -1; ++i)
   {
     TRACE("transit handle %u: type %d flags 0x%x value %d\n", i,
           h_data->handles[i].type, h_data->handles[i].flags, h_data->handles[i].value);
@@ -70,14 +77,44 @@ static int send_handles_worker(pid_t pid, void *data)
     switch (h_data->handles[i].type)
     {
       case TR_HANDLE_SHMEM:
+      {
         if (h_data->handles[i].flags & SHMEM_PUBLIC)
         {
           /* Public memory needs to be opened */
           int rc2 = shmem_open(h_data->handles[i].h, 0);
           if (rc2 == -1 && errno != EPERM)
-            ASSERT_NO_PERR(rc2);
+            rc = rc2;
         }
         break;
+      }
+      case TR_HANDLE_SOCKET:
+      {
+        /*
+         * Import the socket in this process and return its LIBC handle (note
+         * that LIBC will also call `addsockettolist` when needed).
+         *
+         * NOTE: we cannot use `_impsockhandle` because it imports the socket as
+         * new to LIBC which results in `addsockettolist` not being called and
+         * also causes `close` in the other process to call `soclose` rather
+         * than decrease the reference counter which, in turn, causes any `read`
+         * attempt to immediately return 0 (EOF). Looks like a LIBC bug to me.
+         */
+        int fd;
+        PLIBCSOCKETFH pFH;
+        int rc2 = TCPNAMEG(AllocFHEx)(-1, h_data->handles[i].socket,
+                                      O_RDWR | F_SOCKET, 0 /*fNew*/, &fd, &pFH);
+        if (rc2 != 0)
+        {
+          rc = -1;
+        }
+        else
+        {
+          h_data->handles[i].flags |= LIBCX_HANDLE_NEW;
+          h_data->handles[i].fd = fd;
+          TRACE("handle %u: passing new value %d\n", i, h_data->handles[i].fd);
+        }
+        break;
+      }
       default:
         ASSERT_FAILED();
         break;
@@ -88,7 +125,8 @@ static int send_handles_worker(pid_t pid, void *data)
 
   global_unlock();
 
-  return 0;
+  TRACE_PERR(rc);
+  return rc == 0 ? 0 : errno;
 }
 
 int libcx_send_handles(LIBCX_HANDLE *handles, size_t num_handles, pid_t pid, int flags)
@@ -158,7 +196,21 @@ int libcx_send_handles(LIBCX_HANDLE *handles, size_t num_handles, pid_t pid, int
           h_data->handles[i].h = h;
           break;
         }
-
+        case LIBCX_HANDLE_FD:
+        {
+          int fd = (int)handles[i].value;
+          __LIBC_PFH pFH = __libc_FH(fd);
+          if (!pFH || ((pFH->fFlags & __LIBC_FH_TYPEMASK) != F_SOCKET))
+          {
+            /* Only sockets are supported for now */
+            errno = EINVAL;
+            rc = -1;
+            break;
+          }
+          h_data->handles[i].type = TR_HANDLE_SOCKET;
+          h_data->handles[i].socket = ((PLIBCSOCKETFH)pFH)->iSocket;
+          break;
+        }
         default:
           errno = EINVAL;
           rc = -1;
@@ -173,11 +225,12 @@ int libcx_send_handles(LIBCX_HANDLE *handles, size_t num_handles, pid_t pid, int
     h_data->flags = flags;
 
     /* Prepare handles for transit */
-    for (size_t i = 0; i < h_data->num_handles; ++i)
+    for (size_t i = 0; i < h_data->num_handles && rc != -1; ++i)
     {
       switch (h_data->handles[i].type)
       {
         case TR_HANDLE_SHMEM:
+        {
           if (!(h_data->handles[i].flags & SHMEM_PUBLIC))
           {
             /* Private memory needs to be given to the other process */
@@ -185,6 +238,10 @@ int libcx_send_handles(LIBCX_HANDLE *handles, size_t num_handles, pid_t pid, int
             if (rc2 == -1 && errno != EPERM)
               ASSERT_NO_PERR(rc2);
           }
+          break;
+        }
+        case TR_HANDLE_SOCKET:
+          /* Nothing to do */
           break;
         default:
           ASSERT_FAILED();
@@ -206,28 +263,58 @@ int libcx_send_handles(LIBCX_HANDLE *handles, size_t num_handles, pid_t pid, int
 
     if (rc == 0)
     {
-      global_lock();
+      int request_rc = interrupt_request_rc(result);
 
-      /* Process handles after transit */
-      for (size_t i = 0; i < num_handles; ++i)
+      if (request_rc == 0)
       {
-        switch (handles[i].type)
-        {
-          case LIBCX_HANDLE_SHMEM:
-            if (flags & LIBCX_HANDLE_CLOSE)
-            {
-              int rc2 = shmem_close((SHMEM)handles[i].value);
-              if (rc2 == -1 && errno != EINVAL)
-                ASSERT_NO_PERR(rc2);
-            }
-            break;
-          default:
-            ASSERT_FAILED();
-            break;
-        }
-      }
+        global_lock();
 
-      global_unlock();
+        /* Process handles after transit */
+        for (size_t i = 0; i < num_handles && rc != -1; ++i)
+        {
+          switch (handles[i].type)
+          {
+            case LIBCX_HANDLE_SHMEM:
+            {
+              if (flags & LIBCX_HANDLE_CLOSE)
+              {
+                int rc2 = shmem_close((SHMEM)handles[i].value);
+                if (rc2 == -1 && errno != EINVAL)
+                  rc = rc2;
+              }
+              break;
+            }
+            case LIBCX_HANDLE_FD:
+            {
+              if (flags & LIBCX_HANDLE_CLOSE)
+              {
+                /* LIBC close will care about calling removesocketfromlist */
+                int rc2 = close((int)handles[i].value);
+                if (rc2 == -1 && errno != EBADF)
+                  rc = rc2;
+              }
+              if (h_data->handles[i].flags & LIBCX_HANDLE_NEW)
+              {
+                /* Pass the  new handle to the caller */
+                handles[i].flags |= LIBCX_HANDLE_NEW;
+                handles[i].value = h_data->handles[i].fd;
+                TRACE("handle %u: got new value %d\n", i, handles[i].value);
+              }
+              break;
+            }
+            default:
+              ASSERT_FAILED();
+              break;
+          }
+        }
+
+        global_unlock();
+      }
+      else
+      {
+        errno = request_rc;
+        rc = -1;
+      }
 
       /* Note: Important to release the result after processing handles! */
       interrupt_request_release(result);
@@ -255,7 +342,7 @@ static int take_handles_worker(pid_t pid, void *data)
   global_lock();
 
   /* Prepare handles for transit (or close them afterwards) */
-  for (size_t i = 0; i < h_data->num_handles; ++i)
+  for (size_t i = 0; i < h_data->num_handles && rc != -1; ++i)
   {
     TRACE("transit handle %u: type %d flags 0x%x value %d\n", i,
           h_data->handles[i].type, h_data->handles[i].flags, h_data->handles[i].value);
@@ -268,13 +355,13 @@ static int take_handles_worker(pid_t pid, void *data)
         {
           int rc2 = shmem_close(h_data->handles[i].h);
           if (rc2 == -1 && errno != EINVAL)
-            ASSERT_NO_PERR(rc2);
+            rc = rc2;
         }
         else
         {
           SHMEM h = h_data->handles[i].h;
           int flags;
-          if (shmem_get_info(h_data->handles[i].h, &flags, NULL, NULL) != 0)
+          if (shmem_get_info(h_data->handles[i].h, &flags, NULL, NULL) == -1)
           {
             errno = EINVAL;
             rc = -1;
@@ -286,9 +373,33 @@ static int take_handles_worker(pid_t pid, void *data)
           {
             /* Private memory needs to be given to the other process */
             int rc2 = shmem_give(h_data->handles[i].h, pid, 0);
-            if (rc2 == -1 && errno != EPERM)
-              ASSERT_NO_PERR(rc2);
+            if (rc2 == -1 && errno != EPERM && errno != EINVAL)
+              rc = rc2;
           }
+        }
+        break;
+      }
+      case TR_HANDLE_FD:
+      {
+        if (h_data->flags & LIBCX_HANDLE_CLOSE)
+        {
+          int rc2 = close(h_data->handles[i].fd);
+          if (rc2 == -1 && errno != EBADF)
+            rc = rc2;
+        }
+        else
+        {
+          __LIBC_PFH pFH = __libc_FH(h_data->handles[i].fd);
+          if (!pFH || ((pFH->fFlags & __LIBC_FH_TYPEMASK) != F_SOCKET))
+          {
+            /* Only sockets are supported for now */
+            errno = EINVAL;
+            rc = -1;
+            break;
+          }
+          h_data->handles[i].type = TR_HANDLE_SOCKET;
+          h_data->handles[i].socket = ((PLIBCSOCKETFH)pFH)->iSocket;
+          TRACE("handle %u: passing socket %d\n", i, h_data->handles[i].socket);
         }
         break;
       }
@@ -345,7 +456,7 @@ int libcx_take_handles(LIBCX_HANDLE *handles, size_t num_handles, pid_t pid, int
     }
 
     /* Check & convert all handles */
-    for (size_t i = 0; i < num_handles && rc == 0; ++i)
+    for (size_t i = 0; i < num_handles && rc != -1; ++i)
     {
       TRACE("handle %u: type %d flags 0x%x value %d\n", i,
             handles[i].type, handles[i].flags, handles[i].value);
@@ -372,7 +483,12 @@ int libcx_take_handles(LIBCX_HANDLE *handles, size_t num_handles, pid_t pid, int
           h_data->handles[i].h = (SHMEM)handles[i].value;
           break;
         }
-
+        case LIBCX_HANDLE_FD:
+        {
+          h_data->handles[i].type = TR_HANDLE_FD;
+          h_data->handles[i].fd = (SHMEM)handles[i].value;
+          break;
+        }
         default:
           errno = EINVAL;
           rc = -1;
@@ -407,19 +523,46 @@ int libcx_take_handles(LIBCX_HANDLE *handles, size_t num_handles, pid_t pid, int
         global_lock();
 
         /* Process handles after transit */
-        for (size_t i = 0; i < h_data->num_handles; ++i)
+        for (size_t i = 0; i < h_data->num_handles && rc != -1; ++i)
         {
           switch (h_data->handles[i].type)
           {
             case TR_HANDLE_SHMEM:
+            {
               if (h_data->handles[i].flags & SHMEM_PUBLIC)
               {
                 /* Public memory needs to be opened */
                 int rc2 = shmem_open(h_data->handles[i].h, 0);
                 if (rc2 == -1 && errno != EPERM)
-                  ASSERT_NO_PERR(rc2);
+                  rc = rc2;
               }
               break;
+            }
+            case TR_HANDLE_SOCKET:
+            {
+              /* See send_handles_worker */
+              int fd;
+              PLIBCSOCKETFH pFH;
+              int rc2 = TCPNAMEG(AllocFHEx)(-1, h_data->handles[i].socket,
+                                            O_RDWR | F_SOCKET, 0 /*fNew*/, &fd, &pFH);
+              if (rc2 != 0)
+              {
+                rc = -1;
+              }
+              else
+              {
+                TRACE("handle %u: got new value %d\n", i, fd);
+                /*
+                 * Reset the original handle for closing (below) and return
+                 * the new handle to the caller.
+                 */
+                h_data->handles[i].type = TR_HANDLE_FD;
+                h_data->handles[i].fd = handles[i].value;
+                handles[i].flags |= LIBCX_HANDLE_NEW;
+                handles[i].value = fd;
+              }
+              break;
+            }
             default:
               ASSERT_FAILED();
               break;
@@ -442,19 +585,10 @@ int libcx_take_handles(LIBCX_HANDLE *handles, size_t num_handles, pid_t pid, int
       {
         h_data->flags = LIBCX_HANDLE_CLOSE;
 
-        /* Refresh source handles (as the worker could change them) */
-        for (size_t i = 0; i < num_handles && rc == 0; ++i)
-        {
-          switch (handles[i].type)
-          {
-            case LIBCX_HANDLE_SHMEM:
-            {
-              h_data->handles[i].type = TR_HANDLE_SHMEM;
-              h_data->handles[i].h = (SHMEM)handles[i].value;
-              break;
-            }
-          }
-        }
+        /*
+         * Note: we should have original handle values at this point in h_data
+         * and the original handles array may be modified by the code above.
+         */
 
         /* TODO: call GLOBAL_MEM_SET_OWNER(h_data, pid) when it's ready */
 
