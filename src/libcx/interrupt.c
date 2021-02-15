@@ -23,6 +23,8 @@
 #define INCL_BASE
 #include <os2.h>
 
+#include <exceptq.h>
+
 #include <errno.h>
 #include <sys/smutex.h>
 
@@ -31,6 +33,9 @@
 #define REQ_RES_CRASH 0x1
 #define REQ_RES_WAITING 0x2
 #define REQ_RES_WAITING_RELEASE 0x4
+
+/* exceptq.h is bogus and doesn't declare this when no INCL_LIBLOADEXCEPTQ is defined */
+BOOL LibLoadExceptq(EXCEPTIONREGISTRATIONRECORD* pExRegRec);
 
 typedef struct InterruptResult
 {
@@ -63,7 +68,7 @@ typedef struct Interrupts
   InterruptResult *wait_results; /* List of results this process has to wait for release */
 } Interrupts;
 
-static void interrupt_worker(void *data);
+static VOID APIENTRY interrupt_worker(ULONG data);
 
 static int release_result(InterruptResult *res)
 {
@@ -144,7 +149,7 @@ static void interrupt_pre_term()
   else if (have_requests)
   {
     /* We are still operational here and can serve interrupt requests */
-    interrupt_worker(NULL);
+    interrupt_worker(0);
   }
 
   global_lock();
@@ -266,8 +271,20 @@ void interrupt_term(ProcDesc *proc)
   }
 }
 
-static void interrupt_worker(void *data)
+/**
+ * Thread function that calls the interrupt request worker.
+ *
+ * NOTE: No mmap and FPU control word changing calls or other calls (directly or
+ * through another DLL) that require a LIBCx exception handler are allowed here
+ * as this exception handler is not installed by this thread function.
+ */
+static VOID APIENTRY interrupt_worker(ULONG data)
 {
+  EXCEPTIONREGISTRATIONRECORD xcptRec;
+
+  /* Install the EXCEPTQ trap generator */
+  LibLoadExceptq(&xcptRec);
+
   TRACE("BEGIN\n");
 
   while (1)
@@ -350,6 +367,8 @@ static void interrupt_worker(void *data)
   }
 
   TRACE("END\n");
+
+  UninstallExceptq(&xcptRec);
 }
 
 /**
@@ -392,11 +411,15 @@ int interrupt_exception(struct _EXCEPTIONREPORTRECORD *report,
 
   /*
    * Serve the request on a separate thread to avoid unexpected (and potentially
-   * unsupported) reentrancy.
+   * unsupported) reentrancy. Note that we can't use _beginthread here for
+   * reentrancy reasons (it makes LIBC calls, e.g. heap halloc, that modify its
+   * internal structures, use non-reentrant locks etc).
    */
-  int tid = _beginthread(interrupt_worker, NULL, 0, NULL);
-  TRACE("Worker TID %d\n", tid);
-  ASSERT(tid != -1 && tid != 0);
+  TID tid;
+  APIRET arc = DosCreateThread(&tid, interrupt_worker, 0, CREATE_READY,  512 * 1024);
+
+  TRACE("Worker TID %d (arc %lu)\n", tid, arc);
+  ASSERT(!arc && tid != 0);
   gpProcDesc->interrupts->tid = tid;
 
   global_unlock();
@@ -413,6 +436,13 @@ int interrupt_exception(struct _EXCEPTIONREPORTRECORD *report,
  * NULL, this function will not return until the worker function completes in
  * the target process and stores the result of its execution in the provided @a
  * result variable.
+ *
+ * Note that the worker function must be as simple and as fast as possible as it
+ * intervents the application and this intervention should be kept low profile.
+ * Also, the worker function is not allowed to use mmap API or make FPU control
+ * word changing calls or other calls (directly or through another DLL) that
+ * require a LIBCx exception handler as it's not installed on a helper thread
+ * where the worker function is called.
  *
  * Fails with ECANCELED if this function was waiting for the result but the
  * target process crashed (in the worker function or elsewhere) before
