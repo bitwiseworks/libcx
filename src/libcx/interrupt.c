@@ -130,13 +130,12 @@ static void interrupt_pre_term()
 
   global_lock();
 
-  if (gpProcDesc)
-  {
-    if (gpProcDesc->interrupts->tid)
-      tid = gpProcDesc->interrupts->tid;
-    else if (gpProcDesc->interrupts->first)
-      have_requests = TRUE;
-  }
+  ASSERT(gpProcDesc);
+
+  if (gpProcDesc->interrupts->tid)
+    tid = gpProcDesc->interrupts->tid;
+  else if (gpProcDesc->interrupts->first)
+    have_requests = TRUE;
 
   global_unlock();
 

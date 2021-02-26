@@ -361,11 +361,7 @@ static void shared_term()
       ASSERT(gpData->refcnt);
       gpData->refcnt--;
 
-      /* Reset the global process description reference before destruction */
-      gpProcDesc = NULL;
-
-      /* Remove the process description before further uninit to make it non-reachable */
-      proc = take_proc_desc(getpid());
+      proc = gpProcDesc;
       TRACE("proc %p\n", proc);
 
       /* Uninitialize individual components */
@@ -413,7 +409,11 @@ static void shared_term()
           free(proc->files);
         }
 
+        /* Remove proc from the hash and free it */
+        proc = take_proc_desc(getpid());
+        ASSERT_MSG(proc == gpProcDesc, "%p", proc);
         free(proc);
+        gpProcDesc = NULL;
       }
 
       if (gpData->refcnt == 0)
@@ -779,6 +779,10 @@ ProcDesc *get_proc_desc_ex(pid_t pid, enum HashMapOpt opt)
   int rc;
 
   ASSERT(gpData);
+
+  /* Optimization */
+  if (pid == getpid() && (opt == HashMapOpt_None || (opt == HashMapOpt_New && gpProcDesc)))
+    return gpProcDesc;
 
   /*
    * We use identity as the hash function as we get a regularly ascending
@@ -1745,7 +1749,9 @@ static void forkCompletion(void *pvArg, int rc, __LIBC_FORKCTX enmCtx)
     gLogInstance = NULL;
   }
 
+  /* Reset other fields inherited from the parent but meaningless in the child */
   gSeenAssertion = FALSE;
+  gpProcDesc = NULL;
 
   /*
    * Initialize LIBCx in the forked child (note that for normal children this is
