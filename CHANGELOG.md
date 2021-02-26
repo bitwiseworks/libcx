@@ -1,5 +1,14 @@
 # History of changes for LIBCx
 
+#### Version 0.7.0 (2021-02-26)
+* Implement interrupt_request service [#87].
+* handles: Add libcx_send_handles and ibcx_take_handles APIs [#87].
+* shmem_duplicate: Properly update handle when growing handle array [bitwiseworks/qtwebengine-chromium-os2#12].
+* shmem_duplicate: Preserve SHMEM_PUBLIC flag [#87].
+* handles: Implement LIBCX_HANDLE_CLOSE [#87].
+* handles: Implement transferring sockets [#87].
+* handles: Fix recursive fmutex deadlock [#90].
+
 #### Version 0.6.9 (2020-12-31)
 
 * mmap: Avoid assertion on freeing partial mappings [w/a for #75 and #76].
