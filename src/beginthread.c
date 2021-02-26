@@ -23,9 +23,11 @@
 #define INCL_BASE
 #include <os2.h>
 
+#if defined(USE_EXCEPTQ)
 #define INCL_LIBLOADEXCEPTQ
 #define INCL_FORKEXCEPTQ
 #include <exceptq.h>
+#endif
 
 #include <memory.h>
 #include <stdlib.h>
@@ -72,8 +74,10 @@ static void threadWrapper(void *d)
    */
   EXCEPTIONREGISTRATIONRECORD xcptRec[2];
 
+#if defined(USE_EXCEPTQ)
   /* Install the EXCEPTQ trap generator (outer, higher address) */
   LibLoadExceptq(&xcptRec[1]);
+#endif
 
   /* Install the LIBCx own exception handler for various needs (inner, lower address) */
   xcptRec[0].ExceptionHandler = libcxExceptionHandler;
@@ -94,7 +98,9 @@ static void threadWrapper(void *d)
 
   DosUnsetExceptionHandler(&xcptRec[0]);
 
+#if defined(USE_EXCEPTQ)
   UninstallExceptq(&xcptRec[1]);
+#endif
 }
 
 /**

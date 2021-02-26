@@ -23,7 +23,9 @@
 #define INCL_BASE
 #include <os2.h>
 
+#if defined(USE_EXCEPTQ)
 #include <exceptq.h>
+#endif
 
 #include <errno.h>
 #include <sys/smutex.h>
@@ -34,8 +36,10 @@
 #define REQ_RES_WAITING 0x2
 #define REQ_RES_WAITING_RELEASE 0x4
 
+#if defined(USE_EXCEPTQ)
 /* exceptq.h is bogus and doesn't declare this when no INCL_LIBLOADEXCEPTQ is defined */
 BOOL LibLoadExceptq(EXCEPTIONREGISTRATIONRECORD* pExRegRec);
+#endif
 
 typedef struct InterruptResult
 {
@@ -281,8 +285,10 @@ static VOID APIENTRY interrupt_worker(ULONG data)
 {
   EXCEPTIONREGISTRATIONRECORD xcptRec;
 
+#if defined(USE_EXCEPTQ)
   /* Install the EXCEPTQ trap generator */
   LibLoadExceptq(&xcptRec);
+#endif
 
   TRACE("BEGIN\n");
 
@@ -367,7 +373,9 @@ static VOID APIENTRY interrupt_worker(ULONG data)
 
   TRACE("END\n");
 
+#if defined(USE_EXCEPTQ)
   UninstallExceptq(&xcptRec);
+#endif
 }
 
 /**

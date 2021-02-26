@@ -23,9 +23,11 @@
 #define INCL_BASE
 #include <os2.h>
 
+#if defined(USE_EXCEPTQ)
 #define INCL_LOADEXCEPTQ
 #define INCL_FORKEXCEPTQ
 #include <exceptq.h>
+#endif
 
 #include <memory.h>
 #include <stdlib.h>
@@ -168,15 +170,19 @@ void __main_hook(struct mainstack *stack)
     struct mainstack stack;
     /* LIBCx exception handler */
     EXCEPTIONREGISTRATIONRECORD libcXcptRec;
+#if defined(USE_EXCEPTQ)
     /* EXCEPTQ exception handler */
     EXCEPTIONREGISTRATIONRECORD exceptqXcptRec;
+#endif
   } newstack;
 
   /* Preserve main() arguments */
   memcpy(&newstack.stack, stack, sizeof(struct mainstack));
 
+#if defined(USE_EXCEPTQ)
   /* Install the EXCEPTQ trap generator */
   LoadExceptq(&newstack.exceptqXcptRec, NULL, NULL);
+#endif
 
   /* Install the LIBCx own exception handler for various needs */
   newstack.libcXcptRec.ExceptionHandler = libcxExceptionHandler;
