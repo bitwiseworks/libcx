@@ -1500,7 +1500,7 @@ static void *get_log_instance()
       DosDupHandle(1, &((__LIBC_PLOGINST)logInstance)->hFile);
     }
   }
-  else
+  else do
   {
     /*
      * We don't query QSV_TIME_HIGH as it will remain 0 until 19-Jan-2038 and for
@@ -1509,46 +1509,47 @@ static void *get_log_instance()
     ULONG time;
     DosQuerySysInfo(QSV_TIME_LOW, QSV_TIME_LOW, &time, sizeof(time));
 
-    // Get log directory (boot drive if no UNIXROOT)
-    const char *path = "/var/log/libcx";
-    PSZ unixroot;
-    if (DosScanEnv("UNIXROOT", &unixroot) != NO_ERROR)
+    /* Get log directory (use the boot drive if no UNIXROOT is set) */
+    const char *logPath = "/var/log/libcx";
+    PSZ unixroot = NULL;
+    if (DosScanEnv("UNIXROOT", &unixroot) == NO_ERROR && unixroot && *unixroot && strlen(unixroot) < CCHMAXPATH - strlen(logPath))
     {
-      ULONG drv;
-      DosQuerySysInfo(QSV_BOOT_DRIVE, QSV_BOOT_DRIVE, &drv, sizeof(drv));
-
-      unixroot = "C:";
-      unixroot[0] = '@' + drv;
-      path = "";
+      strcpy(buf, unixroot);
     }
     else
     {
-      /*
-       * Make sure the directory exists (no error checks here as a failure to
-       * do so will pop up later in __libc_LogInit anyway).
-       */
-      if (strlen(unixroot) >= CCHMAXPATH)
-        return NULL;
-      strcpy(buf, unixroot);
-      strcat(buf, path);
-      DosCreateDir(buf, NULL);
+      ULONG drv;
+      DosQuerySysInfo(QSV_BOOT_DRIVE, QSV_BOOT_DRIVE, &drv, sizeof(drv));
+      buf[0] = '@' + drv;
+      buf[1] = ':';
+      buf[2] = '\0';
     }
 
-    // Get program name
+    strcat(buf, logPath);
+
+    /*
+     * Make sure the directory exists (no error checks here as a failure to
+     * do so will pop up later in __libc_LogInit anyway).
+     */
+    DosCreateDir(buf, NULL);
+
+    /* Get program name */
     char name[CCHMAXPATH];
     PPIB ppib = NULL;
     DosGetInfoBlocks(NULL, &ppib);
     if (DosQueryModuleName(ppib->pib_hmte, sizeof(name), name) != NO_ERROR)
-      return NULL;
+      break;
     _remext(name);
 
-    logInstance = __libc_LogInit(0, logGroups, "%s%s/%s-%08lx-%04x.log",
-                                 unixroot, path, _getname(name), time, getpid());
+    logInstance = __libc_LogInit(0, logGroups, "%s/%s-%08lx-%04x.log",
+                                 buf, _getname(name), time, getpid());
   }
+  while (0);
 
   /* Bail out if we failed to create a log file at all */
   if (!logInstance)
   {
+    /* Unfreeze other instances letting them retry */
     gLogInstanceState = 0;
     return NULL;
   }
