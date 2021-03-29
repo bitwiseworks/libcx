@@ -588,6 +588,7 @@ int __spawn2(int mode, const char *name, const char * const argv[],
 
             TRACE("save target fd %d as %d\n", tfd, dups[i]);
 
+            /* Disable inheritance for the duplicated target */
             int f = rc = fcntl(dups[i], F_GETFD);
             if (rc != -1)
             {
@@ -595,12 +596,13 @@ int __spawn2(int mode, const char *name, const char * const argv[],
               if (rc != -1)
               {
                 /*
-                 * Remember CLOEXEC flag of the original handle to properly
-                 * restore it later (dup creates fds with inheritance enabled).
+                 * Remember FD_CLOEXEC flag of the original handle to properly
+                 * restore it later (dup2 called later will create a fd with
+                 * inheritance enabled, i.e. with FD_CLOEXEC cleared).
                  */
                 f = rc = fcntl(tfd, F_GETFD);
                 if (rc != -1 && (f & FD_CLOEXEC))
-                  inherited[i] = dups[i];
+                  inherited[i] = tfd;
               }
             }
             if (rc == -1)
@@ -610,7 +612,7 @@ int __spawn2(int mode, const char *name, const char * const argv[],
 
         if (rc != -1)
         {
-          const int *pfd = stdfds;
+          pfd = stdfds;
           for (int i = 0; i < num_redirs; ++i)
           {
             int sfd = *pfd++;
@@ -1197,16 +1199,6 @@ int __spawn2(int mode, const char *name, const char * const argv[],
       const int *pfd = stdfds;
       for (int i = 0; i < num_redirs; ++i)
       {
-        if (inherited[i] != -1)
-        {
-          /* Disable temporarily enable inheritance */
-          int fd = inherited[i];
-          int f = fcntl(fd, F_GETFD);
-          if (f != -1)
-            f = fcntl(fd, F_SETFD, f | FD_CLOEXEC);
-          ASSERT_MSG(f != -1, "%d %d %d", i, fd, errno);
-        }
-
         int sfd = *pfd++;
         int tfd = *pfd++;
         int dfd = dups[i];
@@ -1224,6 +1216,16 @@ int __spawn2(int mode, const char *name, const char * const argv[],
           /* It's a redirection but the target fd didn't exist, clean it up */
           TRACE("close temporary target fd %d\n", tfd);
           close(tfd);
+        }
+
+        if (inherited[i] != -1)
+        {
+          TRACE("disable temporary enabled inheritance for fd %d\n", inherited[i]);
+          int fd = inherited[i];
+          int f = fcntl(fd, F_GETFD);
+          if (f != -1)
+            f = fcntl(fd, F_SETFD, f | FD_CLOEXEC);
+          ASSERT_MSG(f != -1, "%d %d %d", i, fd, errno);
         }
       }
     }
