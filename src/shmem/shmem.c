@@ -306,14 +306,16 @@ static ShmemHandle *alloc_handle(SHMEM *h, ShmemHandle **old_hnd)
 
   *h = gpData->shmem->handles_free;
 
-  /* Calculate the new free index (will wrap if needed) */
-  size_t free = (gpData->shmem->handles_free + 1) % gpData->shmem->handles_size;
-  while (free != *h && gpData->shmem->handles[free].obj)
+  /*
+   * Calculate the new free index. Note that unref_handle() makes sure that
+   * handles_free is always the smallest one. So, we don't need to look for a
+   * free index below it (there are definitely none). Note that if there are no
+   * free items, handles_free will equal to handles_size at the end of the loop
+   * and this will cause array expansion next time this function is called.
+   */
+  size_t free = gpData->shmem->handles_free + 1;
+  while (free < gpData->shmem->handles_size && gpData->shmem->handles[free].obj)
     ++free;
-
-  /* Set free to size if out of free handles (to cause array expansion later) */
-  if (free == *h)
-    free = gpData->shmem->handles_size;
   gpData->shmem->handles_free = free;
 
   /* Increase the total number of valid handles */
