@@ -814,15 +814,15 @@ int __spawn2(int mode, const char *name, const char * const argv[],
           {
             for (envc = 0, i = 0; envp[i]; ++i)
             {
-              if (pseudo_cnt)
+              char *val = strchr(envp[i], '=');
+              if (val)
               {
-                /*
-                 * Omit special pseudo-env vars from the environment as they
-                 * could confuse programs if passed on.
-                 */
-                char *val = strchr(envp[i], '=');
-                if (val)
+                if (pseudo_cnt)
                 {
+                  /*
+                   * Omit special pseudo-env vars from the environment as they
+                   * could confuse programs if passed on.
+                   */
                   int var_len = val - envp[i];
                   ++val; /* go to the value (skip '=') */
 
@@ -836,6 +836,14 @@ int __spawn2(int mode, const char *name, const char * const argv[],
                   if (j < PseudoEnvCnt)
                     continue;
                 }
+              }
+              else
+              {
+                /*
+                 * Skip env variables with no `=` as they are dead anyway
+                 * (inaccessible as if they never existed).
+                 */
+                continue;
               }
 
               envp_copy[envc++] = (char *)envp[i];
@@ -856,19 +864,18 @@ int __spawn2(int mode, const char *name, const char * const argv[],
                * search among the new vars. If the new env contains duplicates,
                * the behavior is "undefined", so don't check for that too.
                */
-              int ec = envc;
               for (i = 0; i < environc; ++i)
               {
                 char *end = strchr(environ[i], '=');
                 int len = end ? end - environ[i] : strlen(environ[i]);
 
-                for (j = 0; j < ec; ++j)
-                  if (strnicmp(environ[i], envp_copy[j], len) == 0 &&
-                      (envp_copy[j][len] == '=' || envp_copy[j][len] == '\0'))
+                for (j = 0; envp[j]; ++j)
+                  if (strncmp(environ[i], envp[j], len) == 0 &&
+                      (envp[j][len] == '=' || envp[j][len] == '\0'))
                     break;
 
                 /* Add the old var if there was no match among the new ones */
-                if (j == ec)
+                if (!envp[j])
                   envp_copy[envc++] = environ[i];
               }
             }

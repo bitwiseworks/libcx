@@ -41,11 +41,11 @@ __BEGIN_DECLS
  *
  * Program arguments are specified in @a argv whose last element must be NULL.
  * The filst element of this array should be the program name, by convention,
- * and must always be non-NULL. The current working directory of the new
- * process is specified with @a cwd. NULL will casuse the new process to
- * inherit the working directory of the current process. The environment of
- * the new process is either given in the @a envp array whose last element must
- * be NULL, or inherited from the current process if @a envp is NULL.
+ * and must always be non-NULL. The current working directory of the new process
+ * is specified with @a cwd. NULL will casuse the new process to inherit the
+ * working directory of the current process. The environment of the new process
+ * is either given in the @a envp array whose last element must be NULL, or
+ * inherited from the current process if @a envp is NULL.
  *
  * If @a envp is not NULL, three special pseudo-environment variables are
  * recognized and processed accordingly using the DosSetExtLIBPATH API:
@@ -58,19 +58,20 @@ __BEGIN_DECLS
  * could confuse started programs if passed on.
  *
  * Note that it's a responsibility of the caller to make sure that @a envp does
- * not contain duplicate variables. If it does, it's undefined which one will
- * be seen by the child process. Also note that all variables should be given
- * as `VAR=VAL` strings where `VAL` is optional and `=` is not, otherwise the
- * behavior is undefined too.
+ * not contain duplicate variables. If it does, it's undefined which one will be
+ * seen by the child process. Also note that all variables should be given as
+ * `VAR=VAL` strings where both `VAL` and `=` are optional. Variables without
+ * `=` will be silently ignored unless mode contains P_2_APPENDENV in which case
+ * special processing will take place (see below).
  *
  * The @a stdfds argument, when not NULL, allows the current process to set up
  * file handle redirection and inheritance for the child process. It has two
  * modes: simple mode (the default one) and extended mode (actiavted by
  * P_2_XREDIR @a mode flag). Interpretation of the @a stdfds array differs
  * depending on the mode. If @a stdfds is NULL, no redirection takes place
- * regardless of the mode and the child process will simply inherit standard
- * I/O handles of its parent.
-
+ * regardless of the mode and the child process will simply inherit standard I/O
+ * handles of its parent.
+ *
  * If the current process only wants to redirect standard I/O streams of the
  * child process, it should use simple mode and specify the new handles in the
  * @a stdfds array. This array, if not NULL, must contain exactly 3 elements
@@ -79,50 +80,49 @@ __BEGIN_DECLS
  * when used as certain array elements' values:
  *
  * - 0 in any element indicates that the respective stream should not be
- * redirected but instead inherited from the parent.
+ *   redirected but instead inherited from the parent.
  *
- * - 1 in stdfds[2] indicates that the stderr stream should be redirected to
- * the stdout stream (or to where stdout is redirected by stdfds[1] if it's not
- * 0). Putting 1 in stdfds[1] is equivalent to putting 0 there (see above).
- * Putting 1 in stdfds[0] will result in EINVAL.
+ * - 1 in stdfds[2] indicates that the stderr stream should be redirected to the
+ *   stdout stream (or to where stdout is redirected by stdfds[1] if it's not
+ *   0). Putting 1 in stdfds[1] is equivalent to putting 0 there (see above).
+ *   Putting 1 in stdfds[0] will result in EINVAL.
  *
- * - 2 in stdfds[1] indicates that the stdout stream should be redirected to
- * the stderr stream (or to where stderr is redirected by stdfds[2] if it's not
- * 0). Putting 2 in stdfds[2] is equivalent to putting 0 there (see above).
- * Putting 2 in stdfds[0] will result in EINVAL.
+ * - 2 in stdfds[1] indicates that the stdout stream should be redirected to the
+ *   stderr stream (or to where stderr is redirected by stdfds[2] if it's not
+ *   0). Putting 2 in stdfds[2] is equivalent to putting 0 there (see above).
+ *   Putting 2 in stdfds[0] will result in EINVAL.
  *
- * If the current process needs a more complex redirection and inheritance
- * setup for the child, it should specify P_2_XREDIR in @a mode and @a stdfds
- * will be intepreted as sequence of integer pairs ending with a special value
- * of -1 that indicates the end of the sequence. Integers in each pair
- * represent LIBC file descriptors where the first one is an open file
- * descriptor of the current process to be inherited by the child process and
- * the second one is a file descriptor the inherited one should appear as in
- * the child process. This scheme allows for both selective inheritance and
- * complex redirection.
+ * If the current process needs a more complex redirection and inheritance setup
+ * for the child, it should specify P_2_XREDIR in @a mode and @a stdfds will be
+ * intepreted as sequence of integer pairs ending with a special value of -1
+ * that indicates the end of the sequence. Integers in each pair represent LIBC
+ * file descriptors where the first one is an open file descriptor of the
+ * current process to be inherited by the child process and the second one is a
+ * file descriptor the inherited one should appear as in the child process. This
+ * scheme allows for both selective inheritance and complex redirection.
  *
  * If both values in the pair match, the specified file descriptor will be
  * simply inherited by the child process and will appear there under the same
  * number. If the second value is different, it specifies a new file descriptor
  * that will represent the file descriptor from the first value in the child
- * process, effectively enabling I/O stream redirection. Note that as opposed
- * to simple mode where values of 0, 1 and 2 are given a special meaning, in
+ * process, effectively enabling I/O stream redirection. Note that as opposed to
+ * simple mode where values of 0, 1 and 2 are given a special meaning, in
  * P_2_XREDIR mode the first value in the pair always represents an open file
  * descriptor of the current process while the second value always represents a
- * new file descriptor in the child process that will be opened to represent
- * the specified file descriptor of its parent.
+ * new file descriptor in the child process that will be opened to represent the
+ * specified file descriptor of its parent.
  *
  * All file descriptors specified in the second value of each pair (i.e. the
  * ones to be opened in the child process) must be unique. Having a duplicate
  * there will result in EINVAL from `spawn2`. File descriptors in the first
  * value of each pair (i.e. the current process ones) must represent open files
- * and may occur more than once: this allows to redirect the same parent file
- * to more than one child descriptors (e.g. combine child stdout and stderr
- * into one stream). Specifying a non-existent file descriptor as the first
- * value in the pair will result in EBADF.
+ * and may occur more than once: this allows to redirect the same parent file to
+ * more than one child descriptors (e.g. combine child stdout and stderr into
+ * one stream). Specifying a non-existent file descriptor as the first value in
+ * the pair will result in EBADF.
  *
- * Here is an example of redirecting both child stdout and stderr streams to
- * the current process' file descriptor no. 5 using simple mode:
+ * Here is an example of redirecting both child stdout and stderr streams to the
+ * current process' file descriptor no. 5 using simple mode:
  * ```
  * int stdfds[] = { 0, 5, 1 };
  * ```
@@ -130,6 +130,7 @@ __BEGIN_DECLS
  * ```
  * int stdfds[] = { 5, 1, 5, 2, -1 };
  * ```
+ *
  * Note that the second case will also cause the current process' stdin to be
  * not inherited by the child, as opposed to the first one. In order to inherit
  * it, a pair of 0, 0 should be added somewhere in the array.
@@ -138,43 +139,48 @@ __BEGIN_DECLS
  * descriptors explicitly specified in @a stdfds will be inherited by the child
  * process from the current process and nothing else. This differs from simple
  * I/O redirection mode which forces inheritance of standard I/O file
- * descriptors with values 0, 1, 2 but does not touch other descriptors (so
- * that they will be inherited depending on their individual settings via
- * opening files in O_NOINHERIT mode or using `fcntl(F_SETFD, FD_CLOEXEC)`).
+ * descriptors with values 0, 1, 2 but does not touch other descriptors (so that
+ * they will be inherited depending on their individual settings via opening
+ * files in O_NOINHERIT mode or using `fcntl(F_SETFD, FD_CLOEXEC)`).
  *
  * In addition to the standard `P_*` constanst for the @a mode argument, the
  * following new values are recognized:
  *
  * - P_2_APPENDENV causes `spawn2` to append the environment passed in @a envp
- * to a copy of the current process environment and pass the result to the
- * child process instead of initializing the child environment to only what is
- * contained in @a envp (which might be not enoguh to start a program if it
- * contains only a few custom variables).
+ *   to a copy of the current process environment and pass the result to the
+ *   child process instead of initializing the child environment to only what is
+ *   contained in @a envp (which might be not enoguh to start a program if it
+ *   contains only a few custom variables). If a variable in @a envp does not
+ *   contain an `=` character, it will be removed from the copy of the current
+ *   process environment instead of being appended to it. This allows to
+ *   effectively hide specific parent variables from the child process. Note
+ *   that if P_2_APPENDENV is not given, such variables in @a envp will be
+ *   silently ignored (not passed to the child in any form).
  *
  * - P_2_NOINHERIT causes `spawn2` to prevent inheritance of all file
- * descriptors of the current process by the child process. Note that due to
- * kLIBC limitations, this flag will cause enumeration of 65k file descriptors
- * and require extra 8k of heap memory. Instead, it's recommended to either
- * open files in O_NOINHERIT mode or use `fcntl(F_SETFD, FD_CLOEXEC)` on
- * specific file descrptors to prevent their inheritance. Note that file
- * descriptors 0, 1 and 2 are always inherited by the child process.
+ *   descriptors of the current process by the child process. Note that due to
+ *   kLIBC limitations, this flag will cause enumeration of 65k file descriptors
+ *   and require extra 8k of heap memory. Instead, it's recommended to either
+ *   open files in O_NOINHERIT mode or use `fcntl(F_SETFD, FD_CLOEXEC)` on
+ *   specific file descrptors to prevent their inheritance. Note that file
+ *   descriptors 0, 1 and 2 are always inherited by the child process.
  *
  * - P_2_THREADSAFE causes `spawn2` to use an intermediate process for starting
- * the child process. This allows to avoid race conditions in multithreaded
- * applications when `spawn2` manipulates global process properties such as the
- * current working directory or file descriptors (by changing their inheritance
- * and association with an actual device) because the current process remains
- * unaffected by such manipulations. Although it's not enforced, using this
- * flag makes sense only when at least one of the following is true:
- * P_2_NOINHERIT is used, @a cwd is not NULL, @a stdfds is not NULL and
- * contains at least one non-zero file descriptor. In other cases `spawn2`
- * should be thread-safe without using P_2_THREADSAFE. P_2_THREADSAFE can only
- * be used with P_WAIT or P_NOWAIT and will result in a failure with EINVAL
- * otherwise.
+ *   the child process. This allows to avoid race conditions in multithreaded
+ *   applications when `spawn2` manipulates global process properties such as
+ *   the current working directory or file descriptors (by changing their
+ *   inheritance and association with an actual device) because the current
+ *   process remains unaffected by such manipulations. Although it's not
+ *   enforced, using this flag makes sense only when at least one of the
+ *   following is true: P_2_NOINHERIT is used, @a cwd is not NULL, @a stdfds is
+ *   not NULL and contains at least one non-zero file descriptor. In other cases
+ *   `spawn2` should be thread-safe without using P_2_THREADSAFE. P_2_THREADSAFE
+ *   can only be used with P_WAIT or P_NOWAIT and will result in a failure with
+ *   EINVAL otherwise.
  *
  * - P_2_XREDIR (added in version 0.6.7) enables extended redirection mode that
- * changes interpretation of the @a stdfds argument (which must be not NULL in
- * this case). The extended redirection mode is describred in detail above.
+ *   changes interpretation of the @a stdfds argument (which must be not NULL in
+ *   this case). The extended redirection mode is describred in detail above.
  *
  * Note that if you issue a thread-unsafe `spawn2` call without P_2_THREADSAFE,
  * then you should provide thread safety on your own (by using syncnrhonization
@@ -200,9 +206,9 @@ __BEGIN_DECLS
  * in EMX or in `DosStartSession`. If P_2_THREADSAFE is not used, zero will
  * still be returned.
  *
- * Except for what is described above, the `spawn2` function behaves
- * essentially the same as the standard `spawnvpe` function in the EMX library.
- * Please consult the `spawnvpe` manual for more information.
+ * Except for what is described above, the `spawn2` function behaves essentially
+ * the same as the standard `spawnvpe` function in the EMX library. Please
+ * consult the `spawnvpe` manual for more information.
  */
 int spawn2(int mode, const char *name, const char * const argv[],
            const char *cwd, const char * const envp[], const int stdfds[]);

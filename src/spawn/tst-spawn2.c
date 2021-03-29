@@ -154,6 +154,15 @@ int do_test(int argc, const char *const *argv)
             return 0;
           }
 
+          case 6: // environment removal test
+          {
+            char *val = getenv(SPAWN2TEST54_VAR);
+            if (val)
+              perr_and(return 1, "child: test 5.6: [%s] is set to [%s], should be unset", SPAWN2TEST54_VAR, val);
+
+            return 0;
+          }
+
           default:
             return 123;
         }
@@ -411,6 +420,24 @@ int do_test(int argc, const char *const *argv)
 
       if (strcmp(blp_before, blp_after) != 0)
         perr_and(return 1, "test 5.5: [%s] != [%s]", blp_before, blp_after);
+    }
+
+    // environment test with P_2_APPENDENV and variable removal, should succeed
+    printf ("test 5.6 (iter %d)\n", iter);
+    {
+      // Make sure the variable is there
+      putenv(SPAWN2TEST54_VAR "=" SPAWN2TEST54_VAL);
+
+      const char *args[] = { exename, "--direct", "5", "6", NULL };
+      const char *envp[] = { SPAWN2TEST54_VAR, NULL };
+      int pid = spawn2(P_NOWAIT | P_2_APPENDENV | flags, exename, args, NULL, envp, NULL);
+      if (pid == -1)
+        perrno_and(return 1, "test 5.6: spawn2");
+
+      if (wait_pid("test 5.6", pid, 0, 0))
+        return 1;
+
+      unsetenv(SPAWN2TEST54_VAR);
     }
 
     // cwd check, should succeed
