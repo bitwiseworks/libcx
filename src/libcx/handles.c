@@ -236,7 +236,7 @@ int libcx_send_handles(LIBCX_HANDLE *handles, size_t num_handles, pid_t pid, int
             /* Private memory needs to be given to the other process */
             int rc2 = shmem_give(h_data->handles[i].h, pid, 0);
             if (rc2 == -1 && errno != EPERM)
-              ASSERT_NO_PERR(rc2);
+              rc = rc2;
           }
           break;
         }
