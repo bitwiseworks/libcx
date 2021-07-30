@@ -108,9 +108,9 @@ static int release_result(InterruptResult *res)
 
         /* Remove from list */
         if (tgt_res_prev)
-          tgt_res_prev->next = tgt_res->next;
+          tgt_res_prev->wait_next = tgt_res->wait_next;
         else
-          proc->interrupts->wait_results = tgt_res->next;
+          proc->interrupts->wait_results = tgt_res->wait_next;
 
         break;
       }
@@ -571,11 +571,15 @@ int interrupt_request(pid_t pid, INTERRUPT_WORKER *worker, void *data, INTERRUPT
     }
     else
     {
+      global_lock();
+
       /* TODO: call GLOBAL_MEM_SET_OWNER(req_result, getpid()) when it's ready */
 
       /* Put the result into the list of results to be released */
       req_result->next = gpProcDesc->interrupts->results;
       gpProcDesc->interrupts->results = req_result;
+
+      global_unlock();
 
       /* Pass the result to the caller */
       *result = req_result;
@@ -615,7 +619,7 @@ void interrupt_request_release(INTERRUPT_RESULT result)
     res = res->next;
   }
 
-  ASSERT(res == release_res);
+  ASSERT_MSG(res == release_res, "%p %p", res, release_res);
 
   if (res_prev)
     res_prev->next = res->next;
