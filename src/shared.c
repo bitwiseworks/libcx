@@ -1685,8 +1685,10 @@ void touch_pages(void *buf, size_t len)
     TRACE_IF(arc, "DosQueryMem = %lu\n", arc);
     if (!arc && !(dos_flags & (PAG_FREE | PAG_COMMIT)))
     {
-      /* touch all pages within the reported range */
+      /* touch all pages within the reported range (but not beyond the requested length) */
       dos_len += buf_addr;
+      if (dos_len > buf_end)
+        dos_len = buf_end;
       while (buf_addr < dos_len)
       {
         *(int *)buf_addr = *(int *)buf_addr;
