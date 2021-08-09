@@ -23,8 +23,7 @@ $(foreach test, $(ALL_TESTS), $(evalvalctx def_test))
 
 testclean:
 	%$(call MSG_L1,Cleaning test products...)
-	$(QUIET)$(RM) -f -- $(wildcard *.TRP) $(wildcard test*.log)
-	$(QUIET)$(RM) -f -- $(wildcard /@unixroot/var/log/libcx/TST-*.log)
+	$(QUIET)$(RM) -f -- $(wildcard test-tst*.log) $(wildcard *-libcx.log) $(wildcard *-exceptq.txt)
 
 test:: testclean
 

@@ -56,16 +56,20 @@
 #define TRACE_MORE 1
 #endif
 
+#define TRACE_FLAG_MASK  0xFF000000
+#define TRACE_FLAG_NOSTD 0x10000000
+
 #ifdef TRACE_USE_LIBC_LOG
 void libcx_trace(unsigned traceGroup, const char *file, int line, const char *func, const char *format, ...) __printflike(5, 6);
 #define TRACE_FLUSH() do {} while (0)
 #define TRACE_RAW(msg, ...) libcx_trace(TRACE_GROUP, __FILE__, __LINE__, __FUNCTION__, msg, ## __VA_ARGS__)
 #define TRACE_CONT(msg, ...) libcx_trace(TRACE_GROUP, NULL, -1, NULL, msg, ## __VA_ARGS__)
-#define TRACE_TO(grp, msg, ...) libcx_trace(TRACE_GROUP, __FILE__, __LINE__, __FUNCTION__, msg, ## __VA_ARGS__)
+#define TRACE_TO(grp, msg, ...) libcx_trace(grp, __FILE__, __LINE__, __FUNCTION__, msg, ## __VA_ARGS__)
 #else
 #define TRACE_FLUSH() fflush(stdout)
 #define TRACE_RAW(msg, ...) printf("*** [%d:%d] %s:%d:%s: " msg, getpid(), _gettid(), __FILE__, __LINE__, __FUNCTION__, ## __VA_ARGS__)
 #define TRACE_CONT(msg, ...) printf(msg, ## __VA_ARGS__)
+#define TRACE_TO(grp, msg, ...) TRACE_RAW(msg, ## __VA_ARGS__)
 #endif
 
 #define TRACE(msg, ...) do { TRACE_RAW(msg, ## __VA_ARGS__); TRACE_FLUSH(); } while(0)
@@ -107,9 +111,9 @@ void libcx_trace(unsigned traceGroup, const char *file, int line, const char *fu
 #endif
 
 #if ASSERT_USE_LIBC_LOG
-void libcx_assert(const char *string, const char *fname, unsigned int line, const char *format, ...) __printflike(4, 5);
-#define ASSERT_MSG(cond, msg, ...) do { if (!(cond)) { libcx_assert(#cond, __FILE__, __LINE__, msg, ## __VA_ARGS__); } } while(0)
-#define ASSERT_NO_PERR(rc) do { int _rc = (rc); if (_rc != 0) { libcx_assert(#rc " = 0", __FILE__, __LINE__, "%d (errno %d, %s)", _rc, errno, strerror(errno)); } } while(0)
+void libcx_assert(const char *string, const char *fname, unsigned int line, const char *func, const char *format, ...) __printflike(5, 6);
+#define ASSERT_MSG(cond, msg, ...) do { if (!(cond)) { libcx_assert(#cond, __FILE__, __LINE__, __FUNCTION__, msg, ## __VA_ARGS__); } } while(0)
+#define ASSERT_NO_PERR(rc) do { int _rc = (rc); if (_rc != 0) { libcx_assert(#rc " = 0", __FILE__, __LINE__, __FUNCTION__, "%d (errno %d, %s)", _rc, errno, strerror(errno)); } } while(0)
 #define ASSERT(cond) ASSERT_MSG(cond, NULL)
 #define ASSERT_FAILED() ASSERT(FALSE)
 #else

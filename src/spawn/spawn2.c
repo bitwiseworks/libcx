@@ -528,6 +528,10 @@ int __spawn2(int mode, const char *name, const char * const argv[],
     }
   }
 
+  /* Redefine the trace group to disable logging if redirecting to stderr/stdout */
+  #undef TRACE_GROUP
+  #define TRACE_GROUP (TRACE_GROUP_SPAWN | TRACE_FLAG_NOSTD)
+
   if (rc != -1)
   {
     /* Process redirected file handles */
@@ -1241,6 +1245,10 @@ int __spawn2(int mode, const char *name, const char * const argv[],
     free(inherited);
     free(dups);
   }
+
+  /* Restore the redefined trace group  */
+  #undef TRACE_GROUP
+  #define TRACE_GROUP TRACE_GROUP_SPAWN
 
   /* Restore the current directory */
   if (curdir)

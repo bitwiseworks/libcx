@@ -107,11 +107,13 @@ ifneq ($(has_iters),)
 	$(QUIET)for f in `seq 1 $(iters)` ; \
 	do \
 	  echo Running test $(target) [iter $$$$f]... ; \
-	  cmd.exe /c "set BEGINLIBPATH=$(PATH_STAGE_LIB);%BEGINLIBPATH% && set LIBPATHSTRICT=T && $(PATH_STAGE_BIN)/$$(notdir $$($(target)_1_TARGET)) --direct >> test-$(target).log 2>&1" || exit $$$$? ; \
+	  LIBCX_TRACE_OUTPUT=curdir LIBC_LOGGING_OUTPUT=curdir \
+	  BEGINLIBPATH="$(PATH_STAGE_LIB);$(BEGINLIBPATH)" LIBPATHSTRICT=T $(PATH_STAGE_BIN)/$$(notdir $$($(target)_1_TARGET)) --direct >> test-$(target).log 2>&1 || exit $$$$? ; \
 	done
 else
 	$(QUIET)echo Running test $(target)...
-	$(QUIET)cmd.exe /c "set BEGINLIBPATH=$(PATH_STAGE_LIB);%BEGINLIBPATH% && set LIBPATHSTRICT=T && $(PATH_STAGE_BIN)/$$(notdir $$($(target)_1_TARGET)) --direct > test-$(target).log 2>&1"
+	$(QUIET)LIBCX_TRACE_OUTPUT=curdir LIBC_LOGGING_OUTPUT=curdir \
+	BEGINLIBPATH="$(PATH_STAGE_LIB);$(BEGINLIBPATH)" LIBPATHSTRICT=T $(PATH_STAGE_BIN)/$$(notdir $$($(target)_1_TARGET)) --direct > test-$(target).log 2>&1
 endif
 
 ifneq ($(ordered),)
