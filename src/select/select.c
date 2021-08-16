@@ -191,15 +191,45 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
                              exceptfds ? &e_new : NULL, timeout);
       TRACE("nfds_ret %d (%s)\n", nfds_ret, strerror(nfds_ret == -1 ? errno : 0));
 
-      if (nfds_ret >= 0 || errno != EFAULT)
+      if (nfds_ret >= 0)
         break;
 
-      /*
-       * EFAULT comes from the OS/2 TCP/IP stack and seems to be some mistery.
-       * Some tests show that simply retrying after some sleep makes it go away.
-       */
-      TRACE("EFAULT, retrying (attempts left %d)\n", efault_attempts);
-      usleep(100000);
+      if (errno == EFAULT)
+      {
+        /*
+         * EFAULT comes from the OS/2 TCP/IP stack and seems to be some mistery.
+         * Some tests show that simply retrying after some sleep makes it go away.
+         */
+        TRACE("EFAULT, retrying (attempts left %d)\n", efault_attempts);
+        usleep(100000);
+      }
+      else if (errno == ENOTSOCK)
+      {
+        /*
+         * A similar story with ENOTSOCK but we better check handles to rule out
+         * cases where they are not sockets indeed.
+         */
+        int seen_nonsocket = 0;
+        for (fd = 0; fd <= max_fd; ++fd)
+        {
+          if (FD_ISSET(fd, readfds) || FD_ISSET(fd, writefds) || FD_ISSET(fd, exceptfds))
+          {
+            __LIBC_PFH pFH = __libc_FH(fd);
+            if (!pFH || ((pFH->fFlags & __LIBC_FH_TYPEMASK) != F_SOCKET))
+            {
+              seen_nonsocket = 1;
+              break;
+            }
+          }
+        }
+
+        /* Assume the error is real if we saw a non-socket handle. */
+        if (seen_nonsocket)
+          break;
+
+        TRACE("ENOTSOCK, retrying (attempts left %d)\n", efault_attempts);
+        usleep(100000);
+      }
     }
 
     if (nfds_ret < 0 && errno == EBADF)
