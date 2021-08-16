@@ -1,6 +1,20 @@
 # History of changes for LIBCx
 
+#### Version 0.7.1 (2021-08-16)
+
+* shmem: Fix broken handle allocation causing assertions and crashes.
+* Fix endless hang at startup when no UNIXROOT env. var is set [bitwiseworks/libc#100].
+* spawn2: Fix restoring inheritance for parent handles matching child handles [bitwiseworks/git-os2#4].
+* spawn2: Support deletion of environment variables [#91].
+* handles: Fix crashes due to missing lock in interrupt service [bitwiseworks/qtwebengine-chromium-os2#43].
+* handles: libcx_send_handles: Convert no PID assertion to error.
+* mmap: Make DosRead workaround not crash after partial unmap [#95].
+* Adapt to LIBC logstrict changes (log to /var/log/app now) [bitwiseworks/libc#101].
+* README: Do not mention EXCEPTQ any more (we don't install it since version 0.7.0) [bitwiseworks/libc#98].
+* select: Implement ENOTSOCK hack to avoid false errors [#94].
+
 #### Version 0.7.0 (2021-02-26)
+
 * Implement interrupt_request service [#87].
 * handles: Add libcx_send_handles and ibcx_take_handles APIs [#87].
 * shmem_duplicate: Properly update handle when growing handle array [bitwiseworks/qtwebengine-chromium-os2#12].
