@@ -354,13 +354,6 @@ static void shared_term()
   TRACE("DosRequestMutexSem = %ld\n", arc);
 
   /*
-   * At this point we should either successfully grab the mutex or we already
-   * crashed because of some assertion (e.g. when we tried to grab it in
-   * global_lock but received ERROR_SEM_OWNER_DIED).
-   */
-  ASSERT_MSG(gSeenAssertion || arc == NO_ERROR, "%d %lu", gSeenAssertion, arc);
-
-  /*
    * Only go with uninit if we successfully grabbed the mutex. Otherwise, it is
    * pointless as it means some other LIBCX process died holding it or such and
    * there is no way to recover from that: all LIBCx processes are dying anyway.
