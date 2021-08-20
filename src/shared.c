@@ -1469,7 +1469,7 @@ static int init_log_instance()
 
   if (!__libc_LogIsOutputToConsole(logInstance))
   {
-    // Write out LIBCx info
+    // Write out LIBCx info (note __LIBC_LOG_MSGF_ALWAYS to override disabled groups)
     char buf[CCHMAXPATH + 128];
     strcpy(buf, "LIBCx version : " VERSION_MAJ_MIN_BLD LIBCX_DEBUG_SUFFIX LIBCX_DEV_SUFFIX "\n");
     strcat(buf, "LIBCx module  : ");
@@ -1478,7 +1478,19 @@ static int init_log_instance()
       sprintf(buf + strlen(buf), " (hmod=%04lx)\n", ghModule);
     else
       sprintf(buf + strlen(buf), " <error %ld>\n", arc);
-    __libc_LogRaw(logInstance, __LIBC_LOG_MSGF_FLUSH, buf, strlen(buf));
+    __libc_LogRaw(logInstance, __LIBC_LOG_MSGF_FLUSH | __LIBC_LOG_MSGF_ALWAYS, buf, strlen(buf));
+
+    // Write out our own column header
+    static const char header[] =
+      "   Millsecond Timestamp.\n"
+      "   |     Thread ID.\n"
+      "   |     |   Log Group (Asrt for assertions).\n"
+      "   |     |   |    File Name.\n"
+      "   |     |   |    |    Line Number.\n"
+      "   |     |   |    |    |      Function Name.\n"
+      "   v     v   v    v    v      v\n"
+      "xxxxxxxx tt gggg file:line:function: message\n";
+    __libc_LogRaw(logInstance, __LIBC_LOG_MSGF_FLUSH | __LIBC_LOG_MSGF_ALWAYS, header, sizeof(header) - 1);
   }
 
   /*
@@ -1563,8 +1575,9 @@ void libcx_assert(const char *string, const char *fname, unsigned int line, cons
     }
   }
 
+  /* Use the __LIBC_LOG_MSGF_ALWAYS flag to override disabled groups settings */
   if (gLogInstance && buf)
-    __libc_LogRaw(gLogInstance, 0 | __LIBC_LOG_MSGF_FLUSH, buf, msg - buf + msgSize);
+    __libc_LogRaw(gLogInstance, __LIBC_LOG_MSGF_FLUSH | __LIBC_LOG_MSGF_ALWAYS, buf, msg - buf + msgSize);
 
   if (dupToConsole || !buf)
   {
