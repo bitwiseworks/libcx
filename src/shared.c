@@ -30,6 +30,7 @@
 #include <process.h>
 #include <stdarg.h>
 #include <sys/builtin.h>
+#include <sys/errno.h>
 #include <assert.h>
 #include <emx/io.h>
 
@@ -43,6 +44,7 @@
 
 #include <InnoTekLIBC/fork.h>
 #include <InnoTekLIBC/FastInfoBlocks.h>
+#include <InnoTekLIBC/errno.h>
 
 /*
  * Debug builds are hardly compatible with release builds so use a separate
@@ -349,8 +351,21 @@ static void shared_term()
   ASSERT(gSeenAssertion || gMutex != NULLHANDLE);
 
   DOS_NI(arc = DosRequestMutexSem(gMutex, SEM_INDEFINITE_WAIT));
+  TRACE("DosRequestMutexSem = %ld\n", arc);
 
-  if (gpData)
+  /*
+   * At this point we should either successfully grab the mutex or we already
+   * crashed because of some assertion (e.g. when we tried to grab it in
+   * global_lock but received ERROR_SEM_OWNER_DIED).
+   */
+  ASSERT_MSG(gSeenAssertion || arc == NO_ERROR, "%d %lu", gSeenAssertion, arc);
+
+  /*
+   * Only go with uninit if we successfully grabbed the mutex. Otherwise, it is
+   * pointless as it means some other LIBCX process died holding it or such and
+   * there is no way to recover from that: all LIBCx processes are dying anyway.
+   */
+  if (gpData && arc == NO_ERROR)
   {
     if (gpData->heap)
     {
@@ -578,12 +593,16 @@ void global_unlock()
 }
 
 /**
- * Returns 0 and PID, TID and the request count of the global mutex owner if it
- * is currently owned.
+ * Returns PID, TID and the request count of the global mutex owner.
  *
- * Any parameter can be NULL to ignore the respective value.
+ * On success, the return value indicates the owner state:
+ * - 0: the mutex is currently owned and the owner is alive
+ * - 1: the mutex is currently owned byt the owner is dead
+ * - 2: the mutex is not currently owned
  *
- * Returns -1 if the mutex is not owned or an error occurs.
+ * Any argument can be NULL to ignore the respective value.
+ *
+ * Returns -1 and sets errno if an error occurs when querying the owner.
  */
 int global_lock_info(pid_t *pid, int *tid, unsigned *count)
 {
@@ -593,7 +612,7 @@ int global_lock_info(pid_t *pid, int *tid, unsigned *count)
     TID tid2 = 0;
     ULONG count2 = 0;
     APIRET arc = DosQueryMutexSem(gMutex, &pid2, &tid2, &count2);
-    if (arc == NO_ERROR)
+    if (arc == NO_ERROR || arc == ERROR_SEM_OWNER_DIED)
     {
       if (pid)
         *pid = pid2;
@@ -601,10 +620,13 @@ int global_lock_info(pid_t *pid, int *tid, unsigned *count)
         *tid = tid2;
       if (count)
         *count = count2;
-      return 0;
+      return arc == NO_ERROR ? (count2 != 0 ? 0 : 2) : 1;
     }
+    errno = __libc_native2errno(arc);
+    return -1;
   }
 
+  errno = EBADF; // ERROR_INVALID_HANDLE
   return -1;
 }
 
@@ -1311,17 +1333,32 @@ static int format_stats(char *buf, int size)
 #endif
                   );
 
+  if (nret < size - 1)
+    nret += snprintf(buf + nret, size - nret,
+                     "===== LIBCx global mutex info =====\n"
+                     "mutex handle: %08lx\n", gMutex);
+
   if (nret < size - 1 && gMutex != NULLHANDLE)
   {
     int pid, tid;
-    if (global_lock_info(&pid, &tid, NULL) == 0)
+    unsigned count;
+    if ((rc = global_lock_info(&pid, &tid, &count)) >= 0)
     {
       nret += snprintf(buf + nret, size - nret,
-                       "===== LIBCx global mutex owner =====\n"
-                       "mutex handle: %08lx\n"
-                       "owner PID:    %04x (%d)\n"
-                       "owner TID:    %d\n",
-                       gMutex, pid, pid, tid);
+                       "owner state:  %s\n"
+                       "owner PID:    %04x (%d)%s\n"
+                       "owner TID:    %d%s\n"
+                       "request #:    %u\n",
+                       rc == 0 ? "alive" : rc == 1 ? "dead" : "not owned",
+                       pid, pid, pid == getpid() ? " <current>" : "",
+                       tid, pid == getpid() && tid == _gettid() ? " <current>" : "",
+                       count);
+    }
+    else
+    {
+      nret += snprintf(buf + nret, size - nret,
+                       "<failed to get owner info: rc %d, errno %d>\n",
+                       rc, errno);
     }
   }
 
