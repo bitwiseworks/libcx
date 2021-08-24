@@ -49,7 +49,15 @@
 /*
  * Debug builds are hardly compatible with release builds so use a separate
  * mutex and LIBCx shared memory block. Also use a separate mutex and memory
- * block for development builds to avoid interfering with the release build.
+ * block for development builds to avoid interfering with the release build
+ *
+ * We also use the LIBCx DLL module handle as the last part of shared mutex and
+ * memory block names to distinguish between two different builds of the same
+ * version loaded from separate dirs thanks to LIBPATHSTRICT=T mode, e.g. when
+ * testing or RPM building. Note that this part alone makes name versionong and
+ * debug/release/dev differentiation not needed (because different files will
+ * get different module handles and hence different names anyway) but we leave
+ * it in for clarity when debugging etc.
  */
 #ifdef DEBUG
 #define LIBCX_DEBUG_SUFFIX "_debug"
@@ -61,8 +69,11 @@
 #else
 #define LIBCX_DEV_SUFFIX ""
 #endif
-#define MUTEX_LIBCX "\\SEM32\\LIBCX_MUTEX_V" VERSION_MAJ_MIN_BLD LIBCX_DEBUG_SUFFIX LIBCX_DEV_SUFFIX
-#define SHAREDMEM_LIBCX "\\SHAREMEM\\LIBCX_DATA_V" VERSION_MAJ_MIN_BLD LIBCX_DEBUG_SUFFIX LIBCX_DEV_SUFFIX
+#define LIBCX_DEV_HMODSTR_TPL "xxxxx"
+#define LIBCX_DEV_HMODSTR_FMT "_%04lx"
+
+static char MUTEX_LIBCX[] = "\\SEM32\\LIBCX_MUTEX_V" VERSION_MAJ_MIN_BLD LIBCX_DEBUG_SUFFIX LIBCX_DEV_SUFFIX LIBCX_DEV_HMODSTR_TPL;
+static char SHAREDMEM_LIBCX[] = "\\SHAREMEM\\LIBCX_DATA_V" VERSION_MAJ_MIN_BLD LIBCX_DEBUG_SUFFIX LIBCX_DEV_SUFFIX LIBCX_DEV_HMODSTR_TPL;
 
 #define HEAP_SIZE (1024 * 1024 * 2) /* 2MB - total shared data area size */
 #define HEAP_INIT_SIZE 65536 /* Initial size of committed memory */
@@ -176,6 +187,15 @@ static void shared_init(int forked)
    */
   setvbuf(stdout, NULL, _IOFBF, 0x10000);
 #endif
+
+  /*
+   * Fill the module handle string's template to let LIBCx DLLs of the same
+   * version but loaded from different paths coexist.
+   */
+  snprintf(MUTEX_LIBCX + sizeof(MUTEX_LIBCX) - sizeof(LIBCX_DEV_HMODSTR_TPL), sizeof(LIBCX_DEV_HMODSTR_TPL), LIBCX_DEV_HMODSTR_FMT, ghModule);
+  snprintf(SHAREDMEM_LIBCX + sizeof(SHAREDMEM_LIBCX) - sizeof(LIBCX_DEV_HMODSTR_TPL), sizeof(LIBCX_DEV_HMODSTR_TPL), LIBCX_DEV_HMODSTR_FMT, ghModule);
+  TRACE("Shared mutex name [%s]\n", MUTEX_LIBCX);
+  TRACE("Shared memory name [%s]\n", SHAREDMEM_LIBCX);
 
   while (1)
   {
