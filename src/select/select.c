@@ -212,7 +212,9 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
         int seen_nonsocket = 0;
         for (fd = 0; fd <= max_fd; ++fd)
         {
-          if (FD_ISSET(fd, readfds) || FD_ISSET(fd, writefds) || FD_ISSET(fd, exceptfds))
+          if ((readfds && FD_ISSET(fd, readfds)) ||
+               writefds && (FD_ISSET(fd, writefds)) ||
+               exceptfds && (FD_ISSET(fd, exceptfds)))
           {
             __LIBC_PFH pFH = __libc_FH(fd);
             if (!pFH || ((pFH->fFlags & __LIBC_FH_TYPEMASK) != F_SOCKET))
