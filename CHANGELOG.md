@@ -1,5 +1,12 @@
 # History of changes for LIBCx
 
+#### Version 0.7.2 (2021-08-26)
+
+* Write assertions to log file even if no log groups are enabled [#97].
+* Log dead LIBCx mutex owner on assertions [#96].
+* select: Fix crash with ENOTSOCK and NULL fd sets [#100].
+* Append LIBCx DLL module handle to its shared mutex/memory names [#99].
+
 #### Version 0.7.1 (2021-08-16)
 
 * shmem: Fix broken handle allocation causing assertions and crashes.
