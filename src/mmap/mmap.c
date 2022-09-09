@@ -1286,8 +1286,6 @@ static void free_mmap(ProcDesc *desc, MemMap *m, MemMap *prev)
       {
         /* We need to find the beginning of the memory object (it's always on a 64K boundary */
         ULONG start = m->start & 0xFFFF0000;
-        if (start == m->start)
-          start -= 0x10000;
         while (start)
         {
           len = ~0;
@@ -1295,6 +1293,7 @@ static void free_mmap(ProcDesc *desc, MemMap *m, MemMap *prev)
           ASSERT_MSG(arc == NO_ERROR, "%ld", arc);
           if (mem_flags & PAG_BASE)
             break;
+          start -= 0x10000;
         }
         ASSERT_MSG(start && (mem_flags & PAG_BASE), "%lx %lx", start, mem_flags);
         TRACE("middle of memory object %lx (len %lx), prev mmapping %p (%lx..%lx), next mmapping %p (%lx..%lx)\n",
