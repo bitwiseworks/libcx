@@ -122,6 +122,17 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
             is_regular = 1;
         }
       }
+      else
+      {
+        /*
+         * We got a bad FD - there is no point in going further. Note: bailing
+         * out here is important for the EBADF workaround for sockets below
+         * (otherwise invalid FDs would not end up in regular_fds and be
+         * mistakenly treated like sockets).
+         */
+        TRACE("bad fd %d, baling out with error early\n", fd);
+        return -1;
+      }
 
       if (is_regular)
       {
@@ -232,6 +243,8 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
         TRACE("ENOTSOCK, retrying (attempts left %d)\n", efault_attempts);
         usleep(100000);
       }
+      else
+        break;
     }
 
     if (nfds_ret < 0 && errno == EBADF)
