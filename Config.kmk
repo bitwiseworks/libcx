@@ -40,6 +40,12 @@ else
 INST_PREFIX = $(PATH_INS)
 endif
 
+# GCC 8 option to strip absolute file paths (both to save space and for safety)
+GCC_OPT_STRIP_FILEPATH = \
+	-ffile-prefix-map=$(PATH_ROOT)=libcx \
+	-ffile-prefix-map=$(PATH_OUT)=libcx \
+	-ffile-prefix-map=$(TEMP)=libcx
+
 #
 # Templates
 #
@@ -52,8 +58,8 @@ ifneq ($(strip $(CFLAGS)$(LDFLAGS)),)
 TEMPLATE_C_CFLAGS += $(CFLAGS)
 TEMPLATE_C_LDFLAGS += $(LDFLAGS)
 else
-TEMPLATE_C_CFLAGS.release += -g -O2
-TEMPLATE_C_CFLAGS.debug += -g -O0 -DDEBUG
+TEMPLATE_C_CFLAGS.release += -g -O2 $(GCC_OPT_STRIP_FILEPATH)
+TEMPLATE_C_CFLAGS.debug += -g -O0 -DDEBUG $(GCC_OPT_STRIP_FILEPATH)
 TEMPLATE_C_LDFLAGS.release += -g
 TEMPLATE_C_LDFLAGS.debug += -g
 endif
