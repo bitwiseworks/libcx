@@ -1,5 +1,10 @@
 # History of changes for LIBCx
 
+#### Version 0.7.3 (2023-05-12)
+
+* mmap: Fix endless loop in munmap in some cases [#101].
+* select: Don't hide errors from system select any more [#104].
+
 #### Version 0.7.2 (2021-08-26)
 
 * Write assertions to log file even if no log groups are enabled [#97].
