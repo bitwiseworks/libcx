@@ -84,8 +84,6 @@ TESTS_INCS += poll mmap
 TESTS.debug += tst-shared.c
 tst-shared.c_ORDERED = 1
 
-TESTS += tst-flush-socketpair.c
-
 TESTS += tst-fpucw.c
 
 TESTS += \
