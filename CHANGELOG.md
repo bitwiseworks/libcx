@@ -1,5 +1,10 @@
 # History of changes for LIBCx
 
+#### Version 0.7.4 (2024-08-03)
+
+* Revert "Make streams bound to TCP sockets properly flushed at program exit"
+  (it is done by LIBCn since v0.1.13).
+
 #### Version 0.7.3 (2023-05-12)
 
 * mmap: Fix endless loop in munmap in some cases [#101].
