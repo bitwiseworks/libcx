@@ -34,6 +34,8 @@
 
 #include "../test-skeleton.c"
 
+extern char **environ;
+
 static int wait_pid(const char *msg, int pid, int exit_code, int exit_signal)
 {
   int status;
@@ -793,6 +795,8 @@ int do_test(int argc, const char *const *argv)
     if (test12_done_load != tid_cnt)
       perr_and(return 1, "test 12: done threads %d, not %d", test12_done_load, tid_cnt);
   }
+
+  // TODO: Add some more inheritance tests, see https://github.com/bitwiseworks/libcx/issues/105
 
   return 0;
 }

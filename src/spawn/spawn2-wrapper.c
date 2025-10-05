@@ -60,10 +60,10 @@ int main(int argc, char **argv)
 
   Spawn2Request *req = (Spawn2Request *)mem;
 
-  /* Force mode to P_WAIT and remove P_2_THREADSAFE + disable inheritance */
+  /* Force mode to P_NOWAIT and remove P_2_THREADSAFE */
   int mode = req->mode;
   mode &= ~(P_2_MODE_MASK | P_2_THREADSAFE);
-  mode |= P_NOWAIT | P_2_NOINHERIT;
+  mode |= P_NOWAIT;
 
   rc = spawn2(mode, req->name, req->argv, req->cwd, req->envp, req->stdfds);
   TRACE("spawn2(wrapped child) rc %d (%x) errno %d\n", rc, rc, errno);

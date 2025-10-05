@@ -101,7 +101,10 @@ int __spawn2(int mode, const char *name, const char * const argv[],
   {
     if (!(mode & P_2_XREDIR))
     {
-      /* Use extended mode to implement simple redirection */
+      /*
+       * Use extended mode to implement simple redirection (NOTE: using
+       * P_2_XREDIR2 to allow inheriting other descriptors).
+       */
 
       ASSERT(!req); /* The wrapper never does that */
 
@@ -119,7 +122,7 @@ int __spawn2(int mode, const char *name, const char * const argv[],
        *
        * Note that if all 3 fds are 0, this is effectively the same as stdfds
        * being NULL, i.e. no special redirection processing is needed at all.
-       * We skop this case leaving num_redirs as 0 (no redirection).
+       * We skip this case leaving num_redirs as 0 (no redirection).
        */
 
       if (stdfds[0] || (stdfds[1] && stdfds[1] != 1) || (stdfds[2] && stdfds[2] != 2))
@@ -144,7 +147,7 @@ int __spawn2(int mode, const char *name, const char * const argv[],
           fds[idx++] = i; /* target (child) fd */
         }
         fds[idx] = -1;
-        return __spawn2(mode | P_2_XREDIR, name, argv, cwd, envp, fds, NULL);
+        return __spawn2(mode | P_2_XREDIR2, name, argv, cwd, envp, fds, NULL);
       }
     }
     else
@@ -649,7 +652,7 @@ int __spawn2(int mode, const char *name, const char * const argv[],
                  * Source fd is among targets so it could be already replaced
                  * by another source fd. Find the saved original for it. Note
                  * that there is no need to replace if that target was simply
-                 * inherited (i.e. matched the source) whcih is indicated by
+                 * inherited (i.e. matched the source) which is indicated by
                  * its dups entry being -1 (i.e. it was not saved).
                  */
                 for (int j = 0; j < i; ++j)
@@ -685,7 +688,7 @@ int __spawn2(int mode, const char *name, const char * const argv[],
     if (rc != -1)
     {
       /* Disable inheritance if requested */
-      if (mode & (P_2_NOINHERIT | P_2_XREDIR))
+      if (mode & P_2_NOINHERIT)
       {
         clofds = malloc(sizeof(*clofds));
         if (clofds == NULL)
@@ -747,7 +750,7 @@ int __spawn2(int mode, const char *name, const char * const argv[],
                 TRACE("found special pseudo-env var [%s]\n", envp[i]);
                 ++pseudo_cnt;
 
-                // accept only the first occurence
+                // accept only the first occurrence
                 if (pseudo_eold[j])
                 {
                   TRACE("duplicate var; ignored\n");
@@ -803,6 +806,7 @@ int __spawn2(int mode, const char *name, const char * const argv[],
         }
         else if (pseudo_cnt || (mode & P_2_APPENDENV))
         {
+          extern char **environ;
           int environc = 0;
           if (mode & P_2_APPENDENV)
             for (; environ[environc]; ++environc)
@@ -1134,7 +1138,7 @@ int __spawn2(int mode, const char *name, const char * const argv[],
             {
               TRACE("DosStartSession pid %ld (independent? %d)\n", ulPid, data.Related == SSF_RELATED_INDEPENDENT);
               /*
-               * For unrelated sessions ulPid might be not zero althnough it doesn't
+               * For unrelated sessions ulPid might be not zero although it doesn't
                * represent a valid PID, make sure it is reset.
                */
               if (data.Related == SSF_RELATED_INDEPENDENT)
@@ -1269,6 +1273,9 @@ int __spawn2(int mode, const char *name, const char * const argv[],
 int spawn2(int mode, const char *name, const char * const argv[],
            const char *cwd, const char * const envp[], const int stdfds[])
 {
+  /* P_2_XREDIR implies P_2_NOINHERIT */
+  if ((mode & P_2_XREDIR) && !((mode & P_2_XREDIR2) == P_2_XREDIR2))
+    mode |= P_2_NOINHERIT;
   return __spawn2(mode, name, argv, cwd, envp, stdfds, NULL);
 }
 
