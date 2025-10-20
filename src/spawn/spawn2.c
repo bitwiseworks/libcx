@@ -1155,9 +1155,9 @@ int __spawn2(int mode, const char *name, const char * const argv[],
         else
         {
           if (envp_copy)
-            rc = spawnvpe(mode, name, (char * const *)argv, envp_copy);
+            rc = spawnvpe(mode & ~P_2_XFLAG_MASK, name, (char * const *)argv, envp_copy);
           else
-            rc = spawnvp(mode, name, (char * const *)argv);
+            rc = spawnvp(mode & ~P_2_XFLAG_MASK, name, (char * const *)argv);
 
           if (rc == -1)
             rc_errno = errno;

@@ -34,6 +34,8 @@ __BEGIN_DECLS
 #define P_2_XREDIR      0x10000000
 #define P_2_XREDIR2     0x18000000
 
+#define P_2_XFLAG_MASK  0xFF000000
+
 #define P_2_MODE_MASK 0x0FF
 #define P_2_TYPE_MASK 0xF00
 
