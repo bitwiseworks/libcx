@@ -520,7 +520,7 @@ unsigned long _System _DLL_InitTerm(unsigned long hModule, unsigned long ulFlag)
   switch (ulFlag)
   {
     /*
-     * InitInstance. Note that this one is NOT called in a forked child — it's
+     * InitInstance. Note that this one is NOT called in a forked child - it's
      * assumed that the DLLs are already initialized in the parent and the child
      * receives an already initialized copy of DLL data. However, in some cases
      * this is not actually true (examples are OS/2 file handles, semaphores and
@@ -873,7 +873,7 @@ ProcDesc *get_proc_desc_ex(pid_t pid, enum HashMapOpt opt)
  * Returns a file description structure for the given process and file name.
  * Must be called under global_lock().
  * The fd argument is only used when it's not -1 and when opt is HashMapOpt_New
- * — in this case the given fd will be associated with the returned description
+ * - in this case the given fd will be associated with the returned description
  * so that when close is called on that fd it will be deassociated (and will
  * cause the desc deletion if there is no other use of it). Optional o_bucket,
  * o_prev and o_proc arguments will receive the appropriate values for the
@@ -1200,7 +1200,7 @@ int close(int fildes)
 
         /*
          * Deassociate the fd from this file description (note that there may be
-         * none — e.g. if this desc was created for shared mmap in a forked
+         * none - e.g. if this desc was created for shared mmap in a forked
          * child and never for anything else)
          */
         for (i = 0; i < desc->size_fds; ++i)
@@ -1506,8 +1506,15 @@ static int init_log_instance()
   __libc_LogGroupInit(&gLogGroups, "LIBCX_TRACE");
 #endif
 
-  logInstance = __libc_LogInitEx("libcx", __LIBC_LOG_INIT_NOLEGEND,
-                                 logGroups, "LIBCX_TRACE_OUTPUT", NULL);
+  int flags = __LIBC_LOG_INIT_NOLEGEND;
+
+  const char *utf8_var = "LIBCX_TRACE_UTF8";
+  int utf8 = 0;
+  _getenv_int(utf8_var, &utf8);
+  if (utf8)
+    flags |= __LIBC_LOG_INIT_UTF8;
+
+  logInstance = __libc_LogInitEx("libcx", flags, logGroups, "LIBCX_TRACE_OUTPUT", NULL);
 
   /* Bail out if we failed to create a log file at all */
   if (!logInstance)
