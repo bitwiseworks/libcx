@@ -1,5 +1,11 @@
 # History of changes for LIBCx
 
+#### Version 0.7.5 (2025-01-11)
+
+* spawn2: Fix inheriting unrelated descriptors in simple redir mode [#105].
+* spawn2: Ignore extended flags when calling spawn* [#105].
+* Enhance logging initialization with UTF-8 support (new in LIBCn 0.1.14+).
+
 #### Version 0.7.4 (2024-08-03)
 
 * Revert "Make streams bound to TCP sockets properly flushed at program exit"
