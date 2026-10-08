@@ -4,5 +4,9 @@
     "noclofds",
     "redirs",
     "XREDIR"
-  ]
+  ],
+  "files.associations": {
+      "*.kmk": "makefile",
+      "*.s": "asm-intel-x86-generic",
+  },
 }

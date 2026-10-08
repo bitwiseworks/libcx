@@ -34,6 +34,9 @@ libcx_SOURCES = \
   main.s \
   shared.c
 
+# Link to TCPIP32.DLL/SESMGR.DLL lazily to avoid freezes without PM (see #107)
+libcx_LIBS = socket_lazy os2_ses_lazy
+
 # Release definitions
 libcx_SOURCES.release += $(PATH_OBJ)/libcx-release.def
 
