@@ -332,7 +332,7 @@ static void shared_init(int forked)
   /* Check if it's a spawn2 wrapper (e.g. spawn2-wrapper.c) */
   {
     char dll[CCHMAXPATH + sizeof(SPAWN2_WRAPPERNAME) + 1];
-    if (get_module_name(dll, sizeof(dll)))
+    if (get_module_name(dll, sizeof(dll), NULL))
     {
       strcpy(_getname(dll), SPAWN2_WRAPPERNAME);
 
@@ -1393,8 +1393,9 @@ void print_stats()
 
   {
     char name[CCHMAXPATH] = {0};
-    get_module_name(name, sizeof(name));
-    printf("LIBCx module:  %s\n", name);
+    unsigned int handle = 0;
+    get_module_name(name, sizeof(name), &handle);
+    printf("LIBCx module:  %s (0x%04X)\n", name, handle);
   }
 
   global_lock();
@@ -1712,7 +1713,7 @@ void touch_pages(void *buf, size_t len)
   }
 }
 
-char *get_module_name(char *buf, size_t len)
+char *get_module_name(char *buf, size_t len, unsigned int *handle)
 {
   HMODULE hmod;
   ULONG obj, offset;
@@ -1729,6 +1730,19 @@ char *get_module_name(char *buf, size_t len)
   ASSERT_MSG(!arc || arc == ERROR_BAD_LENGTH, "%ld %d", arc, len);
   if (arc)
     return NULL;
+
+  buf = _realrealpath(buf, buf, len);
+  TRACE_IF(!buf, "_realrealpath %d\n", errno);
+  ASSERT_MSG(buf || errno == ERANGE, "%p %d", buf, len);
+  if (!buf)
+    return NULL;
+
+  char *p = buf;
+  while ((p = strchr(p, '/')) != NULL)
+      *p++ = '\\';
+
+  if (handle)
+    *handle = hmod;
 
   return buf;
 }

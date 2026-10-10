@@ -169,7 +169,7 @@ int __spawn2(int mode, const char *name, const char * const argv[],
       SET_ERRNO_AND(return -1, EINVAL);
 
     char w_exe[CCHMAXPATH + sizeof(SPAWN2_WRAPPERNAME) + 1];
-    if (!get_module_name (w_exe, sizeof(w_exe)))
+    if (!get_module_name (w_exe, sizeof(w_exe), NULL))
       SET_ERRNO_AND(return -1, ENOMEM);
 
     strcpy(_getname(w_exe), SPAWN2_WRAPPERNAME);

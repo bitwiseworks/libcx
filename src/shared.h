@@ -350,7 +350,7 @@ void print_stats();
 
 void touch_pages(void *buf, size_t len);
 
-char *get_module_name(char *buf, size_t len);
+char *get_module_name(char *buf, size_t len, unsigned int *handle);
 
 #ifdef DEBUG
 void force_libcx_term();
